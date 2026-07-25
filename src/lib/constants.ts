@@ -1,12 +1,5 @@
-export const SALES_STAGES = [
-  "New Lead",
-  "Contact Attempted",
-  "Qualified",
-  "Discovery Booked",
-  "Discovery Completed",
-  "Closed Won",
-  "Closed Lost",
-] as const;
+// Sales pipeline stages live in src/lib/stages.ts — that is the single
+// source of truth shared by the database and the UI. Do not redefine them here.
 
 export const DELIVERY_STAGES = [
   "Onboarding",
@@ -14,13 +7,6 @@ export const DELIVERY_STAGES = [
   "Live",
   "Complete",
 ] as const;
-
-export const PIPELINES = {
-  sales: SALES_STAGES,
-  delivery: DELIVERY_STAGES,
-} as const;
-
-export type Pipeline = keyof typeof PIPELINES;
 
 export const CALL_OUTCOMES = [
   { value: "no_answer", label: "No answer" },

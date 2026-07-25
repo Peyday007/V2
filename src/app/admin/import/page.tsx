@@ -186,6 +186,11 @@ export default function ImportPage() {
               ))}
             </ul>
           )}
+          {result.created > 0 && (
+            <a href="/" className="btn" style={{ marginTop: 14 }}>
+              View {result.created} new lead{result.created === 1 ? "" : "s"} on the board →
+            </a>
+          )}
         </div>
       )}
     </div>

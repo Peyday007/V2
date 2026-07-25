@@ -1,31 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { PIPELINES, SALES_STAGES, Pipeline } from "@/lib/constants";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import {
+  SALES_STAGES,
+  STAGE_LABELS,
+  SalesStage,
+  DEFAULT_STAGE,
+} from "@/lib/stages";
+import { DELIVERY_STAGES } from "@/lib/constants";
+import { useLeads, Lead, ContactLite } from "@/hooks/useLeads";
 
-type Lead = {
-  id: string;
-  business_name: string;
-  phone: string | null;
-  website: string | null;
-  city: string | null;
-  state: string | null;
-  industry: string | null;
-  rating: number | null;
-  review_count: number | null;
-  status: string;
-  stage: string;
-  do_not_call: boolean;
-  notes: string | null;
-  created_at: string;
-  contacts: { full_name: string | null; title: string | null }[];
-};
+type Pipeline = "sales" | "delivery";
 
 type Deal = {
   id: string;
   name: string;
-  pipeline: Pipeline;
   stage: string;
   value: number | null;
   notes: string | null;
@@ -34,67 +24,97 @@ type Deal = {
 
 export default function KanbanBoard() {
   const [pipeline, setPipeline] = useState<Pipeline>("sales");
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [deals, setDeals] = useState<Deal[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showNew, setShowNew] = useState(false);
-  const [editingLead, setEditingLead] = useState<Lead | null>(null);
-  const [editingDeal, setEditingDeal] = useState<Deal | null>(null);
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "calc(100vh - 105px)",
+      }}
+    >
+      {pipeline === "sales" ? (
+        <SalesBoard pipeline={pipeline} setPipeline={setPipeline} />
+      ) : (
+        <DeliveryBoard pipeline={pipeline} setPipeline={setPipeline} />
+      )}
+    </div>
+  );
+}
+
+function PipelineSwitch({
+  pipeline,
+  setPipeline,
+}: {
+  pipeline: Pipeline;
+  setPipeline: (p: Pipeline) => void;
+}) {
+  return (
+    <div style={{ display: "flex", gap: 6 }}>
+      {(["sales", "delivery"] as Pipeline[]).map((p) => (
+        <button
+          key={p}
+          className={p === pipeline ? "btn" : "btn-ghost"}
+          onClick={() => setPipeline(p)}
+          style={{ padding: "5px 14px" }}
+        >
+          {p}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------- SALES ---------------------------------- */
+
+function SalesBoard({
+  pipeline,
+  setPipeline,
+}: {
+  pipeline: Pipeline;
+  setPipeline: (p: Pipeline) => void;
+}) {
+  const { leads, contacts, state, reload, applyStageLocally, lastFetchedAt, realtime } =
+    useLeads();
   const [dragId, setDragId] = useState<string | null>(null);
+  const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState<Lead | null>(null);
   const [attack, setAttack] = useState("");
   const [attackLoading, setAttackLoading] = useState(false);
+  const [showDnc, setShowDnc] = useState(true);
+  const [q, setQ] = useState("");
+  const [showDiag, setShowDiag] = useState(false);
 
-  const stages = PIPELINES[pipeline];
-  const isSales = pipeline === "sales";
+  const visible = useMemo(
+    () =>
+      leads.filter((l) => {
+        if (!showDnc && l.do_not_call) return false;
+        if (q.trim()) {
+          const needle = q.trim().toLowerCase();
+          const hay = [l.business_name, l.city, l.state, l.phone, l.industry]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          if (!hay.includes(needle)) return false;
+        }
+        return true;
+      }),
+    [leads, showDnc, q]
+  );
 
-  async function load() {
-    setLoading(true);
-    if (isSales) {
-      const { data } = await supabase()
-        .from("leads")
-        .select("*, contacts(full_name, title)")
-        .order("created_at", { ascending: false })
-        .limit(500);
-      setLeads((data as Lead[]) || []);
-    } else {
-      const { data } = await supabase()
-        .from("deals")
-        .select("*")
-        .eq("pipeline", "delivery")
-        .order("created_at", { ascending: false });
-      setDeals((data as Deal[]) || []);
+  const activeFilters = (showDnc ? 0 : 1) + (q.trim() ? 1 : 0);
+  const hiddenByFilters = leads.length - visible.length;
+
+  async function moveLead(id: string, stage: SalesStage) {
+    applyStageLocally(id, stage);
+    const res = await fetch(`/api/leads/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pipeline_stage: stage }),
+    });
+    if (!res.ok) {
+      alert("Could not save that move — reloading the board.");
     }
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipeline]);
-
-  async function moveLead(id: string, stage: string) {
-    setLeads((l) => l.map((x) => (x.id === id ? { ...x, stage } : x)));
-    await fetch(`/api/leads/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stage }),
-    });
-  }
-
-  async function moveDeal(id: string, stage: string) {
-    setDeals((d) => d.map((x) => (x.id === id ? { ...x, stage } : x)));
-    await fetch(`/api/deals/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stage }),
-    });
-  }
-
-  function onDrop(stage: string) {
-    if (!dragId) return;
-    if (isSales) moveLead(dragId, stage);
-    else moveDeal(dragId, stage);
-    setDragId(null);
+    reload();
   }
 
   async function whatToAttack() {
@@ -105,53 +125,80 @@ export default function KanbanBoard() {
     setAttackLoading(false);
   }
 
-  const counts = isSales
-    ? (s: string) => leads.filter((l) => l.stage === s).length
-    : (s: string) => deals.filter((d) => d.stage === s).length;
-
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "calc(100vh - 105px)",
-      }}
-    >
+    <>
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 16,
-          marginBottom: 18,
+          gap: 12,
+          marginBottom: 14,
           flexShrink: 0,
+          flexWrap: "wrap",
         }}
       >
-        <h1>{isSales ? "Sales Board" : "Delivery Board"}</h1>
-        <div style={{ display: "flex", gap: 6 }}>
-          {(Object.keys(PIPELINES) as Pipeline[]).map((p) => (
-            <button
-              key={p}
-              className={p === pipeline ? "btn" : "btn-ghost"}
-              onClick={() => setPipeline(p)}
-              style={{ padding: "5px 14px" }}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
+        <h1>Sales Board</h1>
+        <PipelineSwitch pipeline={pipeline} setPipeline={setPipeline} />
+        <input
+          placeholder="Search leads…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ maxWidth: 220 }}
+        />
+        <label
+          className="faint"
+          style={{ display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}
+        >
+          <input
+            type="checkbox"
+            checked={showDnc}
+            onChange={(e) => setShowDnc(e.target.checked)}
+            style={{ width: "auto" }}
+          />
+          show DNC
+        </label>
+        {activeFilters > 0 && (
+          <button
+            className="btn-ghost"
+            style={{ padding: "4px 10px" }}
+            onClick={() => {
+              setQ("");
+              setShowDnc(true);
+            }}
+          >
+            Clear filters ({activeFilters})
+          </button>
+        )}
         <div style={{ flex: 1 }} />
+        <button
+          className="btn-ghost"
+          style={{ padding: "5px 10px" }}
+          onClick={() => setShowDiag(!showDiag)}
+          title="Database diagnostics"
+        >
+          ⓘ
+        </button>
         <button className="btn-ghost" onClick={whatToAttack} disabled={attackLoading}>
           ⚡ {attackLoading ? "Thinking…" : "What to Attack Today"}
         </button>
         <button className="btn" onClick={() => setShowNew(true)}>
-          {isSales ? "+ New Lead" : "+ New Deal"}
+          + New Lead
         </button>
       </div>
+
+      {showDiag && (
+        <DiagnosticsPanel
+          onClose={() => setShowDiag(false)}
+          boardCount={leads.length}
+          lastFetchedAt={lastFetchedAt}
+          realtime={realtime}
+        />
+      )}
 
       {attack && (
         <div
           className="card"
-          style={{ marginBottom: 16, borderColor: "var(--amber-dim)", flexShrink: 0 }}
+          style={{ marginBottom: 14, borderColor: "var(--amber-dim)", flexShrink: 0 }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
             <h3 style={{ color: "var(--amber)" }}>What to Attack Today</h3>
@@ -167,163 +214,203 @@ export default function KanbanBoard() {
         </div>
       )}
 
-      {loading ? (
-        <p className="muted">Loading…</p>
-      ) : (
+      {state.status === "error" && (
         <div
-          style={{
-            display: "flex",
-            gap: 14,
-            overflowX: "auto",
-            flex: 1,
-            minHeight: 0,
-            paddingBottom: 8,
-          }}
+          className="card"
+          style={{ borderColor: "var(--red)", marginBottom: 14, flexShrink: 0 }}
         >
-          {stages.map((stage) => (
-            <div
-              key={stage}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => onDrop(stage)}
-              style={{
-                background: "var(--bg-raised)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                padding: 12,
-                minWidth: 300,
-                width: 300,
-                flexShrink: 0,
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 12,
-                  padding: "0 2px",
-                  flexShrink: 0,
-                }}
-              >
-                <span
-                  style={{
-                    fontWeight: 700,
-                    fontSize: "0.78rem",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.09em",
-                    color: "var(--text-dim)",
-                  }}
-                >
-                  {stage}
-                </span>
-                <span
-                  style={{
-                    fontSize: "0.72rem",
-                    background: "var(--bg-hover)",
-                    color: "var(--text-dim)",
-                    borderRadius: 3,
-                    padding: "1px 8px",
-                  }}
-                >
-                  {counts(stage)}
-                </span>
-              </div>
-
-              <div style={{ overflowY: "auto", flex: 1 }}>
-                {counts(stage) === 0 && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      height: "100%",
-                      minHeight: 120,
-                      color: "var(--text-faint)",
-                      fontSize: "0.8rem",
-                    }}
-                  >
-                    empty
-                  </div>
-                )}
-                {isSales
-                  ? leads
-                      .filter((l) => l.stage === stage)
-                      .map((l) => (
-                        <LeadCard
-                          key={l.id}
-                          lead={l}
-                          onDragStart={() => setDragId(l.id)}
-                          onEdit={() => setEditingLead(l)}
-                          onAdvance={(next) => moveLead(l.id, next)}
-                        />
-                      ))
-                  : deals
-                      .filter((d) => d.stage === stage)
-                      .map((d) => (
-                        <DealCard
-                          key={d.id}
-                          deal={d}
-                          stages={stages}
-                          onDragStart={() => setDragId(d.id)}
-                          onEdit={() => setEditingDeal(d)}
-                          onAdvance={(next) => moveDeal(d.id, next)}
-                        />
-                      ))}
-              </div>
-            </div>
-          ))}
+          <h3 style={{ color: "var(--red)", marginBottom: 6 }}>
+            Could not load leads
+          </h3>
+          <p style={{ fontSize: "0.85rem" }}>{state.message}</p>
+          <button className="btn-ghost" style={{ marginTop: 10 }} onClick={reload}>
+            Retry
+          </button>
         </div>
       )}
 
-      {isSales && (showNew || editingLead) && (
+      {state.status === "loading" && (
+        <p className="muted" style={{ padding: 20 }}>
+          Loading leads…
+        </p>
+      )}
+
+      {state.status === "success_empty" && (
+        <div className="card" style={{ marginBottom: 14, flexShrink: 0 }}>
+          <h3 style={{ marginBottom: 6 }}>No leads in the database yet</h3>
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            This is a real empty database, not a loading error. Add one with
+            <strong> + New Lead</strong>, or upload a CSV on the
+            <strong> Import</strong> tab.
+          </p>
+        </div>
+      )}
+
+      {(state.status === "success_with_data" || state.status === "success_empty") && (
+        <>
+          {hiddenByFilters > 0 && (
+            <p className="faint" style={{ marginBottom: 8, flexShrink: 0 }}>
+              {hiddenByFilters} lead{hiddenByFilters === 1 ? "" : "s"} hidden by
+              filters · {leads.length} total loaded
+            </p>
+          )}
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              overflowX: "auto",
+              flex: 1,
+              minHeight: 0,
+              paddingBottom: 8,
+            }}
+          >
+            {SALES_STAGES.map((stage) => {
+              const inStage = visible.filter((l) => l.pipeline_stage === stage);
+              return (
+                <Column
+                  key={stage}
+                  title={STAGE_LABELS[stage]}
+                  count={inStage.length}
+                  onDrop={() => {
+                    if (dragId) moveLead(dragId, stage);
+                    setDragId(null);
+                  }}
+                >
+                  {inStage.map((l) => (
+                    <LeadCard
+                      key={l.id}
+                      lead={l}
+                      contacts={contacts[l.id] || []}
+                      onDragStart={() => setDragId(l.id)}
+                      onEdit={() => setEditing(l)}
+                      onAdvance={(next) => moveLead(l.id, next)}
+                    />
+                  ))}
+                </Column>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {(showNew || editing) && (
         <LeadModal
-          lead={editingLead}
+          lead={editing}
           onClose={() => {
             setShowNew(false);
-            setEditingLead(null);
+            setEditing(null);
           }}
           onSaved={() => {
             setShowNew(false);
-            setEditingLead(null);
-            load();
+            setEditing(null);
+            reload();
           }}
         />
       )}
-      {!isSales && (showNew || editingDeal) && (
-        <DealModal
-          deal={editingDeal}
-          onClose={() => {
-            setShowNew(false);
-            setEditingDeal(null);
+    </>
+  );
+}
+
+function Column({
+  title,
+  count,
+  onDrop,
+  children,
+}: {
+  title: string;
+  count: number;
+  onDrop: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={onDrop}
+      style={{
+        background: "var(--bg-raised)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: 12,
+        minWidth: 300,
+        width: 300,
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 12,
+          padding: "0 2px",
+          flexShrink: 0,
+        }}
+      >
+        <span
+          style={{
+            fontWeight: 700,
+            fontSize: "0.78rem",
+            textTransform: "uppercase",
+            letterSpacing: "0.09em",
+            color: "var(--text-dim)",
           }}
-          onSaved={() => {
-            setShowNew(false);
-            setEditingDeal(null);
-            load();
+        >
+          {title}
+        </span>
+        <span
+          style={{
+            fontSize: "0.72rem",
+            background: "var(--bg-hover)",
+            color: "var(--text-dim)",
+            borderRadius: 3,
+            padding: "1px 8px",
           }}
-        />
-      )}
+        >
+          {count}
+        </span>
+      </div>
+      <div style={{ overflowY: "auto", flex: 1 }}>
+        {count === 0 ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              height: "100%",
+              minHeight: 120,
+              color: "var(--text-faint)",
+              fontSize: "0.8rem",
+            }}
+          >
+            empty
+          </div>
+        ) : (
+          children
+        )}
+      </div>
     </div>
   );
 }
 
 function LeadCard({
   lead,
+  contacts,
   onDragStart,
   onEdit,
   onAdvance,
 }: {
   lead: Lead;
+  contacts: ContactLite[];
   onDragStart: () => void;
   onEdit: () => void;
-  onAdvance: (next: string) => void;
+  onAdvance: (next: SalesStage) => void;
 }) {
-  const stages = SALES_STAGES as readonly string[];
-  const idx = stages.indexOf(lead.stage);
-  const next = idx >= 0 && idx < stages.length - 2 ? stages[idx + 1] : null;
-  const dm = lead.contacts?.find((c) => c.full_name);
+  const idx = SALES_STAGES.indexOf(lead.pipeline_stage);
+  const next =
+    idx >= 0 && idx < SALES_STAGES.length - 2 ? SALES_STAGES[idx + 1] : null;
+  const dm = contacts.find((c) => c.full_name);
   const location = [lead.city, lead.state].filter(Boolean).join(", ");
   const assignTag =
     lead.status === "new"
@@ -363,14 +450,20 @@ function LeadCard({
         </span>
       </div>
 
-      {dm && (
+      {lead.stage_was_unrecognized && (
         <div
           style={{
-            fontSize: "0.78rem",
-            color: "var(--amber)",
+            fontSize: "0.72rem",
+            color: "var(--red)",
             marginBottom: 6,
           }}
         >
+          ⚠ had an unrecognized stage — shown here as New Lead
+        </div>
+      )}
+
+      {dm && (
+        <div style={{ fontSize: "0.78rem", color: "var(--amber)", marginBottom: 6 }}>
           DM: {dm.full_name}
           {dm.title ? ` (${dm.title})` : ""}
         </div>
@@ -418,7 +511,7 @@ function LeadCard({
             style={{ justifyContent: "center", padding: "6px 10px", fontSize: "0.72rem" }}
             onClick={() => onAdvance(next)}
           >
-            → {next}
+            → {STAGE_LABELS[next]}
           </button>
         )}
         <button
@@ -455,10 +548,11 @@ function LeadModal({
     city: lead?.city || "",
     state: lead?.state || "",
     industry: lead?.industry || "",
-    stage: lead?.stage || "New Lead",
+    pipeline_stage: lead?.pipeline_stage || DEFAULT_STAGE,
     notes: lead?.notes || "",
   });
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   function set(k: string, v: string) {
     setForm({ ...form, [k]: v });
@@ -467,19 +561,30 @@ function LeadModal({
   async function save() {
     if (!form.business_name.trim()) return;
     setSaving(true);
-    if (lead) {
-      await fetch(`/api/leads/${lead.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-    } else {
-      await fetch("/api/leads", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
+    setError("");
+    const res = await fetch(lead ? `/api/leads/${lead.id}` : "/api/leads", {
+      method: lead ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setError(j.error || "Save failed");
+      setSaving(false);
+      return;
     }
+    onSaved();
+  }
+
+  async function archive() {
+    if (!lead) return;
+    if (!confirm("Archive this lead? It will be hidden from the board.")) return;
+    setSaving(true);
+    await fetch(`/api/leads/${lead.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
     onSaved();
   }
 
@@ -535,9 +640,14 @@ function LeadModal({
               value={form.industry}
               onChange={(e) => set("industry", e.target.value)}
             />
-            <select value={form.stage} onChange={(e) => set("stage", e.target.value)}>
+            <select
+              value={form.pipeline_stage}
+              onChange={(e) => set("pipeline_stage", e.target.value)}
+            >
               {SALES_STAGES.map((s) => (
-                <option key={s}>{s}</option>
+                <option key={s} value={s}>
+                  {STAGE_LABELS[s]}
+                </option>
               ))}
             </select>
           </div>
@@ -547,6 +657,7 @@ function LeadModal({
             value={form.notes}
             onChange={(e) => set("notes", e.target.value)}
           />
+          {error && <p style={{ color: "var(--red)" }}>{error}</p>}
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
           <button
@@ -559,25 +670,252 @@ function LeadModal({
           <button className="btn-ghost" onClick={onClose}>
             Cancel
           </button>
+          <div style={{ flex: 1 }} />
+          {lead && (
+            <button className="btn-danger" onClick={archive} disabled={saving}>
+              Archive
+            </button>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
+function DiagnosticsPanel({
+  onClose,
+  boardCount,
+  lastFetchedAt,
+  realtime,
+}: {
+  onClose: () => void;
+  boardCount: number;
+  lastFetchedAt: string | null;
+  realtime: boolean;
+}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [diag, setDiag] = useState<any>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    fetch("/api/diagnostics")
+      .then((r) => r.json())
+      .then(setDiag)
+      .catch((e) => setErr(String(e)));
+  }, []);
+
+  return (
+    <div
+      className="card"
+      style={{ marginBottom: 14, flexShrink: 0, borderColor: "var(--border-strong)" }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+        <h3>Diagnostics</h3>
+        <button className="btn-ghost" style={{ padding: "2px 10px" }} onClick={onClose}>
+          ✕
+        </button>
+      </div>
+      {err && <p style={{ color: "var(--red)" }}>{err}</p>}
+      {!diag && !err && <p className="muted">Checking database…</p>}
+      {diag && (
+        <div style={{ fontSize: "0.8rem", display: "grid", gap: 3 }}>
+          <div>
+            Supabase project: <strong>{diag.supabase_project_ref || "not set"}</strong>{" "}
+            <span className="faint">({diag.vercel_env})</span>
+          </div>
+          <div>
+            Keys — anon: {diag.anon_key_present ? "✓" : "✗"} · Anthropic:{" "}
+            {diag.anthropic_key_present ? "✓" : "✗"} · caller secret:{" "}
+            {diag.caller_secret_present ? "✓" : "✗"}
+          </div>
+          <div>
+            Leads in database: <strong>{diag.leads?.total ?? "?"}</strong> · archived:{" "}
+            {diag.leads?.archived ?? "?"} · DNC: {diag.leads?.do_not_call ?? "?"} · in
+            packet: {diag.leads?.assigned_to_packet ?? "?"}
+          </div>
+          <div>Rendered on this board: {boardCount}</div>
+          <div className="faint">
+            By stage:{" "}
+            {diag.leads?.by_stage
+              ? Object.entries(diag.leads.by_stage)
+                  .map(([k, v]) => `${k}=${v}`)
+                  .join(" · ")
+              : "—"}
+          </div>
+          {diag.leads?.unrecognized_stage_count > 0 && (
+            <div style={{ color: "var(--red)" }}>
+              ⚠ {diag.leads.unrecognized_stage_count} lead(s) have an unrecognized
+              stage — run migration 0005.
+            </div>
+          )}
+          <div className="faint">
+            Realtime: {realtime ? "connected" : "not connected"} · last fetch:{" "}
+            {lastFetchedAt ? new Date(lastFetchedAt).toLocaleTimeString() : "—"}
+          </div>
+          {diag.errors?.length > 0 && (
+            <div style={{ color: "var(--red)" }}>
+              Errors: {diag.errors.join(" | ")}
+            </div>
+          )}
+          {diag.migration_hint && (
+            <div style={{ color: "var(--amber)" }}>{diag.migration_hint}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ DELIVERY -------------------------------- */
+
+function DeliveryBoard({
+  pipeline,
+  setPipeline,
+}: {
+  pipeline: Pipeline;
+  setPipeline: (p: Pipeline) => void;
+}) {
+  const [deals, setDeals] = useState<Deal[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [message, setMessage] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState<Deal | null>(null);
+
+  async function load() {
+    setStatus("loading");
+    try {
+      const { data, error } = await supabase()
+        .from("deals")
+        .select("id, name, stage, value, notes, created_at")
+        .eq("pipeline", "delivery")
+        .order("created_at", { ascending: false });
+      if (error) {
+        console.error("[DeliveryBoard]", error);
+        setMessage(`Could not load deals. Database error: ${error.message}`);
+        setStatus("error");
+        return;
+      }
+      setDeals((data as Deal[]) || []);
+      setStatus("ready");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Unexpected error");
+      setStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function moveDeal(id: string, stage: string) {
+    setDeals((d) => d.map((x) => (x.id === id ? { ...x, stage } : x)));
+    await fetch(`/api/deals/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage }),
+    });
+    load();
+  }
+
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          marginBottom: 14,
+          flexShrink: 0,
+        }}
+      >
+        <h1>Delivery Board</h1>
+        <PipelineSwitch pipeline={pipeline} setPipeline={setPipeline} />
+        <div style={{ flex: 1 }} />
+        <button className="btn" onClick={() => setShowNew(true)}>
+          + New Deal
+        </button>
+      </div>
+
+      {status === "error" && (
+        <div className="card" style={{ borderColor: "var(--red)", marginBottom: 14 }}>
+          <h3 style={{ color: "var(--red)", marginBottom: 6 }}>Could not load deals</h3>
+          <p style={{ fontSize: "0.85rem" }}>{message}</p>
+          <button className="btn-ghost" style={{ marginTop: 10 }} onClick={load}>
+            Retry
+          </button>
+        </div>
+      )}
+      {status === "loading" && <p className="muted" style={{ padding: 20 }}>Loading…</p>}
+
+      {status === "ready" && (
+        <div
+          style={{
+            display: "flex",
+            gap: 14,
+            overflowX: "auto",
+            flex: 1,
+            minHeight: 0,
+            paddingBottom: 8,
+          }}
+        >
+          {DELIVERY_STAGES.map((stage) => {
+            const inStage = deals.filter((d) => d.stage === stage);
+            return (
+              <Column
+                key={stage}
+                title={stage}
+                count={inStage.length}
+                onDrop={() => {
+                  if (dragId) moveDeal(dragId, stage);
+                  setDragId(null);
+                }}
+              >
+                {inStage.map((d) => (
+                  <DealCard
+                    key={d.id}
+                    deal={d}
+                    onDragStart={() => setDragId(d.id)}
+                    onEdit={() => setEditing(d)}
+                    onAdvance={(next) => moveDeal(d.id, next)}
+                  />
+                ))}
+              </Column>
+            );
+          })}
+        </div>
+      )}
+
+      {(showNew || editing) && (
+        <DealModal
+          deal={editing}
+          onClose={() => {
+            setShowNew(false);
+            setEditing(null);
+          }}
+          onSaved={() => {
+            setShowNew(false);
+            setEditing(null);
+            load();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 function DealCard({
   deal,
-  stages,
   onDragStart,
   onEdit,
   onAdvance,
 }: {
   deal: Deal;
-  stages: readonly string[];
   onDragStart: () => void;
   onEdit: () => void;
   onAdvance: (next: string) => void;
 }) {
+  const stages = DELIVERY_STAGES as readonly string[];
   const idx = stages.indexOf(deal.stage);
   const next = idx >= 0 && idx < stages.length - 1 ? stages[idx + 1] : null;
 
@@ -602,16 +940,13 @@ function DealCard({
           marginBottom: 6,
         }}
       >
-        <span style={{ fontWeight: 700, fontSize: "0.9rem", lineHeight: 1.35 }}>
-          {deal.name}
-        </span>
+        <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>{deal.name}</span>
         {deal.value != null && (
           <span style={{ color: "var(--amber)", fontWeight: 700, whiteSpace: "nowrap" }}>
             ${Number(deal.value).toLocaleString()}
           </span>
         )}
       </div>
-
       {deal.notes && (
         <div
           style={{
@@ -627,8 +962,7 @@ function DealCard({
           {deal.notes.slice(0, 140)}
         </div>
       )}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {next && (
           <button
             className="btn-ghost"
@@ -665,9 +999,8 @@ function DealModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const stages = PIPELINES.delivery;
   const [name, setName] = useState(deal?.name || "");
-  const [stage, setStage] = useState(deal?.stage || stages[0]);
+  const [stage, setStage] = useState(deal?.stage || DELIVERY_STAGES[0]);
   const [value, setValue] = useState(deal?.value?.toString() || "");
   const [notes, setNotes] = useState(deal?.notes || "");
   const [saving, setSaving] = useState(false);
@@ -682,19 +1015,11 @@ function DealModal({
       value: value ? Number(value) : null,
       notes: notes || null,
     };
-    if (deal) {
-      await fetch(`/api/deals/${deal.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    } else {
-      await fetch("/api/deals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    }
+    await fetch(deal ? `/api/deals/${deal.id}` : "/api/deals", {
+      method: deal ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
     onSaved();
   }
 
@@ -733,7 +1058,7 @@ function DealModal({
             autoFocus
           />
           <select value={stage} onChange={(e) => setStage(e.target.value)}>
-            {stages.map((s) => (
+            {DELIVERY_STAGES.map((s) => (
               <option key={s}>{s}</option>
             ))}
           </select>

@@ -29,6 +29,17 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 4. Repeat with `supabase/migrations/0002_events.sql` (new query, paste, Run).
 5. Repeat with `supabase/migrations/0003_enrichment.sql` (new query, paste, Run).
 6. Repeat with `supabase/migrations/0004_lead_stages.sql` (new query, paste, Run).
+7. Repeat with `supabase/migrations/0005_canonical_stages.sql` (new query, paste, Run).
+
+`0005` is self-healing: it creates anything missing, converts every historical
+stage value to the canonical key, blocks invalid stages at the database level,
+and sets explicit RLS policies. It is safe to run even if you skipped or
+half-ran the earlier ones, and safe to run twice.
+
+**If the board looks empty, click the ⓘ button in the board header.** It shows
+which Supabase project this deployment is connected to, the real lead count,
+counts per stage, and any database error — so you can tell an empty database
+apart from a broken query.
 
 ### 3. Get your Supabase keys
 

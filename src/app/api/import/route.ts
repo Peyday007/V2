@@ -9,6 +9,7 @@ import {
   normalizeState,
   normalizeZip,
 } from "@/lib/normalize";
+import { DEFAULT_STAGE } from "@/lib/stages";
 
 export const dynamic = "force-dynamic";
 
@@ -138,6 +139,8 @@ export async function POST(req: NextRequest) {
           reviewCount != null && !Number.isNaN(reviewCount) ? reviewCount : null,
         place_id: sourceId,
         source: row.source || "csv_import",
+        // Every imported lead lands in a real column, always.
+        pipeline_stage: DEFAULT_STAGE,
       })
       .select("id")
       .single();

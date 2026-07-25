@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { logEvent } from "@/lib/events";
+import { coerceStage, isSalesStage, DEFAULT_STAGE } from "@/lib/stages";
 import {
   normalizeBusinessName,
   normalizeDomain,
@@ -12,10 +13,16 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { business_name, phone, website, city, state, industry, notes, stage } = body;
+  const { business_name, phone, website, city, state, industry, notes } = body;
   if (!business_name?.trim()) {
     return NextResponse.json({ error: "Business name required" }, { status: 400 });
   }
+
+  // A lead can never be created without a valid canonical stage.
+  const requested = body.pipeline_stage;
+  const stage =
+    requested && isSalesStage(requested) ? requested : coerceStage(requested) || DEFAULT_STAGE;
+
   const { data, error } = await supabase()
     .from("leads")
     .insert({
@@ -29,15 +36,21 @@ export async function POST(req: NextRequest) {
       state: normalizeState(state) || state || null,
       industry: industry || null,
       notes: notes || null,
-      stage: stage || "New Lead",
+      pipeline_stage: stage,
       source: "manual",
     })
     .select()
     .single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (error) {
+    console.error("[api/leads] insert failed:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
   await logEvent("lead.created", "lead", data.id, {
     business_name: data.business_name,
     source: "manual",
+    pipeline_stage: stage,
   });
   return NextResponse.json(data);
 }
