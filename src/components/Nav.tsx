@@ -8,6 +8,7 @@ const links = [
   { href: "/dial", label: "Dial" },
   { href: "/metrics", label: "Metrics" },
   { href: "/admin/campaigns", label: "Campaigns" },
+  { href: "/admin/import", label: "Import" },
   { href: "/admin/callers", label: "Callers" },
 ];
 

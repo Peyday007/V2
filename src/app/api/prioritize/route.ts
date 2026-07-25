@@ -35,7 +35,8 @@ export async function GET() {
       .from("leads")
       .select("*", { count: "exact", head: true })
       .eq("campaign_id", c.id)
-      .eq("status", "new");
+      .eq("status", "new")
+      .eq("do_not_call", false);
     leadCounts[c.name] = { total: total || 0, available: available || 0 };
   }
 

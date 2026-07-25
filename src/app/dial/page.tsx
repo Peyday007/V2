@@ -11,22 +11,57 @@ type Lead = {
   address: string | null;
   city: string | null;
   state: string | null;
+  industry: string | null;
   rating: number | null;
   review_count: number | null;
-  dm_name: string | null;
-  dm_title: string | null;
-  dm_phone: string | null;
-  dm_email: string | null;
   notes: string | null;
+};
+
+type Contact = {
+  id: string;
+  full_name: string | null;
+  title: string | null;
+  role_category: string;
+  direct_phone: string | null;
+  extension: string | null;
+  email: string | null;
+  contact_source: string;
+  verified_status: string;
+};
+
+type HistoryRow = {
+  outcome: string;
+  notes: string | null;
+  created_at: string;
+  callers: { name: string } | null;
 };
 
 type NextResp = {
   caller: string;
   lead: Lead | null;
+  contacts?: Contact[];
+  discovery?: {
+    best_callback_time: string | null;
+    transfer_instructions: string | null;
+    gatekeeper_name: string | null;
+  } | null;
+  history?: HistoryRow[];
+  approach?: { route: string; text: string } | null;
+  aiTip?: string | null;
   packetId?: string;
-  approach?: string | null;
   remaining: number;
   error?: string;
+};
+
+const EMPTY_DISCOVERY = {
+  owner_name: "",
+  title: "",
+  direct_number: "",
+  extension: "",
+  email: "",
+  best_callback_time: "",
+  transfer_instructions: "",
+  gatekeeper_name: "",
 };
 
 export default function DialPage() {
@@ -35,11 +70,15 @@ export default function DialPage() {
   const [state, setState] = useState<"login" | "loading" | "ready">("login");
   const [data, setData] = useState<NextResp | null>(null);
   const [notes, setNotes] = useState("");
+  const [discovery, setDiscovery] = useState({ ...EMPTY_DISCOVERY });
+  const [showDiscovery, setShowDiscovery] = useState(false);
   const [logging, setLogging] = useState(false);
 
   async function fetchNext() {
     setState("loading");
     setNotes("");
+    setDiscovery({ ...EMPTY_DISCOVERY });
+    setShowDiscovery(false);
     const res = await fetch("/api/dial/next");
     if (res.status === 401) {
       setState("login");
@@ -83,6 +122,7 @@ export default function DialPage() {
         packet_id: data.packetId,
         outcome,
         notes,
+        discovery,
       }),
     });
     setLogging(false);
@@ -98,7 +138,7 @@ export default function DialPage() {
   if (state === "login") {
     return (
       <div style={{ maxWidth: 360, margin: "80px auto", textAlign: "center" }}>
-        <h1 style={{ marginBottom: 8 }}>Caller sign-in</h1>
+        <h1 style={{ marginBottom: 8 }}>Caller Sign-in</h1>
         <p className="muted" style={{ marginBottom: 20 }}>
           Enter your 6-digit PIN
         </p>
@@ -119,7 +159,12 @@ export default function DialPage() {
         {loginError && (
           <p style={{ color: "var(--red)", marginBottom: 12 }}>{loginError}</p>
         )}
-        <button className="btn" onClick={login} disabled={pin.length !== 6} style={{ width: "100%", justifyContent: "center" }}>
+        <button
+          className="btn"
+          onClick={login}
+          disabled={pin.length !== 6}
+          style={{ width: "100%", justifyContent: "center" }}
+        >
           Start dialing
         </button>
       </div>
@@ -127,7 +172,11 @@ export default function DialPage() {
   }
 
   if (state === "loading" || !data) {
-    return <p className="muted" style={{ textAlign: "center", marginTop: 60 }}>Loading…</p>;
+    return (
+      <p className="muted" style={{ textAlign: "center", marginTop: 60 }}>
+        Loading…
+      </p>
+    );
   }
 
   if (!data.lead) {
@@ -135,17 +184,22 @@ export default function DialPage() {
       <div style={{ maxWidth: 480, margin: "80px auto", textAlign: "center" }}>
         <h1 style={{ marginBottom: 12 }}>All done 🎉</h1>
         <p className="muted" style={{ marginBottom: 20 }}>
-          No leads left in your packet, {data.caller}. Check with your admin for a new packet.
+          No leads left in your packet, {data.caller}. Check with your admin for a
+          new packet.
         </p>
-        <button className="btn-ghost" onClick={logout}>Sign out</button>
+        <button className="btn-ghost" onClick={logout}>
+          Sign out
+        </button>
       </div>
     );
   }
 
   const lead = data.lead;
+  const contacts = data.contacts || [];
+  const history = data.history || [];
 
   return (
-    <div style={{ maxWidth: 640, margin: "0 auto" }}>
+    <div style={{ maxWidth: 680, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
         <span className="muted">
           {data.caller} · {data.remaining} lead{data.remaining === 1 ? "" : "s"} left
@@ -156,22 +210,32 @@ export default function DialPage() {
         </button>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <h1 style={{ marginBottom: 4 }}>{lead.business_name}</h1>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h1 style={{ marginBottom: 4, textTransform: "none", letterSpacing: 0 }}>
+          {lead.business_name}
+        </h1>
         <p className="muted" style={{ marginBottom: 12 }}>
           {[lead.address, lead.city, lead.state].filter(Boolean).join(", ")}
         </p>
         {lead.phone && (
           <a
             href={`tel:${lead.phone}`}
-            style={{ fontSize: "1.5rem", fontWeight: 700, display: "block", marginBottom: 8 }}
+            style={{
+              fontSize: "1.5rem",
+              fontWeight: 700,
+              display: "block",
+              marginBottom: 8,
+            }}
           >
             {lead.phone}
           </a>
         )}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {lead.industry && <span className="tag-dim">{lead.industry}</span>}
           {lead.rating != null && (
-            <span className="tag-dim">★ {lead.rating} ({lead.review_count} reviews)</span>
+            <span className="tag-dim">
+              ★ {lead.rating} ({lead.review_count} reviews)
+            </span>
           )}
           {lead.website && (
             <a className="tag-dim" href={lead.website} target="_blank" rel="noreferrer">
@@ -179,23 +243,157 @@ export default function DialPage() {
             </a>
           )}
         </div>
-        {lead.dm_name && (
-          <div style={{ marginTop: 8, padding: 10, background: "var(--amber-soft)", borderRadius: 6 }}>
-            <strong style={{ color: "var(--amber)" }}>Decision maker:</strong>{" "}
-            {lead.dm_name}
-            {lead.dm_title ? ` — ${lead.dm_title}` : ""}
-            {lead.dm_phone ? ` · ${lead.dm_phone}` : ""}
-            {lead.dm_email ? ` · ${lead.dm_email}` : ""}
-          </div>
-        )}
       </div>
 
       {data.approach && (
-        <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber-dim)" }}>
-          <h3 style={{ color: "var(--amber)", marginBottom: 6 }}>Approach</h3>
-          <p style={{ whiteSpace: "pre-wrap" }}>{data.approach}</p>
+        <div
+          className="card"
+          style={{ marginBottom: 14, borderColor: "var(--amber-dim)" }}
+        >
+          <h3 style={{ color: "var(--amber)", marginBottom: 6 }}>
+            Who to ask for · Route {data.approach.route}
+          </h3>
+          <p style={{ fontSize: "0.95rem" }}>{data.approach.text}</p>
         </div>
       )}
+
+      {contacts.length > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h3 style={{ marginBottom: 8 }}>Known contacts</h3>
+          {contacts.map((c) => (
+            <div
+              key={c.id}
+              style={{
+                padding: "8px 10px",
+                background: "var(--bg-inset)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                marginBottom: 6,
+                fontSize: "0.85rem",
+              }}
+            >
+              <strong>{c.full_name || "(name unknown)"}</strong>
+              {c.title ? ` — ${c.title}` : ` — ${c.role_category.replace(/_/g, " ")}`}
+              {c.direct_phone && (
+                <>
+                  {" · "}
+                  <a href={`tel:${c.direct_phone}`}>{c.direct_phone}</a>
+                </>
+              )}
+              {c.extension && ` · ext ${c.extension}`}
+              {c.email && ` · ${c.email}`}
+              <span
+                className="faint"
+                style={{ marginLeft: 8 }}
+              >{`[${c.contact_source.replace(/_/g, " ")}]`}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {data.aiTip && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h3 style={{ marginBottom: 6, color: "var(--text-dim)" }}>Call tip</h3>
+          <p style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem" }} className="muted">
+            {data.aiTip}
+          </p>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h3 style={{ marginBottom: 8 }}>Previous calls</h3>
+          {history.map((h, i) => (
+            <div key={i} className="faint" style={{ marginBottom: 4 }}>
+              {new Date(h.created_at).toLocaleDateString()} —{" "}
+              {h.outcome.replace(/_/g, " ")}
+              {h.callers?.name ? ` (${h.callers.name})` : ""}
+              {h.notes ? ` — ${h.notes.slice(0, 60)}` : ""}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <h3>Learned something? Save it</h3>
+          <button
+            className="btn-ghost"
+            style={{ padding: "3px 10px" }}
+            onClick={() => setShowDiscovery(!showDiscovery)}
+          >
+            {showDiscovery ? "Hide" : "Open"}
+          </button>
+        </div>
+        {showDiscovery && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 8,
+              marginTop: 12,
+            }}
+          >
+            <input
+              placeholder="Decision-maker name"
+              value={discovery.owner_name}
+              onChange={(e) => setDiscovery({ ...discovery, owner_name: e.target.value })}
+            />
+            <input
+              placeholder="Their title (owner, GM…)"
+              value={discovery.title}
+              onChange={(e) => setDiscovery({ ...discovery, title: e.target.value })}
+            />
+            <input
+              placeholder="Direct number"
+              value={discovery.direct_number}
+              onChange={(e) =>
+                setDiscovery({ ...discovery, direct_number: e.target.value })
+              }
+            />
+            <input
+              placeholder="Extension"
+              value={discovery.extension}
+              onChange={(e) => setDiscovery({ ...discovery, extension: e.target.value })}
+            />
+            <input
+              placeholder="Email"
+              value={discovery.email}
+              onChange={(e) => setDiscovery({ ...discovery, email: e.target.value })}
+            />
+            <input
+              placeholder="Best callback time"
+              value={discovery.best_callback_time}
+              onChange={(e) =>
+                setDiscovery({ ...discovery, best_callback_time: e.target.value })
+              }
+            />
+            <input
+              placeholder="Gatekeeper name"
+              value={discovery.gatekeeper_name}
+              onChange={(e) =>
+                setDiscovery({ ...discovery, gatekeeper_name: e.target.value })
+              }
+            />
+            <input
+              placeholder="Transfer instructions"
+              value={discovery.transfer_instructions}
+              onChange={(e) =>
+                setDiscovery({ ...discovery, transfer_instructions: e.target.value })
+              }
+            />
+          </div>
+        )}
+        <p className="faint" style={{ marginTop: 8 }}>
+          Saved with the outcome — the team never has to rediscover it.
+        </p>
+      </div>
 
       <div className="card">
         <h3 style={{ marginBottom: 10 }}>Log outcome</h3>
@@ -213,7 +411,9 @@ export default function DialPage() {
               className={
                 o.value === "dm_conversation" || o.value === "appointment_set"
                   ? "btn"
-                  : "btn-ghost"
+                  : o.value === "do_not_call"
+                    ? "btn-danger"
+                    : "btn-ghost"
               }
               onClick={() => logOutcome(o.value)}
               disabled={logging}

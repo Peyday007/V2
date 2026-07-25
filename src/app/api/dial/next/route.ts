@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
 import { anthropic, APPROACH_MODEL } from "@/lib/anthropic";
+import { recommendApproach } from "@/lib/approach";
 
 export async function GET() {
   const callerId = await getCallerId();
@@ -41,13 +42,35 @@ export async function GET() {
   }
 
   const next = pending[0];
-  const { data: lead } = await db
-    .from("leads")
-    .select("*")
-    .eq("id", next.lead_id)
-    .single();
+  const [{ data: lead }, { data: contacts }, { data: discoveries }, { data: history }] =
+    await Promise.all([
+      db.from("leads").select("*").eq("id", next.lead_id).single(),
+      db
+        .from("contacts")
+        .select("*")
+        .eq("lead_id", next.lead_id)
+        .eq("active", true)
+        .order("confidence", { ascending: false }),
+      db
+        .from("call_discoveries")
+        .select("*")
+        .eq("lead_id", next.lead_id)
+        .order("created_at", { ascending: false })
+        .limit(1),
+      db
+        .from("calls")
+        .select("outcome, notes, created_at, callers(name)")
+        .eq("lead_id", next.lead_id)
+        .order("created_at", { ascending: false })
+        .limit(5),
+    ]);
 
-  let approach: string | null = null;
+  const latestDiscovery = discoveries?.[0] || null;
+  const approach = lead
+    ? recommendApproach(lead, contacts || [], latestDiscovery)
+    : null;
+
+  let aiTip: string | null = null;
   const ai = anthropic();
   if (ai && lead) {
     try {
@@ -57,29 +80,39 @@ export async function GET() {
         messages: [
           {
             role: "user",
-            content: `You are coaching a cold caller selling an AI Receptionist service to roofing companies. Based only on this lead's real data, give a 2-3 sentence approach recommendation for the call. Be specific and practical, no fluff.
+            content: `You are coaching a cold caller selling an AI Receptionist service to local service businesses. Based only on this lead's real data, give a 2-3 sentence practical tip for this specific call. No fluff, no invented facts.
 
 Business: ${lead.business_name}
+Industry: ${lead.industry || "unknown"}
 City: ${lead.city || "unknown"}, ${lead.state || ""}
 Google rating: ${lead.rating ?? "unknown"} (${lead.review_count ?? 0} reviews)
 Website: ${lead.website || "none found"}
-Decision maker: ${lead.dm_name ? `${lead.dm_name} (${lead.dm_title || "title unknown"})` : "not identified"}
+Known contacts: ${
+              (contacts || [])
+                .map((c) => `${c.full_name || "?"} (${c.title || c.role_category})`)
+                .join(", ") || "none"
+            }
+Recommended approach: ${approach?.text || "n/a"}
 Notes: ${lead.notes || "none"}`,
           },
         ],
       });
       const block = msg.content[0];
-      approach = block.type === "text" ? block.text : null;
+      aiTip = block.type === "text" ? block.text : null;
     } catch (e) {
-      console.error("approach generation failed:", e);
+      console.error("AI tip failed:", e);
     }
   }
 
   return NextResponse.json({
     caller: caller.name,
     lead,
-    packetId: next.packet_id,
+    contacts: contacts || [],
+    discovery: latestDiscovery,
+    history: history || [],
     approach,
+    aiTip,
+    packetId: next.packet_id,
     remaining: pending.length,
   });
 }

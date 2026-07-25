@@ -6,11 +6,22 @@ import { CALL_OUTCOMES } from "@/lib/constants";
 
 const DM_OUTCOMES = new Set(["dm_conversation", "appointment_set"]);
 
+type Discovery = {
+  owner_name?: string;
+  title?: string;
+  direct_number?: string;
+  extension?: string;
+  email?: string;
+  best_callback_time?: string;
+  transfer_instructions?: string;
+  gatekeeper_name?: string;
+};
+
 export async function POST(req: NextRequest) {
   const callerId = await getCallerId();
   if (!callerId) return NextResponse.json({ error: "Not logged in" }, { status: 401 });
 
-  const { lead_id, packet_id, outcome, notes } = await req.json();
+  const { lead_id, packet_id, outcome, notes, discovery } = await req.json();
   if (!lead_id || !outcome || !CALL_OUTCOMES.some((o) => o.value === outcome)) {
     return NextResponse.json({ error: "Invalid outcome" }, { status: 400 });
   }
@@ -32,6 +43,56 @@ export async function POST(req: NextRequest) {
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
+  // Persist anything the caller learned — the company never rediscovers it.
+  const d: Discovery = discovery || {};
+  const hasDiscovery = Object.values(d).some((v) => v && String(v).trim());
+  if (hasDiscovery) {
+    const clean = Object.fromEntries(
+      Object.entries(d)
+        .filter(([, v]) => v && String(v).trim())
+        .map(([k, v]) => [k, String(v).trim()])
+    );
+    await db.from("call_discoveries").insert({
+      lead_id,
+      call_id: call.id,
+      caller_id: callerId,
+      ...clean,
+    });
+
+    // A discovered name becomes a real contact, marked caller-discovered.
+    if (clean.owner_name) {
+      const { data: existing } = await db
+        .from("contacts")
+        .select("id")
+        .eq("lead_id", lead_id)
+        .ilike("full_name", clean.owner_name)
+        .limit(1);
+      const contactFields = {
+        full_name: clean.owner_name,
+        title: clean.title || null,
+        role_category: "owner",
+        direct_phone: clean.direct_number || null,
+        extension: clean.extension || null,
+        email: clean.email || null,
+        contact_source: "caller_discovered",
+        confidence: 0.9,
+        verified_status: "verified_by_live_call",
+        updated_at: new Date().toISOString(),
+      };
+      if (existing && existing.length > 0) {
+        await db.from("contacts").update(contactFields).eq("id", existing[0].id);
+      } else {
+        await db.from("contacts").insert({ lead_id, ...contactFields });
+      }
+    }
+
+    await logEvent("lead.discovery_logged", "lead", lead_id, {
+      call_id: call.id,
+      caller_id: callerId,
+      discovered: Object.keys(clean),
+    });
+  }
+
   if (packet_id) {
     await db
       .from("packet_leads")
@@ -50,7 +111,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  await db.from("leads").update({ status: "called" }).eq("id", lead_id);
+  const leadPatch: Record<string, unknown> = { status: "called" };
+  if (outcome === "do_not_call") leadPatch.do_not_call = true;
+  await db.from("leads").update(leadPatch).eq("id", lead_id);
 
   await logEvent("call.logged", "call", call.id, {
     lead_id,

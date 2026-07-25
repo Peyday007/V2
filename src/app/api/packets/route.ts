@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
     .select("id")
     .eq("campaign_id", campaign_id)
     .eq("status", "new")
+    .eq("do_not_call", false)
     .order("created_at")
     .limit(size);
   if (leadsErr) return NextResponse.json({ error: leadsErr.message }, { status: 500 });

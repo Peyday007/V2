@@ -22,7 +22,8 @@ export async function GET() {
       .from("leads")
       .select("*", { count: "exact", head: true })
       .eq("campaign_id", c.id)
-      .eq("status", "new");
+      .eq("status", "new")
+      .eq("do_not_call", false);
     result.push({ ...c, total_leads: total || 0, available_leads: available || 0 });
   }
   return NextResponse.json(result);
