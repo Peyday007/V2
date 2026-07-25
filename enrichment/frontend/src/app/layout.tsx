@@ -3,8 +3,8 @@ import "./globals.css";
 import Nav from "@/components/Nav";
 
 export const metadata: Metadata = {
-  title: "Dispatch Board",
-  description: "Cold-calling CRM",
+  title: "Enrichment Desk",
+  description: "Lead enrichment and decision-maker discovery",
 };
 
 export default function RootLayout({
@@ -16,9 +16,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         <Nav />
-        <main style={{ padding: "20px 24px" }}>
-          {children}
-        </main>
+        <main style={{ padding: "20px 24px" }}>{children}</main>
       </body>
     </html>
   );

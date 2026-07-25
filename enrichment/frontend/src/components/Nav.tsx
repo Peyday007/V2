@@ -2,17 +2,22 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { getToken, setToken } from "@/lib/api";
+import { useEffect, useState } from "react";
 
 const links = [
-  { href: "/", label: "Board" },
-  { href: "/dial", label: "Dial" },
-  { href: "/metrics", label: "Metrics" },
-  { href: "/admin/campaigns", label: "Campaigns" },
-  { href: "/admin/callers", label: "Callers" },
+  { href: "/", label: "Businesses" },
+  { href: "/import", label: "Import" },
 ];
 
 export default function Nav() {
   const pathname = usePathname();
+  const [loggedIn, setLoggedIn] = useState(false);
+
+  useEffect(() => {
+    setLoggedIn(!!getToken());
+  }, [pathname]);
+
   return (
     <nav
       style={{
@@ -36,18 +41,16 @@ export default function Nav() {
       <span
         style={{
           fontWeight: 700,
-          color: "var(--text)",
           marginRight: 28,
           fontSize: "0.95rem",
           textTransform: "uppercase",
           letterSpacing: "0.12em",
         }}
       >
-        Dispatch Board
+        Enrichment Desk
       </span>
       {links.map((l) => {
-        const active =
-          l.href === "/" ? pathname === "/" : pathname.startsWith(l.href);
+        const active = l.href === "/" ? pathname === "/" : pathname.startsWith(l.href);
         return (
           <Link
             key={l.href}
@@ -61,15 +64,26 @@ export default function Nav() {
               textTransform: "uppercase",
               letterSpacing: "0.1em",
               textDecoration: "none",
-              borderBottom: active
-                ? "2px solid var(--amber)"
-                : "2px solid transparent",
+              borderBottom: active ? "2px solid var(--amber)" : "2px solid transparent",
             }}
           >
             {l.label}
           </Link>
         );
       })}
+      <div style={{ flex: 1 }} />
+      {loggedIn && (
+        <button
+          className="btn-ghost"
+          style={{ padding: "4px 12px" }}
+          onClick={() => {
+            setToken(null);
+            window.location.href = "/";
+          }}
+        >
+          Sign out
+        </button>
+      )}
     </nav>
   );
 }

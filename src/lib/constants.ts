@@ -1,8 +1,9 @@
 export const SALES_STAGES = [
-  "New",
-  "Contacted",
-  "Appointment",
-  "Proposal",
+  "New Lead",
+  "Contact Attempted",
+  "Qualified",
+  "Discovery Booked",
+  "Discovery Completed",
   "Closed Won",
   "Closed Lost",
 ] as const;

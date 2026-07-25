@@ -11,6 +11,8 @@ type Deal = {
   stage: string;
   value: number | null;
   notes: string | null;
+  created_at: string;
+  leads: { phone: string | null; city: string | null; state: string | null } | null;
 };
 
 export default function KanbanBoard() {
@@ -20,6 +22,8 @@ export default function KanbanBoard() {
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<Deal | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [attack, setAttack] = useState("");
+  const [attackLoading, setAttackLoading] = useState(false);
 
   const stages = PIPELINES[pipeline];
 
@@ -27,7 +31,7 @@ export default function KanbanBoard() {
     setLoading(true);
     const { data } = await supabase()
       .from("deals")
-      .select("*")
+      .select("*, leads(phone, city, state)")
       .eq("pipeline", pipeline)
       .order("created_at", { ascending: false });
     setDeals((data as Deal[]) || []);
@@ -48,100 +52,171 @@ export default function KanbanBoard() {
     });
   }
 
+  async function whatToAttack() {
+    setAttackLoading(true);
+    const res = await fetch("/api/prioritize");
+    const j = await res.json();
+    setAttack(res.ok ? j.recommendation : j.error || "Failed");
+    setAttackLoading(false);
+  }
+
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        <h1>Board</h1>
-        <div style={{ display: "flex", gap: 4 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "calc(100vh - 105px)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+          marginBottom: 18,
+          flexShrink: 0,
+        }}
+      >
+        <h1>{pipeline === "sales" ? "Sales Board" : "Delivery Board"}</h1>
+        <div style={{ display: "flex", gap: 6 }}>
           {(Object.keys(PIPELINES) as Pipeline[]).map((p) => (
             <button
               key={p}
               className={p === pipeline ? "btn" : "btn-ghost"}
               onClick={() => setPipeline(p)}
-              style={{ textTransform: "capitalize" }}
+              style={{ padding: "5px 14px" }}
             >
               {p}
             </button>
           ))}
         </div>
         <div style={{ flex: 1 }} />
+        <button className="btn-ghost" onClick={whatToAttack} disabled={attackLoading}>
+          ⚡ {attackLoading ? "Thinking…" : "What to Attack Today"}
+        </button>
         <button className="btn" onClick={() => setShowNew(true)}>
-          + New deal
+          + New Deal
         </button>
       </div>
+
+      {attack && (
+        <div
+          className="card"
+          style={{ marginBottom: 16, borderColor: "var(--amber-dim)", flexShrink: 0 }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <h3 style={{ color: "var(--amber)" }}>What to Attack Today</h3>
+            <button
+              className="btn-ghost"
+              style={{ padding: "2px 10px" }}
+              onClick={() => setAttack("")}
+            >
+              ✕
+            </button>
+          </div>
+          <p style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem" }}>{attack}</p>
+        </div>
+      )}
 
       {loading ? (
         <p className="muted">Loading…</p>
       ) : (
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: `repeat(${stages.length}, minmax(220px, 1fr))`,
-            gap: 12,
+            display: "flex",
+            gap: 14,
             overflowX: "auto",
+            flex: 1,
+            minHeight: 0,
+            paddingBottom: 8,
           }}
         >
-          {stages.map((stage) => (
-            <div
-              key={stage}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => {
-                if (dragId) moveDeal(dragId, stage);
-                setDragId(null);
-              }}
-              style={{
-                background: "var(--bg-raised)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                padding: 10,
-                minHeight: 300,
-              }}
-            >
+          {stages.map((stage) => {
+            const inStage = deals.filter((d) => d.stage === stage);
+            return (
               <div
+                key={stage}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => {
+                  if (dragId) moveDeal(dragId, stage);
+                  setDragId(null);
+                }}
                 style={{
+                  background: "var(--bg-raised)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: 12,
+                  minWidth: 290,
+                  width: 290,
+                  flexShrink: 0,
                   display: "flex",
-                  justifyContent: "space-between",
-                  marginBottom: 10,
-                  padding: "0 4px",
+                  flexDirection: "column",
                 }}
               >
-                <span style={{ fontWeight: 600, fontSize: "0.85rem" }}>{stage}</span>
-                <span className="faint">
-                  {deals.filter((d) => d.stage === stage).length}
-                </span>
-              </div>
-              {deals
-                .filter((d) => d.stage === stage)
-                .map((d) => (
-                  <div
-                    key={d.id}
-                    draggable
-                    onDragStart={() => setDragId(d.id)}
-                    onClick={() => setEditing(d)}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 12,
+                    padding: "0 2px",
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
                     style={{
-                      background: "var(--bg)",
-                      border: "1px solid var(--border-strong)",
-                      borderRadius: 6,
-                      padding: 10,
-                      marginBottom: 8,
-                      cursor: "grab",
+                      fontWeight: 700,
+                      fontSize: "0.78rem",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.09em",
+                      color: "var(--text-dim)",
                     }}
                   >
-                    <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{d.name}</div>
-                    {d.value != null && (
-                      <div style={{ color: "var(--amber)", fontSize: "0.85rem" }}>
-                        ${Number(d.value).toLocaleString()}
-                      </div>
-                    )}
-                    {d.notes && (
-                      <div className="faint" style={{ marginTop: 4 }}>
-                        {d.notes.slice(0, 80)}
-                      </div>
-                    )}
-                  </div>
-                ))}
-            </div>
-          ))}
+                    {stage}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: "0.72rem",
+                      background: "var(--bg-hover)",
+                      color: "var(--text-dim)",
+                      borderRadius: 3,
+                      padding: "1px 8px",
+                    }}
+                  >
+                    {inStage.length}
+                  </span>
+                </div>
+
+                <div style={{ overflowY: "auto", flex: 1 }}>
+                  {inStage.length === 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        height: "100%",
+                        minHeight: 120,
+                        color: "var(--text-faint)",
+                        fontSize: "0.8rem",
+                      }}
+                    >
+                      empty
+                    </div>
+                  )}
+                  {inStage.map((d) => (
+                    <DealCard
+                      key={d.id}
+                      deal={d}
+                      stages={stages}
+                      onDragStart={() => setDragId(d.id)}
+                      onEdit={() => setEditing(d)}
+                      onAdvance={(next) => moveDeal(d.id, next)}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -160,6 +235,120 @@ export default function KanbanBoard() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function DealCard({
+  deal,
+  stages,
+  onDragStart,
+  onEdit,
+  onAdvance,
+}: {
+  deal: Deal;
+  stages: readonly string[];
+  onDragStart: () => void;
+  onEdit: () => void;
+  onAdvance: (next: string) => void;
+}) {
+  const idx = stages.indexOf(deal.stage);
+  const next = idx >= 0 && idx < stages.length - 1 ? stages[idx + 1] : null;
+  const terminal = deal.stage === "Closed Won" || deal.stage === "Closed Lost";
+  const phone = deal.leads?.phone;
+  const location = [deal.leads?.city, deal.leads?.state].filter(Boolean).join(", ");
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      style={{
+        background: "var(--bg)",
+        border: "1px solid var(--border-card)",
+        borderRadius: 6,
+        padding: 12,
+        marginBottom: 10,
+        cursor: "grab",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 8,
+          marginBottom: 6,
+        }}
+      >
+        <span style={{ fontWeight: 700, fontSize: "0.9rem", lineHeight: 1.35 }}>
+          {deal.name}
+        </span>
+        {deal.value != null && (
+          <span style={{ color: "var(--amber)", fontWeight: 700, whiteSpace: "nowrap" }}>
+            ${Number(deal.value).toLocaleString()}
+          </span>
+        )}
+      </div>
+
+      {deal.notes && (
+        <div
+          style={{
+            background: "var(--bg-inset)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            padding: "8px 10px",
+            fontSize: "0.78rem",
+            color: "var(--text-dim)",
+            marginBottom: 8,
+          }}
+        >
+          {deal.notes.slice(0, 140)}
+        </div>
+      )}
+
+      {phone && (
+        <a
+          href={`tel:${phone}`}
+          style={{
+            display: "block",
+            color: "var(--amber)",
+            fontWeight: 600,
+            fontSize: "0.85rem",
+            marginBottom: 4,
+          }}
+        >
+          {phone}
+        </a>
+      )}
+      {location && (
+        <div className="faint" style={{ marginBottom: 8 }}>
+          {location}
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+        {next && !terminal && (
+          <button
+            className="btn-ghost"
+            style={{ justifyContent: "center", padding: "6px 10px", fontSize: "0.72rem" }}
+            onClick={() => onAdvance(next)}
+          >
+            → {next}
+          </button>
+        )}
+        <button
+          className="btn-ghost"
+          style={{
+            justifyContent: "center",
+            padding: "6px 10px",
+            fontSize: "0.72rem",
+            borderColor: "var(--border)",
+            color: "var(--text-dim)",
+          }}
+          onClick={onEdit}
+        >
+          ✎ Edit
+        </button>
+      </div>
     </div>
   );
 }
@@ -221,7 +410,7 @@ function DealModal({
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
+        background: "rgba(0,0,0,0.65)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -231,9 +420,9 @@ function DealModal({
       <div
         className="card"
         onClick={(e) => e.stopPropagation()}
-        style={{ width: 440, maxWidth: "90vw" }}
+        style={{ width: 460, maxWidth: "90vw" }}
       >
-        <h2 style={{ marginBottom: 16 }}>{deal ? "Edit deal" : "New deal"}</h2>
+        <h2 style={{ marginBottom: 16 }}>{deal ? "Edit Deal" : "New Deal"}</h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <input
             placeholder="Deal name"
