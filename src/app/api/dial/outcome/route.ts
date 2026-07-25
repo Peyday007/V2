@@ -2,9 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
 import { logEvent } from "@/lib/events";
-import { CALL_OUTCOMES } from "@/lib/constants";
+import { CALL_OUTCOMES, SALES_STAGES } from "@/lib/constants";
 
 const DM_OUTCOMES = new Set(["dm_conversation", "appointment_set"]);
+
+// Outcomes advance the lead's board stage (forward only, never backward).
+const STAGE_FOR_OUTCOME: Record<string, string> = {
+  no_answer: "Contact Attempted",
+  voicemail: "Contact Attempted",
+  gatekeeper: "Contact Attempted",
+  transferred: "Contact Attempted",
+  callback: "Contact Attempted",
+  dm_conversation: "Qualified",
+  appointment_set: "Discovery Booked",
+  not_interested: "Closed Lost",
+  bad_number: "Closed Lost",
+  do_not_call: "Closed Lost",
+};
 
 type Discovery = {
   owner_name?: string;
@@ -113,6 +127,25 @@ export async function POST(req: NextRequest) {
 
   const leadPatch: Record<string, unknown> = { status: "called" };
   if (outcome === "do_not_call") leadPatch.do_not_call = true;
+
+  const target = STAGE_FOR_OUTCOME[outcome];
+  if (target) {
+    const { data: leadRow } = await db
+      .from("leads")
+      .select("stage")
+      .eq("id", lead_id)
+      .single();
+    const stages = SALES_STAGES as readonly string[];
+    const current = leadRow?.stage || "New Lead";
+    if (target === "Closed Lost" || stages.indexOf(target) > stages.indexOf(current)) {
+      leadPatch.stage = target;
+      await logEvent("lead.stage_changed", "lead", lead_id, {
+        from: current,
+        to: target,
+        via: `call outcome ${outcome}`,
+      });
+    }
+  }
   await db.from("leads").update(leadPatch).eq("id", lead_id);
 
   await logEvent("call.logged", "call", call.id, {

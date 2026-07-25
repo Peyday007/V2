@@ -2,7 +2,7 @@
 
 Cold-calling CRM for a small team selling AI Receptionist services to roofing companies.
 
-- **Board** (`/`) — Kanban for sales + delivery pipelines (drag deals between stages)
+- **Board** (`/`) — the Sales board shows your **leads** as cards moving through New Lead → Contact Attempted → Qualified → Discovery Booked → Discovery Completed → Closed Won/Lost. Call outcomes logged in the dialer advance the card automatically. The Delivery board tracks won deals through onboarding.
 - **Dial** (`/dial`) — caller signs in with a 6-digit PIN, works one lead at a time: sees who to ask for (recommended calling approach), known decision-maker contacts, previous call history, logs outcomes with one click, and saves anything learned on the call (names, extensions, callback times, transfer instructions) so it's never rediscovered
 - **Metrics** (`/metrics`) — DM-conversations-per-100-dials and related rates
 - **Campaigns** (`/admin/campaigns`) — create campaigns, generate locked lead packets per caller, "What to Attack Today" AI prioritizer
@@ -28,6 +28,7 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 3. Open the file `supabase/migrations/0001_core.sql` from this repo, copy ALL of it, paste it into the editor, click **Run** (bottom right). You should see "Success".
 4. Repeat with `supabase/migrations/0002_events.sql` (new query, paste, Run).
 5. Repeat with `supabase/migrations/0003_enrichment.sql` (new query, paste, Run).
+6. Repeat with `supabase/migrations/0004_lead_stages.sql` (new query, paste, Run).
 
 ### 3. Get your Supabase keys
 
