@@ -1,0 +1,14 @@
+{
+  "campaign": "Metro Detroit Roofing",
+  "keywords": ["roofing contractor", "roofing company", "roof repair"],
+  "locations": [
+    "Troy, MI",
+    "Warren, MI",
+    "Sterling Heights, MI",
+    "Livonia, MI",
+    "Dearborn, MI",
+    "Royal Oak, MI"
+  ],
+  "perComboLimit": 20,
+  "targetNewLeads": 50
+}
