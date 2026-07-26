@@ -375,6 +375,15 @@ export default function DialPage() {
             <p style={{ fontSize: "0.9rem", lineHeight: 1.5 }}>{objective}</p>
           </div>
 
+          {data.aiTip && (
+            <div className="card">
+              <h3 style={{ marginBottom: 8, color: "var(--text-dim)" }}>AI call tip</h3>
+              <p style={{ whiteSpace: "pre-wrap", fontSize: "0.88rem", lineHeight: 1.6 }}>
+                {data.aiTip}
+              </p>
+            </div>
+          )}
+
           {(history.length > 0 || data.pendingCallback) && (
             <div className="card">
               <h3 style={{ marginBottom: 8 }}>Previous activity</h3>
@@ -547,16 +556,6 @@ export default function DialPage() {
             </p>
           </div>
 
-          {data.aiTip && (
-            <details className="card">
-              <summary style={{ cursor: "pointer", fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-dim)", fontWeight: 700 }}>
-                AI call tip
-              </summary>
-              <p className="muted" style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem", marginTop: 8, lineHeight: 1.6 }}>
-                {data.aiTip}
-              </p>
-            </details>
-          )}
         </div>
       </div>
 
