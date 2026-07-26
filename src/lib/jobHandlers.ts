@@ -763,6 +763,104 @@ const enrichLead: Handler = async (job) => {
     status: finalStatus,
     steps: stepsAttempted,
   });
+
+  // Hand off to auto-assignment so packets build themselves.
+  const campaignId = job.payload.campaign_id ? String(job.payload.campaign_id) : null;
+  if (campaignId) {
+    await enqueue({
+      type: "auto_assign_packets",
+      payload: { campaign_id: campaignId },
+      // One pending assignment sweep at a time per campaign.
+      idempotencyKey: `auto_assign_packets:${campaignId}:${Math.floor(Date.now() / 60000)}`,
+      campaignId,
+      priority: 300,
+      runAfter: new Date(Date.now() + 5000),
+    });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* 7. auto_assign_packets — build caller packets with no manual step   */
+/* ------------------------------------------------------------------ */
+
+const autoAssignPackets: Handler = async (job) => {
+  const campaignId = String(job.payload.campaign_id);
+  const db = supabaseAdmin();
+  const campaign = await getCampaign(campaignId);
+  if (!campaign.auto_assign_packets) return;
+
+  const { data: callers } = await db
+    .from("callers")
+    .select("id, name")
+    .eq("active", true)
+    .order("created_at");
+  if (!callers || callers.length === 0) return; // nobody to assign to yet
+
+  const packetSize = Math.max(1, campaign.packet_size || 50);
+
+  // Distribute ready leads evenly, giving each caller work in turn.
+  for (const caller of callers) {
+    const { data: ready } = await db
+      .from("leads")
+      .select("id")
+      .eq("sourcing_campaign_id", campaignId)
+      .eq("status", "new")
+      .eq("machine_status", "ready_for_calling")
+      .eq("do_not_call", false)
+      .is("archived_at", null)
+      .order("created_at")
+      .limit(packetSize);
+
+    if (!ready || ready.length === 0) break;
+
+    // Don't pile a second packet on a caller who still has open work.
+    const { count: openPackets } = await db
+      .from("packets")
+      .select("*", { count: "exact", head: true })
+      .eq("caller_id", caller.id)
+      .eq("status", "open");
+    if ((openPackets ?? 0) > 0) continue;
+
+    const packetName = `${caller.name} — ${new Date().toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    })} (${ready.length} leads)`;
+
+    const { data: packet, error: pErr } = await db
+      .from("packets")
+      .insert({
+        sourcing_campaign_id: campaignId,
+        caller_id: caller.id,
+        name: packetName,
+      })
+      .select("id")
+      .single();
+    if (pErr) throw new Error(`packet insert failed: ${pErr.message}`);
+
+    const rows = ready.map((l, i) => ({
+      packet_id: packet.id,
+      lead_id: l.id,
+      position: i + 1,
+    }));
+    const { error: plErr } = await db.from("packet_leads").insert(rows);
+    if (plErr) {
+      await db.from("packets").delete().eq("id", packet.id);
+      throw new Error(`packet_leads insert failed: ${plErr.message}`);
+    }
+
+    await db
+      .from("leads")
+      .update({ status: "in_packet", machine_status: "assigned_to_packet" })
+      .in("id", ready.map((l) => l.id));
+
+    await bumpCampaign(campaignId, { packets_created: 1 });
+    await logEvent("packet.created", "packet", packet.id, {
+      campaign_id: campaignId,
+      caller_id: caller.id,
+      lead_count: ready.length,
+      auto: true,
+    });
+  }
 };
 
 /* ------------------------------------------------------------------ */
@@ -775,4 +873,5 @@ export const HANDLERS: Record<JobType, Handler> = {
   qualify_lead: qualifyLead,
   queue_enrichment: queueEnrichment,
   enrich_lead: enrichLead,
+  auto_assign_packets: autoAssignPackets,
 };

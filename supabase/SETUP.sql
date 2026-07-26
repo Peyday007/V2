@@ -225,6 +225,13 @@ create table if not exists sourcing_campaigns (
   updated_at timestamptz not null default now()
 );
 
+alter table sourcing_campaigns
+  add column if not exists auto_assign_packets boolean not null default true;
+alter table sourcing_campaigns
+  add column if not exists packet_size integer not null default 50;
+alter table sourcing_campaigns
+  add column if not exists packets_created integer not null default 0;
+
 alter table sourcing_campaigns drop constraint if exists sourcing_campaigns_status_check;
 alter table sourcing_campaigns add constraint sourcing_campaigns_status_check check (
   status in ('draft','running','paused','completed','stopped','failed')

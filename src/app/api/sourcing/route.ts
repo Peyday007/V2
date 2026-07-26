@@ -86,8 +86,10 @@ export async function POST(req: NextRequest) {
     max_review_count: toNumber(body.max_review_count),
     require_website: !!body.require_website,
     exclude_franchises: body.exclude_franchises !== false,
-    max_api_requests: toNumber(body.max_api_requests) ?? 200,
+    max_api_requests: toNumber(body.max_api_requests) ?? 60,
     daily_api_request_cap: toNumber(body.daily_api_request_cap) ?? 500,
+    auto_assign_packets: body.auto_assign_packets !== false,
+    packet_size: toNumber(body.packet_size) ?? 50,
     status: "draft",
   };
 

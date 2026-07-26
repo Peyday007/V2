@@ -3,14 +3,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+// Admin console only. The caller dialer lives at /dial with its own chrome
+// and is intentionally NOT linked from here.
 const links = [
   { href: "/", label: "Board" },
-  { href: "/dial", label: "Dial" },
-  { href: "/metrics", label: "Metrics" },
   { href: "/admin/sourcing", label: "Sourcing" },
-  { href: "/admin/campaigns", label: "Campaigns" },
-  { href: "/admin/import", label: "Import" },
+  { href: "/metrics", label: "Metrics" },
   { href: "/admin/callers", label: "Callers" },
+  { href: "/admin/campaigns", label: "Packets" },
+  { href: "/admin/import", label: "Import" },
 ];
 
 export default function Nav() {

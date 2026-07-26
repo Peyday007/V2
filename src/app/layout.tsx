@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Nav from "@/components/Nav";
 
 export const metadata: Metadata = {
   title: "Dispatch Board",
   description: "Cold-calling CRM",
 };
 
+// Root layout only. The admin console and the caller app each supply their
+// own chrome via route groups, so callers never see admin navigation.
 export default function RootLayout({
   children,
 }: {
@@ -14,12 +15,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <Nav />
-        <main style={{ padding: "20px 24px" }}>
-          {children}
-        </main>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

@@ -416,15 +416,15 @@ function ReleaseAndPacket({
 
   return (
     <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber-dim)" }}>
-      <h3 style={{ marginBottom: 8, color: "var(--amber)" }}>Get these leads calling</h3>
+      <h3 style={{ marginBottom: 8, color: "var(--amber)" }}>Caller packets</h3>
       <p className="faint" style={{ marginBottom: 12 }}>
-        <strong>{readyCount}</strong> ready for calling. Step 1 processes generated
-        businesses and attaches a &quot;who to ask for&quot; instruction. Step 2 assigns
-        them to a caller.
+        Packets are built and assigned automatically as leads finish processing.
+        <strong> {readyCount}</strong> ready and not yet assigned. Use these only if
+        you want to force it along or assign a specific caller yourself.
       </p>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <button className="btn-ghost" onClick={release} disabled={busy}>
-          1 · Release leads to calling
+          Reprocess stuck leads
         </button>
         <select
           value={callerId}
@@ -450,7 +450,7 @@ function ReleaseAndPacket({
           onClick={makePacket}
           disabled={busy || !callerId || readyCount === 0}
         >
-          2 · Generate packet
+          Assign manually
         </button>
       </div>
       {callers.length === 0 && (
@@ -512,15 +512,18 @@ function CampaignForm({
     state: "",
     zips: "",
     search_terms: "",
-    target_lead_count: "500",
-    min_rating: "",
+    target_lead_count: "300",
+    packet_size: "50",
+    auto_assign_packets: true,
+    min_rating: "3.5",
     min_review_count: "",
     max_review_count: "",
-    max_api_requests: "200",
+    max_api_requests: "60",
     require_website: false,
     exclude_franchises: true,
   });
   const [picked, setPicked] = useState<string[]>([]);
+  const [advanced, setAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -649,74 +652,132 @@ function CampaignForm({
             value={form.zips}
             onChange={(e) => set("zips", e.target.value)}
           />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <label className="faint">
-              Target leads
-              <input
-                type="number"
-                value={form.target_lead_count}
-                onChange={(e) => set("target_lead_count", e.target.value)}
-              />
-            </label>
-            <label className="faint">
-              Max API requests
-              <input
-                type="number"
-                value={form.max_api_requests}
-                onChange={(e) => set("max_api_requests", e.target.value)}
-              />
-            </label>
-            <label className="faint">
-              Min rating
-              <input
-                type="number"
-                step="0.1"
-                placeholder="any"
-                value={form.min_rating}
-                onChange={(e) => set("min_rating", e.target.value)}
-              />
-            </label>
-            <label className="faint">
-              Min reviews
-              <input
-                type="number"
-                placeholder="any"
-                value={form.min_review_count}
-                onChange={(e) => set("min_review_count", e.target.value)}
-              />
-            </label>
-            <label className="faint">
-              Max reviews
-              <input
-                type="number"
-                placeholder="any"
-                value={form.max_review_count}
-                onChange={(e) => set("max_review_count", e.target.value)}
-              />
-            </label>
+          <div
+            style={{
+              background: "var(--bg-inset)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "10px 12px",
+            }}
+          >
+            <p style={{ fontSize: "0.8rem", marginBottom: 4 }}>
+              <strong style={{ color: "var(--amber)" }}>Runs on its own.</strong> The
+              engine finds businesses, dedupes them, works out who to ask for, and
+              hands finished packets to your active callers automatically.
+            </p>
+            <p className="faint">
+              Defaults: {form.target_lead_count} leads, {form.max_api_requests} max API
+              requests, 3.5★ minimum, franchises excluded, packets of{" "}
+              {form.packet_size}.
+            </p>
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }} className="faint">
-            <input
-              type="checkbox"
-              checked={form.require_website}
-              onChange={(e) => set("require_website", e.target.checked)}
-              style={{ width: "auto" }}
-            />
-            Require a website
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8 }} className="faint">
-            <input
-              type="checkbox"
-              checked={form.exclude_franchises}
-              onChange={(e) => set("exclude_franchises", e.target.checked)}
-              style={{ width: "auto" }}
-            />
-            Exclude franchises / big-box chains
-          </label>
-          <p className="faint">
-            Each API request returns up to 20 businesses and costs money on your
-            Google account. The request cap is a hard stop.
-          </p>
+
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ alignSelf: "flex-start", padding: "4px 12px" }}
+            onClick={() => setAdvanced(!advanced)}
+          >
+            {advanced ? "− Hide" : "+ Show"} advanced settings
+          </button>
+
+          {advanced && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <label className="faint">
+                  Target leads
+                  <input
+                    type="number"
+                    value={form.target_lead_count}
+                    onChange={(e) => set("target_lead_count", e.target.value)}
+                  />
+                </label>
+                <label className="faint">
+                  Max API requests
+                  <input
+                    type="number"
+                    value={form.max_api_requests}
+                    onChange={(e) => set("max_api_requests", e.target.value)}
+                  />
+                </label>
+                <label className="faint">
+                  Leads per packet
+                  <input
+                    type="number"
+                    value={form.packet_size}
+                    onChange={(e) => set("packet_size", e.target.value)}
+                  />
+                </label>
+                <label className="faint">
+                  Min rating
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={form.min_rating}
+                    onChange={(e) => set("min_rating", e.target.value)}
+                  />
+                </label>
+                <label className="faint">
+                  Min reviews
+                  <input
+                    type="number"
+                    placeholder="any"
+                    value={form.min_review_count}
+                    onChange={(e) => set("min_review_count", e.target.value)}
+                  />
+                </label>
+                <label className="faint">
+                  Max reviews
+                  <input
+                    type="number"
+                    placeholder="any"
+                    value={form.max_review_count}
+                    onChange={(e) => set("max_review_count", e.target.value)}
+                  />
+                </label>
+              </div>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
+                className="faint"
+              >
+                <input
+                  type="checkbox"
+                  checked={form.auto_assign_packets}
+                  onChange={(e) => set("auto_assign_packets", e.target.checked)}
+                  style={{ width: "auto" }}
+                />
+                Automatically build and assign caller packets
+              </label>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
+                className="faint"
+              >
+                <input
+                  type="checkbox"
+                  checked={form.require_website}
+                  onChange={(e) => set("require_website", e.target.checked)}
+                  style={{ width: "auto" }}
+                />
+                Require a website
+              </label>
+              <label
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
+                className="faint"
+              >
+                <input
+                  type="checkbox"
+                  checked={form.exclude_franchises}
+                  onChange={(e) => set("exclude_franchises", e.target.checked)}
+                  style={{ width: "auto" }}
+                />
+                Exclude franchises / big-box chains
+              </label>
+              <p className="faint">
+                Each API request returns up to 20 businesses and costs money on your
+                Google account. The request cap is a hard stop.
+              </p>
+            </>
+          )}
           {error && <p style={{ color: "var(--red)" }}>{error}</p>}
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
