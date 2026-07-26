@@ -505,31 +505,21 @@ function CampaignForm({
   onClose: () => void;
   onCreated: (id: string) => void;
 }) {
-  const [form, setForm] = useState({
-    name: "",
-    industry: "",
-    city: "",
-    state: "",
-    zips: "",
-    search_terms: "",
-    target_lead_count: "300",
-    packet_size: "50",
-    auto_assign_packets: true,
-    min_rating: "3.5",
-    min_review_count: "",
-    max_review_count: "",
-    max_api_requests: "60",
-    require_website: false,
-    exclude_franchises: true,
-  });
   const [picked, setPicked] = useState<string[]>([]);
-  const [advanced, setAdvanced] = useState(false);
+  const [city, setCity] = useState("");
+  const [state, setState] = useState("");
+  const [target, setTarget] = useState("300");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  function set(k: string, v: string | boolean) {
-    setForm({ ...form, [k]: v });
-  }
+  const label =
+    picked.length === 1
+      ? INDUSTRIES.find((i) => i.key === picked[0])!.label
+      : picked.length > 1
+        ? "Home Services"
+        : "";
+
+  const ready = picked.length > 0 && (city.trim() || state.trim());
 
   async function save() {
     setSaving(true);
@@ -537,7 +527,13 @@ function CampaignForm({
     const res = await fetch("/api/sourcing", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
+      body: JSON.stringify({
+        industry: label,
+        search_terms: searchTermsFor(picked),
+        city,
+        state,
+        target_lead_count: Number(target) || 300,
+      }),
     });
     const j = await res.json();
     if (!res.ok) {
@@ -545,6 +541,7 @@ function CampaignForm({
       setSaving(false);
       return;
     }
+    if (j.start_error) setError(j.start_error);
     onCreated(j.campaign.id);
   }
 
@@ -568,19 +565,14 @@ function CampaignForm({
         onClick={(e) => e.stopPropagation()}
         style={{ width: 560, maxWidth: "94vw" }}
       >
-        <h2 style={{ marginBottom: 14 }}>New Sourcing Campaign</h2>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <input
-            placeholder="Campaign name (e.g. Metro Detroit Roofing)"
-            value={form.name}
-            onChange={(e) => set("name", e.target.value)}
-            autoFocus
-          />
+        <h2 style={{ marginBottom: 4 }}>Generate Leads</h2>
+        <p className="faint" style={{ marginBottom: 16 }}>
+          Pick the trades and where. Everything after that runs by itself.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <p className="faint" style={{ marginBottom: 6 }}>
-              Pick the home-service trades to target. Each one adds its search
-              terms below — select as many as you want.
-            </p>
+            <h3 style={{ marginBottom: 8 }}>1 · Which trades?</h3>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
               {INDUSTRIES.map((ind) => {
                 const on = picked.includes(ind.key);
@@ -589,24 +581,15 @@ function CampaignForm({
                     key={ind.key}
                     type="button"
                     title={ind.whyFit}
-                    onClick={() => {
-                      const next = on
-                        ? picked.filter((k) => k !== ind.key)
-                        : [...picked, ind.key];
-                      setPicked(next);
-                      setForm({
-                        ...form,
-                        search_terms: searchTermsFor(next).join("\n"),
-                        industry:
-                          next.length === 1
-                            ? INDUSTRIES.find((i) => i.key === next[0])!.label
-                            : next.length > 1
-                              ? "Home Services"
-                              : "",
-                      });
-                    }}
+                    onClick={() =>
+                      setPicked(
+                        on
+                          ? picked.filter((k) => k !== ind.key)
+                          : [...picked, ind.key]
+                      )
+                    }
                     style={{
-                      padding: "4px 10px",
+                      padding: "5px 11px",
                       borderRadius: 3,
                       fontSize: "0.72rem",
                       fontWeight: 700,
@@ -623,170 +606,61 @@ function CampaignForm({
               })}
             </div>
           </div>
-          <textarea
-            placeholder="Search terms, one per line. Pick trades above to fill this automatically, or type your own."
-            rows={5}
-            value={form.search_terms}
-            onChange={(e) => set("search_terms", e.target.value)}
-          />
-          <input
-            placeholder="Industry label (auto-filled from trades above)"
-            value={form.industry}
-            onChange={(e) => set("industry", e.target.value)}
-          />
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
-            <input
-              placeholder="City / metro (e.g. Detroit)"
-              value={form.city}
-              onChange={(e) => set("city", e.target.value)}
-            />
-            <input
-              placeholder="State (MI)"
-              value={form.state}
-              onChange={(e) => set("state", e.target.value)}
-            />
-          </div>
-          <textarea
-            placeholder="Optional: ZIP codes, comma separated. More ZIPs = better coverage than one city search."
-            rows={2}
-            value={form.zips}
-            onChange={(e) => set("zips", e.target.value)}
-          />
-          <div
-            style={{
-              background: "var(--bg-inset)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              padding: "10px 12px",
-            }}
-          >
-            <p style={{ fontSize: "0.8rem", marginBottom: 4 }}>
-              <strong style={{ color: "var(--amber)" }}>Runs on its own.</strong> The
-              engine finds businesses, dedupes them, works out who to ask for, and
-              hands finished packets to your active callers automatically.
-            </p>
-            <p className="faint">
-              Defaults: {form.target_lead_count} leads, {form.max_api_requests} max API
-              requests, 3.5★ minimum, franchises excluded, packets of{" "}
-              {form.packet_size}.
-            </p>
+
+          <div>
+            <h3 style={{ marginBottom: 8 }}>2 · Where?</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+              <input
+                placeholder="City or metro (e.g. Detroit)"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+              />
+              <input
+                placeholder="State (MI)"
+                value={state}
+                onChange={(e) => setState(e.target.value)}
+                maxLength={2}
+              />
+            </div>
           </div>
 
-          <button
-            type="button"
-            className="btn-ghost"
-            style={{ alignSelf: "flex-start", padding: "4px 12px" }}
-            onClick={() => setAdvanced(!advanced)}
-          >
-            {advanced ? "− Hide" : "+ Show"} advanced settings
-          </button>
+          <div>
+            <h3 style={{ marginBottom: 8 }}>3 · How many leads?</h3>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+              {["100", "300", "500", "1000"].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={target === n ? "btn" : "btn-ghost"}
+                  style={{ padding: "5px 14px" }}
+                  onClick={() => setTarget(n)}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <input
+              type="number"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              min={1}
+            />
+          </div>
 
-          {advanced && (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <label className="faint">
-                  Target leads
-                  <input
-                    type="number"
-                    value={form.target_lead_count}
-                    onChange={(e) => set("target_lead_count", e.target.value)}
-                  />
-                </label>
-                <label className="faint">
-                  Max API requests
-                  <input
-                    type="number"
-                    value={form.max_api_requests}
-                    onChange={(e) => set("max_api_requests", e.target.value)}
-                  />
-                </label>
-                <label className="faint">
-                  Leads per packet
-                  <input
-                    type="number"
-                    value={form.packet_size}
-                    onChange={(e) => set("packet_size", e.target.value)}
-                  />
-                </label>
-                <label className="faint">
-                  Min rating
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={form.min_rating}
-                    onChange={(e) => set("min_rating", e.target.value)}
-                  />
-                </label>
-                <label className="faint">
-                  Min reviews
-                  <input
-                    type="number"
-                    placeholder="any"
-                    value={form.min_review_count}
-                    onChange={(e) => set("min_review_count", e.target.value)}
-                  />
-                </label>
-                <label className="faint">
-                  Max reviews
-                  <input
-                    type="number"
-                    placeholder="any"
-                    value={form.max_review_count}
-                    onChange={(e) => set("max_review_count", e.target.value)}
-                  />
-                </label>
-              </div>
-              <label
-                style={{ display: "flex", alignItems: "center", gap: 8 }}
-                className="faint"
-              >
-                <input
-                  type="checkbox"
-                  checked={form.auto_assign_packets}
-                  onChange={(e) => set("auto_assign_packets", e.target.checked)}
-                  style={{ width: "auto" }}
-                />
-                Automatically build and assign caller packets
-              </label>
-              <label
-                style={{ display: "flex", alignItems: "center", gap: 8 }}
-                className="faint"
-              >
-                <input
-                  type="checkbox"
-                  checked={form.require_website}
-                  onChange={(e) => set("require_website", e.target.checked)}
-                  style={{ width: "auto" }}
-                />
-                Require a website
-              </label>
-              <label
-                style={{ display: "flex", alignItems: "center", gap: 8 }}
-                className="faint"
-              >
-                <input
-                  type="checkbox"
-                  checked={form.exclude_franchises}
-                  onChange={(e) => set("exclude_franchises", e.target.checked)}
-                  style={{ width: "auto" }}
-                />
-                Exclude franchises / big-box chains
-              </label>
-              <p className="faint">
-                Each API request returns up to 20 businesses and costs money on your
-                Google account. The request cap is a hard stop.
-              </p>
-            </>
-          )}
           {error && <p style={{ color: "var(--red)" }}>{error}</p>}
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-          <button className="btn" onClick={save} disabled={saving || !form.name.trim()}>
-            {saving ? "Creating…" : "Create campaign"}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 20, alignItems: "center" }}>
+          <button className="btn" onClick={save} disabled={saving || !ready}>
+            {saving ? "Starting…" : "Generate leads"}
           </button>
           <button className="btn-ghost" onClick={onClose}>
             Cancel
           </button>
+          <div style={{ flex: 1 }} />
+          {!ready && (
+            <span className="faint">Pick a trade and a location</span>
+          )}
         </div>
       </div>
     </div>

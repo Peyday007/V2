@@ -226,3 +226,26 @@ describe("machine statuses", () => {
     expect(needsEnrichmentQueue("banana")).toBe(false);
   });
 });
+
+import { requestBudgetFor } from "../src/lib/budget";
+
+describe("API request budget derived from lead target", () => {
+  it("scales with the target so the user never sets it", () => {
+    expect(requestBudgetFor(100)).toBe(17);
+    expect(requestBudgetFor(300)).toBe(50);
+    expect(requestBudgetFor(500)).toBe(84);
+  });
+
+  it("has a floor so tiny campaigns still run", () => {
+    expect(requestBudgetFor(1)).toBe(5);
+    expect(requestBudgetFor(0)).toBe(5);
+  });
+
+  it("has a hard ceiling so a typo cannot authorize runaway spend", () => {
+    expect(requestBudgetFor(1_000_000)).toBe(400);
+  });
+
+  it("handles garbage input", () => {
+    expect(requestBudgetFor(NaN)).toBe(5);
+  });
+});
