@@ -78,6 +78,12 @@ export async function GET() {
       likelyCause = "Billing is not enabled on the Google Cloud project.";
     } else if (reason) {
       likelyCause = `Google reason code: ${reason}`;
+    } else if (details.length === 0) {
+      // A bare PERMISSION_DENIED with no ErrorInfo detail is what Places API
+      // (New) returns when the project has no active billing — including a
+      // free trial that still requires prepayment.
+      likelyCause =
+        "Google returned a bare PERMISSION_DENIED with no reason code. For Places API (New) this almost always means BILLING IS NOT ACTIVE on the project — including a free trial that still requires prepayment. Go to Google Cloud Console → Billing, complete any outstanding prepayment, and confirm a billing account is linked to this project. If you only just changed the key's API restrictions, also give it 2-5 minutes to propagate and test again.";
     }
   }
 
