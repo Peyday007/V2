@@ -11,6 +11,7 @@ import {
 import { DELIVERY_STAGES } from "@/lib/constants";
 import { MACHINE_STATUS_LABELS, MachineStatus, IN_FLIGHT } from "@/lib/machineStatus";
 import { useLeads, Lead, ContactLite } from "@/hooks/useLeads";
+import EventHistory from "@/components/EventHistory";
 
 type Pipeline = "sales" | "delivery";
 
@@ -785,6 +786,17 @@ function LeadModal({
           />
           {error && <p style={{ color: "var(--red)" }}>{error}</p>}
         </div>
+        {lead && (
+          <div style={{ marginTop: 16 }}>
+            <EventHistory
+              filter={{ lead_id: lead.id }}
+              limit={30}
+              title="Lead history"
+              compact
+            />
+          </div>
+        )}
+
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
           <button
             className="btn"

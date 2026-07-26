@@ -34,6 +34,7 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 8. Repeat with `supabase/migrations/0006_engine_foundation.sql` (new query, paste, Run).
 9. Repeat with `supabase/migrations/0008_packets_from_sourcing.sql` (new query, paste, Run).
 9b. Repeat with `supabase/migrations/0011_owner_intel.sql` (new query, paste, Run).
+9c. Repeat with `supabase/migrations/0012_event_memory.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -124,4 +125,20 @@ node scripts/enrich-leads.mjs "Metro Detroit Roofing" 5
 
 ## Organizational memory
 
-Every meaningful action writes to an append-only `events` table (lead created/enriched with before+after, packet lifecycle, calls logged, caller activated/revoked, deal stage changes). The database blocks updates/deletes on it.
+Every meaningful action writes to an append-only `events` table. The database
+blocks UPDATE and DELETE on it, so history can never be quietly rewritten.
+
+Each event carries typed relationships (`lead_id`, `packet_id`, `call_id`,
+`campaign_id`, `actor_caller_id`), what changed (`previous_value` /
+`new_value`), who did it (`actor_type`), where it came from (`source`), how
+sure we are (`confidence`, `verification_status`), when it happened
+(`occurred_at`), and a `correlation_id` grouping every event produced by one
+workflow — so a single logged call and everything it taught us can be read
+back as one story.
+
+**Where to look:** the **History** tab shows the whole feed and can be scoped
+to one lead, caller, packet, call, campaign, or workflow. Opening a lead on the
+board shows that lead's own history inline.
+
+Writing an event never breaks the action it records: failures are logged, not
+thrown.

@@ -12,6 +12,7 @@ const links = [
   { href: "/admin/callers", label: "Callers" },
   { href: "/admin/campaigns", label: "Packets" },
   { href: "/admin/import", label: "Import" },
+  { href: "/admin/history", label: "History" },
 ];
 
 export default function Nav() {

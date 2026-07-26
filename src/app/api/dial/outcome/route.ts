@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
-import { logEvent } from "@/lib/events";
+import { eventChain } from "@/lib/events";
 import { missingRequired, DM_REACHED_OUTCOMES, OUTCOME_FORM_MAP } from "@/lib/outcomeForms";
 import { nextAttemptAt } from "@/lib/callWindows";
 import { coerceStage, nextStageAfterOutcome } from "@/lib/stages";
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   const db = supabase();
   const { data: lead } = await db
     .from("leads")
-    .select("id, attempt_count, pipeline_stage, normalized_phone, owner_reached")
+    .select("id, attempt_count, pipeline_stage, normalized_phone, owner_reached, owner_name, owner_title, gatekeeper_name, best_call_day, best_call_time, direct_number, extension, answering_setup, existing_provider, other_decision_maker")
     .eq("id", lead_id)
     .single();
   if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
@@ -88,6 +88,24 @@ export async function POST(req: NextRequest) {
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // One correlation id ties every fact learned on this call together.
+  const chain = eventChain({
+    actorType: "caller",
+    actorCallerId: callerId,
+    source: "ui",
+  });
+  await chain.record({
+    type: "call.outcome_recorded",
+    entityType: "call",
+    entityId: call.id,
+    leadId: lead_id,
+    packetId: packet_id || null,
+    callId: call.id,
+    newValue: { outcome, spoke_with_role: spokeWithRole, reached_dm: reachedDm },
+    metadata: { fields: Object.keys(values), notes: notes || values.note || null },
+    verificationStatus: "verified",
+  });
 
   /* ---------------- durable lead intelligence ---------------- */
   const leadPatch: Record<string, unknown> = {
@@ -157,6 +175,18 @@ export async function POST(req: NextRequest) {
       requested_by_role: values.requested_by_role || null,
       reason: values.reason || null,
     });
+    await chain.record({
+      type: "callback.scheduled",
+      entityType: "callback",
+      leadId: lead_id,
+      callId: call.id,
+      newValue: {
+        scheduled_for: explicitTime.toISOString(),
+        requested_by_name: values.requested_by_name || null,
+        requested_by_role: values.requested_by_role || null,
+      },
+      metadata: { reason: values.reason || null },
+    });
   }
   if (outcome === "not_interested" && values.try_again === "Yes" && values.follow_up_date) {
     explicitTime = combine(values.follow_up_date, "09:00");
@@ -187,6 +217,25 @@ export async function POST(req: NextRequest) {
       confirmation_method: values.confirmation_method || null,
       notes: values.note || null,
     });
+    await chain.record({
+      type: "appointment.booked",
+      entityType: "appointment",
+      leadId: lead_id,
+      callId: call.id,
+      newValue: {
+        decision_maker_name: values.dm_name,
+        decision_maker_role: values.dm_role,
+        scheduled_for: when.toISOString(),
+        timezone: values.timezone || null,
+      },
+      metadata: {
+        product: values.product,
+        pain_point: values.pain_point,
+        confirmation_method: values.confirmation_method,
+      },
+      confidence: 1,
+      verificationStatus: "verified",
+    });
   }
 
   /* ---------------- do not call: suppress everywhere ---------------- */
@@ -201,6 +250,16 @@ export async function POST(req: NextRequest) {
     });
     // Pull it out of every open packet so nobody dials it again.
     await db.from("packet_leads").update({ status: "done" }).eq("lead_id", lead_id);
+    await chain.record({
+      type: "lead.suppressed",
+      entityType: "lead",
+      entityId: lead_id,
+      leadId: lead_id,
+      callId: call.id,
+      newValue: { do_not_call: true, requested_by: values.requested_by || "unknown" },
+      metadata: { reason: values.reason || null, note: values.note || null },
+      verificationStatus: "verified",
+    });
   }
 
   /* ---------------- retry scheduling ---------------- */
@@ -228,6 +287,61 @@ export async function POST(req: NextRequest) {
   const { error: leadErr } = await db.from("leads").update(leadPatch).eq("id", lead_id);
   if (leadErr) console.error("[dial/outcome] lead update failed:", leadErr);
 
+  // Record what the call actually taught us, with before/after, so nothing
+  // is silently overwritten in the historical record.
+  const INTEL_KEYS = [
+    "owner_name", "owner_title", "gatekeeper_name", "best_call_day",
+    "best_call_time", "direct_number", "extension", "answering_setup",
+    "existing_provider", "other_decision_maker",
+  ];
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  for (const k of INTEL_KEYS) {
+    const lv = (lead as unknown as Record<string, unknown>)[k] ?? null;
+    if (k in leadPatch && leadPatch[k] !== lv) {
+      before[k] = lv;
+      after[k] = leadPatch[k];
+    }
+  }
+  if (Object.keys(after).length > 0) {
+    await chain.record({
+      type: "lead.intelligence_updated",
+      entityType: "lead",
+      entityId: lead_id,
+      leadId: lead_id,
+      callId: call.id,
+      previousValue: before,
+      newValue: after,
+      confidence: 0.95,
+      verificationStatus: "verified",
+    });
+    if (after.owner_name && !before.owner_name) {
+      await chain.record({
+        type: "lead.decision_maker_found",
+        entityType: "lead",
+        entityId: lead_id,
+        leadId: lead_id,
+        callId: call.id,
+        newValue: { owner_name: after.owner_name, owner_title: after.owner_title ?? null },
+        metadata: { discovered_on_call: true },
+        confidence: 0.95,
+      });
+    }
+  }
+
+  if (leadPatch.pipeline_stage && leadPatch.pipeline_stage !== current) {
+    await chain.record({
+      type: "lead.stage_changed",
+      entityType: "lead",
+      entityId: lead_id,
+      leadId: lead_id,
+      callId: call.id,
+      previousValue: { pipeline_stage: current },
+      newValue: { pipeline_stage: leadPatch.pipeline_stage },
+      metadata: { via: `call outcome ${outcome}` },
+    });
+  }
+
   /* ---------------- packet progress ---------------- */
   if (packet_id) {
     await db
@@ -242,17 +356,15 @@ export async function POST(req: NextRequest) {
       .eq("status", "pending");
     if (count === 0) {
       await db.from("packets").update({ status: "completed" }).eq("id", packet_id);
+      await chain.record({
+        type: "packet.completed",
+        entityType: "packet",
+        entityId: packet_id,
+        packetId: packet_id,
+        newValue: { status: "completed" },
+      });
     }
   }
-
-  await logEvent("call.logged", "call", call.id, {
-    lead_id,
-    caller_id: callerId,
-    outcome,
-    spoke_with_role: spokeWithRole,
-    reached_dm: reachedDm,
-    next_attempt_at: leadPatch.next_attempt_at || null,
-  });
 
   return NextResponse.json({
     ok: true,

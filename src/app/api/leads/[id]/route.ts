@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { logEvent } from "@/lib/events";
+import { recordEvent } from "@/lib/events";
 import { normalizeDomain, normalizePhone } from "@/lib/normalize";
 import { isSalesStage } from "@/lib/stages";
 
@@ -45,7 +45,7 @@ export async function PATCH(
   const db = supabase();
   const { data: before } = await db
     .from("leads")
-    .select("pipeline_stage")
+    .select("pipeline_stage, archived_at, phone, website, city, state, industry")
     .eq("id", id)
     .single();
 
@@ -62,18 +62,56 @@ export async function PATCH(
   }
 
   if (patch.pipeline_stage && before && patch.pipeline_stage !== before.pipeline_stage) {
-    await logEvent("lead.stage_changed", "lead", id, {
-      from: before.pipeline_stage,
-      to: patch.pipeline_stage,
+    await recordEvent({
+      type: "lead.stage_changed",
+      entityType: "lead",
+      entityId: id,
+      leadId: id,
+      actorType: "admin",
+      source: "ui",
+      previousValue: { pipeline_stage: before.pipeline_stage },
+      newValue: { pipeline_stage: patch.pipeline_stage },
+      metadata: { via: "board" },
     });
   }
   if ("archived_at" in patch) {
-    await logEvent(
-      patch.archived_at ? "lead.archived" : "lead.unarchived",
-      "lead",
-      id,
-      {}
-    );
+    await recordEvent({
+      type: patch.archived_at ? "lead.archived" : "lead.unarchived",
+      entityType: "lead",
+      entityId: id,
+      leadId: id,
+      actorType: "admin",
+      source: "ui",
+      previousValue: { archived_at: before?.archived_at ?? null },
+      newValue: { archived_at: patch.archived_at ?? null },
+    });
+  }
+
+  // Contact-information changes are permanent facts worth their own event.
+  const CONTACT_KEYS = ["phone", "website", "city", "state", "industry"];
+  const contactChanges = CONTACT_KEYS.filter((k) => k in patch);
+  if (contactChanges.length > 0 && before) {
+    const prev: Record<string, unknown> = {};
+    const next: Record<string, unknown> = {};
+    for (const k of contactChanges) {
+      const oldVal = (before as unknown as Record<string, unknown>)[k] ?? null;
+      if (oldVal !== patch[k]) {
+        prev[k] = oldVal;
+        next[k] = patch[k];
+      }
+    }
+    if (Object.keys(next).length > 0) {
+      await recordEvent({
+        type: "lead.contact_info_changed",
+        entityType: "lead",
+        entityId: id,
+        leadId: id,
+        actorType: "admin",
+        source: "ui",
+        previousValue: prev,
+        newValue: next,
+      });
+    }
   }
   return NextResponse.json(data);
 }

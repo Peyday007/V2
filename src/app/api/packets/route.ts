@@ -105,6 +105,11 @@ export async function POST(req: NextRequest) {
     .update({ status: "in_packet", machine_status: "assigned_to_packet" })
     .in("id", leads.map((l) => l.id));
 
+  await logEvent("packet.assigned", "packet", packet.id, {
+    caller_id,
+    lead_count: leads.length,
+    assigned_manually: true,
+  });
   await logEvent("packet.created", "packet", packet.id, {
     campaign_id,
     caller_id,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { makeSessionToken, CALLER_COOKIE } from "@/lib/callerSession";
+import { recordEvent } from "@/lib/events";
 
 export async function POST(req: NextRequest) {
   // Without this secret no session cookie can be signed, so login can never
@@ -28,6 +29,16 @@ export async function POST(req: NextRequest) {
   if (!caller || !caller.active) {
     return NextResponse.json({ error: "Invalid PIN" }, { status: 401 });
   }
+  await recordEvent({
+    type: "caller.signed_in",
+    entityType: "caller",
+    entityId: caller.id,
+    actorType: "caller",
+    actorCallerId: caller.id,
+    source: "ui",
+    metadata: { name: caller.name },
+  });
+
   const res = NextResponse.json({ id: caller.id, name: caller.name });
   res.cookies.set(CALLER_COOKIE, makeSessionToken(caller.id), {
     httpOnly: true,

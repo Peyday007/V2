@@ -58,7 +58,7 @@ describe("withCanonicalStages", () => {
   });
 
   it("rescues null/missing stages", () => {
-    const rows = withCanonicalStages([{ pipeline_stage: null }, {}]);
+    const rows = withCanonicalStages([{ pipeline_stage: null }, {}] as { pipeline_stage?: string | null }[]);
     expect(rows.every((r) => r.pipeline_stage === "new_lead")).toBe(true);
     expect(rows.every((r) => r.stage_was_unrecognized)).toBe(true);
   });

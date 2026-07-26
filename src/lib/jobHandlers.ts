@@ -14,7 +14,7 @@ import {
 import { needsEnrichmentQueue } from "./machineStatus";
 import { findIndustry, roleBasedAsk } from "./industries";
 import { SOURCES, STOP_CONFIDENCE } from "./sources";
-import { logEvent } from "./events";
+import { logEvent, recordEvent } from "./events";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -323,6 +323,16 @@ const executePlacesSearch: Handler = async (job) => {
         .update({ sourcing_campaign_id: campaignId })
         .eq("id", existingId)
         .is("sourcing_campaign_id", null);
+      await recordEvent({
+        type: "lead.duplicate_linked",
+        entityType: "lead",
+        entityId: existingId,
+        leadId: existingId,
+        campaignId,
+        actorType: "worker",
+        source: "worker",
+        metadata: { reason: dupReason, place_id: place.id, business_name: name },
+      });
       duplicates++;
       continue;
     }
@@ -584,6 +594,18 @@ const queueEnrichment: Handler = async (job) => {
     .update({ machine_status: "enrichment_queued" })
     .eq("id", leadId);
 
+  await recordEvent({
+    type: "lead.enrichment_queued",
+    entityType: "lead",
+    entityId: leadId,
+    leadId,
+    campaignId: campaignId || undefined,
+    actorType: "worker",
+    source: "worker",
+    previousValue: { machine_status: lead.machine_status },
+    newValue: { machine_status: "enrichment_queued" },
+  });
+
   if (created && campaignId) {
     await bumpCampaign(campaignId, { enrichment_queued: 1 });
   }
@@ -617,6 +639,16 @@ const enrichLead: Handler = async (job) => {
   }
 
   await db.from("leads").update({ machine_status: "enriching" }).eq("id", leadId);
+  await recordEvent({
+    type: "lead.enrichment_started",
+    entityType: "lead",
+    entityId: leadId,
+    leadId,
+    actorType: "worker",
+    source: "worker",
+    previousValue: { machine_status: lead.machine_status },
+    newValue: { machine_status: "enriching" },
+  });
 
   const stepsAttempted: string[] = ["internal_db"];
   let successLevel: "A" | "B" | "C" = "C";
@@ -835,6 +867,16 @@ const enrichLead: Handler = async (job) => {
         qualification_failure_reason: "no usable main phone",
       })
       .eq("id", leadId);
+    await recordEvent({
+      type: "lead.enrichment_failed",
+      entityType: "lead",
+      entityId: leadId,
+      leadId,
+      actorType: "worker",
+      source: "worker",
+      newValue: { machine_status: "enrichment_failed" },
+      metadata: { reason: "no usable main phone", steps: stepsAttempted },
+    });
     await db.from("enrichment_runs").insert({
       lead_id: leadId,
       steps_attempted: stepsAttempted,
@@ -863,11 +905,40 @@ const enrichLead: Handler = async (job) => {
     finished_at: new Date().toISOString(),
   });
 
-  await logEvent("lead.enriched", "lead", leadId, {
-    success_level: successLevel,
-    status: finalStatus,
-    steps: stepsAttempted,
+  await recordEvent({
+    type: "lead.enriched",
+    entityType: "lead",
+    entityId: leadId,
+    leadId,
+    actorType: "worker",
+    source: "worker",
+    previousValue: { machine_status: lead.machine_status },
+    newValue: {
+      machine_status: "ready_for_calling",
+      recommended_ask: recommendedAsk,
+      success_level: successLevel,
+    },
+    metadata: { steps: stepsAttempted, resolved_status: finalStatus },
+    confidence,
   });
+
+  if (websiteFinding) {
+    await recordEvent({
+      type: "lead.decision_maker_found",
+      entityType: "lead",
+      entityId: leadId,
+      leadId,
+      actorType: "worker",
+      source: "worker",
+      newValue: { name: websiteFinding.name, title: websiteFinding.title },
+      metadata: {
+        source_url: websiteFinding.url,
+        supporting_text: websiteFinding.supportingText,
+      },
+      confidence: websiteFinding.confidence,
+      verificationStatus: "verified",
+    });
+  }
 
   // Hand off to auto-assignment so packets build themselves.
   const campaignId = job.payload.campaign_id ? String(job.payload.campaign_id) : null;
@@ -959,12 +1030,40 @@ const autoAssignPackets: Handler = async (job) => {
       .in("id", ready.map((l) => l.id));
 
     await bumpCampaign(campaignId, { packets_created: 1 });
-    await logEvent("packet.created", "packet", packet.id, {
-      campaign_id: campaignId,
-      caller_id: caller.id,
-      lead_count: ready.length,
-      auto: true,
+    await recordEvent({
+      type: "packet.created",
+      entityType: "packet",
+      entityId: packet.id,
+      packetId: packet.id,
+      campaignId,
+      actorType: "worker",
+      source: "worker",
+      newValue: { caller_id: caller.id, lead_count: ready.length, auto: true },
     });
+    await recordEvent({
+      type: "packet.assigned",
+      entityType: "packet",
+      entityId: packet.id,
+      packetId: packet.id,
+      campaignId,
+      actorCallerId: caller.id,
+      actorType: "worker",
+      source: "worker",
+      newValue: { caller_id: caller.id, caller_name: caller.name },
+    });
+    for (const l of ready) {
+      await recordEvent({
+        type: "lead.added_to_packet",
+        entityType: "lead",
+        entityId: l.id,
+        leadId: l.id,
+        packetId: packet.id,
+        campaignId,
+        actorType: "worker",
+        source: "worker",
+        newValue: { machine_status: "assigned_to_packet", caller_id: caller.id },
+      });
+    }
   }
 };
 
