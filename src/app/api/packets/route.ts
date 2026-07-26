@@ -48,6 +48,7 @@ export async function POST(req: NextRequest) {
     .eq("status", "new")
     .eq("do_not_call", false)
     .eq("machine_status", "ready_for_calling")
+    .eq("phone_invalid", false)
     .is("archived_at", null);
 
   if (sourcing_campaign_id) {

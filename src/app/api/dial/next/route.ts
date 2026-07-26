@@ -59,7 +59,7 @@ export async function GET() {
         .limit(1),
       db
         .from("calls")
-        .select("outcome, notes, created_at, callers(name)")
+        .select("outcome, notes, created_at, details, next_step, spoke_with_role, callers(name)")
         .eq("lead_id", next.lead_id)
         .order("created_at", { ascending: false })
         .limit(5),
@@ -110,9 +110,26 @@ Notes: ${lead.notes || "none"}`,
     }
   }
 
+  // Pending callback, so the caller knows one is already booked.
+  const { data: pendingCallbacks } = await db
+    .from("callbacks")
+    .select("scheduled_for, reason, requested_by_name")
+    .eq("lead_id", next.lead_id)
+    .eq("status", "pending")
+    .order("scheduled_for")
+    .limit(1);
+
+  const { count: doneToday } = await db
+    .from("calls")
+    .select("*", { count: "exact", head: true })
+    .eq("caller_id", callerId)
+    .gte("created_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
+
   return NextResponse.json({
     caller: caller.name,
     lead,
+    pendingCallback: pendingCallbacks?.[0] || null,
+    doneToday: doneToday ?? 0,
     contacts: contacts || [],
     discovery: latestDiscovery,
     history: history || [],
