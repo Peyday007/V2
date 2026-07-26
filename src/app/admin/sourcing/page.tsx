@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MACHINE_STATUS_LABELS, MachineStatus } from "@/lib/machineStatus";
+import { INDUSTRIES, searchTermsFor } from "@/lib/industries";
 
 type Campaign = {
   id: string;
@@ -260,6 +261,15 @@ export default function SourcingPage() {
             </div>
           </div>
 
+          <ReleaseAndPacket
+            campaignId={c.id}
+            readyCount={progress.leads_by_machine_status.ready_for_calling || 0}
+            onDone={() => {
+              loadProgress(c.id);
+              loadCampaigns();
+            }}
+          />
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
             <div className="card">
               <h3 style={{ marginBottom: 10 }}>Leads by machine status</h3>
@@ -332,6 +342,128 @@ export default function SourcingPage() {
   );
 }
 
+/** Turn generated businesses into callable packets without leaving this page. */
+function ReleaseAndPacket({
+  campaignId,
+  readyCount,
+  onDone,
+}: {
+  campaignId: string;
+  readyCount: number;
+  onDone: () => void;
+}) {
+  const [callers, setCallers] = useState<{ id: string; name: string }[]>([]);
+  const [callerId, setCallerId] = useState("");
+  const [size, setSize] = useState("50");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    fetch("/api/callers")
+      .then((r) => r.json())
+      .then((cs) => {
+        const active = (cs || []).filter((k: { active: boolean }) => k.active);
+        setCallers(active);
+        if (active.length) setCallerId(active[0].id);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function release() {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    const res = await fetch("/api/leads/release", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourcing_campaign_id: campaignId }),
+    });
+    const j = await res.json();
+    if (!res.ok) {
+      setErr(j.error || "Release failed");
+      setBusy(false);
+      return;
+    }
+    // Drive the worker so the leads actually move now.
+    for (let i = 0; i < 3; i++) {
+      await fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
+    }
+    setMsg(j.message || "Done.");
+    setBusy(false);
+    onDone();
+  }
+
+  async function makePacket() {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    const res = await fetch("/api/packets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourcing_campaign_id: campaignId,
+        caller_id: callerId,
+        size: Number(size),
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok) setErr(j.error || "Could not create packet");
+    else setMsg(`Packet created: ${j.name}`);
+    setBusy(false);
+    onDone();
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber-dim)" }}>
+      <h3 style={{ marginBottom: 8, color: "var(--amber)" }}>Get these leads calling</h3>
+      <p className="faint" style={{ marginBottom: 12 }}>
+        <strong>{readyCount}</strong> ready for calling. Step 1 processes generated
+        businesses and attaches a &quot;who to ask for&quot; instruction. Step 2 assigns
+        them to a caller.
+      </p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <button className="btn-ghost" onClick={release} disabled={busy}>
+          1 · Release leads to calling
+        </button>
+        <select
+          value={callerId}
+          onChange={(e) => setCallerId(e.target.value)}
+          style={{ maxWidth: 190 }}
+        >
+          <option value="">Assign to caller…</option>
+          {callers.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.name}
+            </option>
+          ))}
+        </select>
+        <input
+          type="number"
+          value={size}
+          onChange={(e) => setSize(e.target.value)}
+          style={{ maxWidth: 80 }}
+          min={1}
+        />
+        <button
+          className="btn"
+          onClick={makePacket}
+          disabled={busy || !callerId || readyCount === 0}
+        >
+          2 · Generate packet
+        </button>
+      </div>
+      {callers.length === 0 && (
+        <p className="faint" style={{ marginTop: 8 }}>
+          No active callers yet — add them on the Callers tab first.
+        </p>
+      )}
+      {msg && <p style={{ color: "var(--amber)", marginTop: 10 }}>{msg}</p>}
+      {err && <p style={{ color: "var(--red)", marginTop: 10 }}>{err}</p>}
+    </div>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -388,6 +520,7 @@ function CampaignForm({
     require_website: false,
     exclude_franchises: true,
   });
+  const [picked, setPicked] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -440,16 +573,63 @@ function CampaignForm({
             onChange={(e) => set("name", e.target.value)}
             autoFocus
           />
-          <input
-            placeholder="Industry (e.g. Roofing)"
-            value={form.industry}
-            onChange={(e) => set("industry", e.target.value)}
-          />
+          <div>
+            <p className="faint" style={{ marginBottom: 6 }}>
+              Pick the home-service trades to target. Each one adds its search
+              terms below — select as many as you want.
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {INDUSTRIES.map((ind) => {
+                const on = picked.includes(ind.key);
+                return (
+                  <button
+                    key={ind.key}
+                    type="button"
+                    title={ind.whyFit}
+                    onClick={() => {
+                      const next = on
+                        ? picked.filter((k) => k !== ind.key)
+                        : [...picked, ind.key];
+                      setPicked(next);
+                      setForm({
+                        ...form,
+                        search_terms: searchTermsFor(next).join("\n"),
+                        industry:
+                          next.length === 1
+                            ? INDUSTRIES.find((i) => i.key === next[0])!.label
+                            : next.length > 1
+                              ? "Home Services"
+                              : "",
+                      });
+                    }}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 3,
+                      fontSize: "0.72rem",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      border: `1px solid ${on ? "var(--amber)" : "var(--border-strong)"}`,
+                      background: on ? "var(--amber-soft)" : "transparent",
+                      color: on ? "var(--amber)" : "var(--text-dim)",
+                    }}
+                  >
+                    {ind.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <textarea
-            placeholder="Search terms, one per line (e.g. roofer / roofing contractor / roof repair / commercial roofing)"
-            rows={4}
+            placeholder="Search terms, one per line. Pick trades above to fill this automatically, or type your own."
+            rows={5}
             value={form.search_terms}
             onChange={(e) => set("search_terms", e.target.value)}
+          />
+          <input
+            placeholder="Industry label (auto-filled from trades above)"
+            value={form.industry}
+            onChange={(e) => set("industry", e.target.value)}
           />
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
             <input

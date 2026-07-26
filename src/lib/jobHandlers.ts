@@ -12,6 +12,7 @@ import {
   normalizeZip,
 } from "./normalize";
 import { needsEnrichmentQueue } from "./machineStatus";
+import { findIndustry, roleBasedAsk } from "./industries";
 import { logEvent } from "./events";
 
 type Handler = (job: Job) => Promise<void>;
@@ -588,14 +589,180 @@ const queueEnrichment: Handler = async (job) => {
 };
 
 /* ------------------------------------------------------------------ */
-/* 6. enrich_lead — Milestone 3. Queued now, not processed yet.        */
+/* 6. enrich_lead — baseline pass                                       */
+/*                                                                      */
+/* Waterfall Step 1 (internal database) + Success Level C (role-based   */
+/* ask). No crawling, registries, or search APIs yet — those are the    */
+/* rest of Milestone 3. The point of this pass is that a lead with a    */
+/* working main line and a known role to ask for is CALLABLE, which is  */
+/* exactly what Success Level C means. Later steps upgrade C -> A/B.    */
 /* ------------------------------------------------------------------ */
 
-const enrichLead: Handler = async () => {
-  // Intentionally a no-op until Milestone 3. Returning without touching the
-  // lead leaves it at 'enrichment_queued' and marks this job done, so the
-  // queue does not fill with retrying jobs.
-  return;
+const enrichLead: Handler = async (job) => {
+  const leadId = String(job.payload.lead_id);
+  const db = supabaseAdmin();
+  const startedAt = Date.now();
+
+  const { data: lead } = await db
+    .from("leads")
+    .select(
+      "id, business_name, industry, normalized_phone, domain, city, machine_status, archived_at"
+    )
+    .eq("id", leadId)
+    .single();
+  if (!lead || lead.archived_at) return;
+  if (["assigned_to_packet", "contacted", "archived"].includes(lead.machine_status)) {
+    return;
+  }
+
+  await db.from("leads").update({ machine_status: "enriching" }).eq("id", leadId);
+
+  const stepsAttempted: string[] = ["internal_db"];
+  let successLevel: "A" | "B" | "C" = "C";
+  let finalStatus = "role_only_found";
+  let confidence = 0.4;
+
+  // --- Step 1: internal database. Reuse anything the team already knows. ---
+  const { data: existingContacts } = await db
+    .from("contacts")
+    .select("id, full_name, title, role_category, direct_phone, extension, confidence")
+    .eq("lead_id", leadId)
+    .eq("active", true)
+    .order("confidence", { ascending: false });
+
+  const { data: discoveries } = await db
+    .from("call_discoveries")
+    .select("owner_name, title, best_callback_time, transfer_instructions, extension")
+    .eq("lead_id", leadId)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  // Sibling leads: the same company found under another record can carry a
+  // decision-maker we already paid for or discovered on a call.
+  let siblingContact: { full_name: string | null; title: string | null } | null = null;
+  if (lead.domain || lead.normalized_phone) {
+    const orFilter = [
+      lead.domain ? `domain.eq.${lead.domain}` : null,
+      lead.normalized_phone ? `normalized_phone.eq.${lead.normalized_phone}` : null,
+    ]
+      .filter(Boolean)
+      .join(",");
+    const { data: siblings } = await db
+      .from("leads")
+      .select("id")
+      .or(orFilter)
+      .neq("id", leadId)
+      .limit(5);
+    if (siblings && siblings.length > 0) {
+      stepsAttempted.push("internal_db_siblings");
+      const { data: sc } = await db
+        .from("contacts")
+        .select("full_name, title")
+        .in("lead_id", siblings.map((s) => s.id))
+        .eq("active", true)
+        .not("full_name", "is", null)
+        .limit(1);
+      if (sc && sc.length > 0) siblingContact = sc[0];
+    }
+  }
+
+  const named =
+    existingContacts?.find((c) => c.full_name) ||
+    (discoveries?.[0]?.owner_name
+      ? {
+          full_name: discoveries[0].owner_name,
+          title: discoveries[0].title,
+          extension: discoveries[0].extension,
+          direct_phone: null,
+        }
+      : null) ||
+    siblingContact;
+
+  let recommendedAsk: string;
+
+  if (named && named.full_name) {
+    successLevel = "A";
+    finalStatus = "decision_maker_found";
+    confidence = 0.85;
+    const title = named.title ? `, the ${named.title.toLowerCase()}` : "";
+    const ext =
+      "extension" in named && named.extension ? ` Extension ${named.extension}.` : "";
+    const direct =
+      "direct_phone" in named && named.direct_phone
+        ? ` Direct line: ${named.direct_phone}.`
+        : "";
+    recommendedAsk = `Call the main line and ask for ${named.full_name}${title}.${ext}${direct}`;
+
+    const d = discoveries?.[0];
+    if (d?.best_callback_time) recommendedAsk += ` Best time: ${d.best_callback_time}.`;
+    if (d?.transfer_instructions) recommendedAsk += ` ${d.transfer_instructions}`;
+
+    await db.from("enrichment_evidence").insert({
+      lead_id: leadId,
+      source_type: "internal_db",
+      field: "owner_name",
+      value: named.full_name,
+      supporting_text: "Reused from an existing contact or caller discovery",
+      extraction_method: "deterministic",
+      confidence,
+    });
+  } else {
+    // Success Level C: no name, but the right role to ask for, and a working
+    // main line. This is callable.
+    recommendedAsk = roleBasedAsk(lead.industry);
+    await db.from("enrichment_evidence").insert({
+      lead_id: leadId,
+      source_type: "internal_db",
+      field: "role",
+      value: findIndustry(lead.industry)?.askFor || "the owner",
+      supporting_text: `Role-based ask derived from industry: ${lead.industry || "unknown"}`,
+      extraction_method: "deterministic",
+      confidence,
+    });
+  }
+
+  // A lead with no usable phone is not callable at all.
+  if (!lead.normalized_phone) {
+    await db
+      .from("leads")
+      .update({
+        machine_status: "enrichment_failed",
+        qualification_failure_reason: "no usable main phone",
+      })
+      .eq("id", leadId);
+    await db.from("enrichment_runs").insert({
+      lead_id: leadId,
+      steps_attempted: stepsAttempted,
+      failure_reason: "no usable main phone",
+      duration_ms: Date.now() - startedAt,
+      finished_at: new Date().toISOString(),
+    });
+    return;
+  }
+
+  await db
+    .from("leads")
+    .update({
+      machine_status: "ready_for_calling",
+      recommended_ask: recommendedAsk,
+      enrichment_confidence: confidence,
+    })
+    .eq("id", leadId);
+
+  await db.from("enrichment_runs").insert({
+    lead_id: leadId,
+    steps_attempted: stepsAttempted,
+    succeeded_at_step: "internal_db",
+    success_level: successLevel,
+    duration_ms: Date.now() - startedAt,
+    finished_at: new Date().toISOString(),
+  });
+
+  await logEvent("lead.enriched", "lead", leadId, {
+    success_level: successLevel,
+    status: finalStatus,
+    steps: stepsAttempted,
+  });
 };
 
 /* ------------------------------------------------------------------ */

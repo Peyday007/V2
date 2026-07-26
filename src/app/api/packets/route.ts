@@ -30,31 +30,39 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { campaign_id, caller_id, size } = await req.json();
-  if (!campaign_id || !caller_id || !size || size < 1) {
-    return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+  const { campaign_id, sourcing_campaign_id, caller_id, size } = await req.json();
+  if (!caller_id || !size || size < 1) {
+    return NextResponse.json({ error: "Pick a caller and a packet size" }, { status: 400 });
   }
   const db = supabase();
 
-  // Only leads never placed in any packet (status 'new') are eligible — no duplicate calling.
-  // Only fully-processed leads are eligible for calling. Newly generated
-  // businesses stay out of packets until enrichment marks them ready.
-  const { data: leads, error: leadsErr } = await db
+  // Eligibility rules:
+  //  - status 'new'  -> never placed in a packet (no duplicate calling)
+  //  - machine_status 'ready_for_calling' -> the engine has finished with it
+  // Leads from the sourcing engine carry sourcing_campaign_id; older/imported
+  // leads carry campaign_id. Support both, and allow pulling from every ready
+  // lead when no campaign is specified.
+  let query = db
     .from("leads")
     .select("id")
-    .eq("campaign_id", campaign_id)
     .eq("status", "new")
     .eq("do_not_call", false)
     .eq("machine_status", "ready_for_calling")
-    .is("archived_at", null)
-    .order("created_at")
-    .limit(size);
+    .is("archived_at", null);
+
+  if (sourcing_campaign_id) {
+    query = query.eq("sourcing_campaign_id", sourcing_campaign_id);
+  } else if (campaign_id) {
+    query = query.eq("campaign_id", campaign_id);
+  }
+
+  const { data: leads, error: leadsErr } = await query.order("created_at").limit(size);
   if (leadsErr) return NextResponse.json({ error: leadsErr.message }, { status: 500 });
   if (!leads || leads.length === 0) {
     return NextResponse.json(
       {
         error:
-          "No leads are ready for calling in this campaign. Leads become eligible once enrichment marks them 'ready_for_calling'.",
+          "No leads are ready for calling. Generate leads on the Sourcing tab, then press 'Release leads to calling' there.",
       },
       { status: 400 }
     );
@@ -70,7 +78,12 @@ export async function POST(req: NextRequest) {
 
   const { data: packet, error: pErr } = await db
     .from("packets")
-    .insert({ campaign_id, caller_id, name: packetName })
+    .insert({
+      campaign_id: campaign_id || null,
+      sourcing_campaign_id: sourcing_campaign_id || null,
+      caller_id,
+      name: packetName,
+    })
     .select()
     .single();
   if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });

@@ -32,7 +32,8 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 6. Repeat with `supabase/migrations/0004_lead_stages.sql` (new query, paste, Run).
 7. Repeat with `supabase/migrations/0005_canonical_stages.sql` (new query, paste, Run).
 8. Repeat with `supabase/migrations/0006_engine_foundation.sql` (new query, paste, Run).
-9. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
+9. Repeat with `supabase/migrations/0008_packets_from_sourcing.sql` (new query, paste, Run).
+10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
 

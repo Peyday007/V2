@@ -66,9 +66,15 @@ export async function GET() {
     ]);
 
   const latestDiscovery = discoveries?.[0] || null;
-  const approach = lead
+  // The engine's stored recommendation wins when nothing newer was learned
+  // on a call; otherwise recompute from live contacts/discoveries.
+  const computed = lead
     ? recommendApproach(lead, contacts || [], latestDiscovery)
     : null;
+  const approach =
+    lead?.recommended_ask && !latestDiscovery && (contacts || []).length === 0
+      ? { route: "C" as const, text: lead.recommended_ask }
+      : computed;
 
   let aiTip: string | null = null;
   const ai = anthropic();
