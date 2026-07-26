@@ -43,6 +43,7 @@ export default function SourcingPage() {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showMix, setShowMix] = useState(false);
+  const [showTest, setShowTest] = useState(false);
   const [error, setError] = useState("");
   const [ticking, setTicking] = useState(false);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -127,6 +128,9 @@ export default function SourcingPage() {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <h1>Sourcing Campaigns</h1>
         <div style={{ flex: 1 }} />
+        <button className="btn-ghost" onClick={() => setShowTest(true)}>
+          Test Google key
+        </button>
         <button className="btn-ghost" onClick={runWorkerOnce} disabled={ticking}>
           {ticking ? "Running…" : "Run worker now"}
         </button>
@@ -365,6 +369,8 @@ export default function SourcingPage() {
         </>
       )}
 
+      {showTest && <PlacesTestDialog onClose={() => setShowTest(false)} />}
+
       {showMix && (
         <MixDialog
           onClose={() => setShowMix(false)}
@@ -542,6 +548,122 @@ function Stat({
         {value}
       </div>
       <div className="faint">{label}</div>
+    </div>
+  );
+}
+
+/** Makes one real Places call and shows Google's complete answer. */
+function PlacesTestDialog({ onClose }: { onClose: () => void }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [result, setResult] = useState<any>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    fetch("/api/diagnostics/places")
+      .then((r) => r.json())
+      .then(setResult)
+      .catch((e) => setErr(String(e)));
+  }, []);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.7)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 60,
+        padding: 20,
+      }}
+    >
+      <div
+        className="card"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 720, maxWidth: "95vw", maxHeight: "85vh", overflowY: "auto" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+          <h2>Google Places key test</h2>
+          <button className="btn-ghost" style={{ padding: "2px 10px" }} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        {err && <p style={{ color: "var(--red)" }}>{err}</p>}
+        {!result && !err && <p className="muted">Calling Google…</p>}
+
+        {result && (
+          <div style={{ fontSize: "0.82rem", display: "grid", gap: 10 }}>
+            <div>
+              Result:{" "}
+              <strong style={{ color: result.ok ? "var(--green)" : "var(--red)" }}>
+                {result.ok ? "WORKING" : `HTTP ${result.http_status || result.stage}`}
+              </strong>
+            </div>
+
+            {result.key_fingerprint && (
+              <div className="faint">
+                Key: {result.key_fingerprint.length} chars,{" "}
+                {result.key_fingerprint.starts_with}…{result.key_fingerprint.ends_with}
+                {result.key_fingerprint.looks_like_google_key
+                  ? " · format looks right"
+                  : " · ⚠ does NOT look like a Google API key"}
+                {result.key_fingerprint.has_whitespace && " · ⚠ contains whitespace"}
+                {result.key_fingerprint.has_quotes && " · ⚠ contains quote characters"}
+              </div>
+            )}
+
+            {result.likely_cause && (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  background: "var(--amber-soft)",
+                  border: "1px solid var(--amber-dim)",
+                  borderRadius: 4,
+                  color: "var(--text)",
+                  lineHeight: 1.55,
+                }}
+              >
+                <strong style={{ color: "var(--amber)" }}>Most likely cause: </strong>
+                {result.likely_cause}
+              </div>
+            )}
+
+            {result.google_message && (
+              <div>
+                <strong>Google says:</strong>
+                <div className="muted" style={{ marginTop: 3 }}>
+                  {result.google_message}
+                </div>
+              </div>
+            )}
+
+            {result.raw_response && (
+              <div>
+                <strong>Full response from Google:</strong>
+                <pre
+                  style={{
+                    marginTop: 4,
+                    padding: 10,
+                    background: "var(--bg-inset)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 4,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    fontSize: "0.72rem",
+                    maxHeight: 300,
+                    overflowY: "auto",
+                  }}
+                >
+                  {result.raw_response}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
