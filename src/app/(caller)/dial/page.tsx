@@ -199,229 +199,299 @@ export default function DialPage() {
   const history = data.history || [];
 
   return (
-    <div style={{ maxWidth: 680, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
-        <span className="muted">
-          {data.caller} · {data.remaining} lead{data.remaining === 1 ? "" : "s"} left
+    <div style={{ maxWidth: 1300, margin: "0 auto" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          marginBottom: 14,
+          gap: 12,
+        }}
+      >
+        <span style={{ fontWeight: 700 }}>{data.caller}</span>
+        <span className="tag-dim">
+          {data.remaining} lead{data.remaining === 1 ? "" : "s"} left
         </span>
         <div style={{ flex: 1 }} />
-        <button className="btn-ghost" onClick={logout} style={{ padding: "4px 10px" }}>
+        <button className="btn-ghost" onClick={logout} style={{ padding: "4px 12px" }}>
           Sign out
         </button>
       </div>
 
-      <div className="card" style={{ marginBottom: 14 }}>
-        <h1 style={{ marginBottom: 4, textTransform: "none", letterSpacing: 0 }}>
-          {lead.business_name}
-        </h1>
-        <p className="muted" style={{ marginBottom: 12 }}>
-          {[lead.address, lead.city, lead.state].filter(Boolean).join(", ")}
-        </p>
-        {lead.phone && (
-          <a
-            href={`tel:${lead.phone}`}
-            style={{
-              fontSize: "1.5rem",
-              fontWeight: 700,
-              display: "block",
-              marginBottom: 8,
-            }}
-          >
-            {lead.phone}
-          </a>
-        )}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {lead.industry && <span className="tag-dim">{lead.industry}</span>}
-          {lead.rating != null && (
-            <span className="tag-dim">
-              ★ {lead.rating} ({lead.review_count} reviews)
-            </span>
-          )}
-          {lead.website && (
-            <a className="tag-dim" href={lead.website} target="_blank" rel="noreferrer">
-              website ↗
-            </a>
-          )}
-        </div>
-      </div>
-
-      {data.approach && (
-        <div
-          className="card"
-          style={{ marginBottom: 14, borderColor: "var(--amber-dim)" }}
-        >
-          <h3 style={{ color: "var(--amber)", marginBottom: 6 }}>
-            Who to ask for · Route {data.approach.route}
-          </h3>
-          <p style={{ fontSize: "0.95rem" }}>{data.approach.text}</p>
-        </div>
-      )}
-
-      {contacts.length > 0 && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <h3 style={{ marginBottom: 8 }}>Known contacts</h3>
-          {contacts.map((c) => (
+      {/* Two columns on a desktop: everything you read on the left,
+          everything you type on the right. No scrolling mid-call. */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)",
+          gap: 16,
+          alignItems: "start",
+        }}
+      >
+        {/* ---------------- LEFT: who you are calling ---------------- */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div className="card">
             <div
-              key={c.id}
               style={{
-                padding: "8px 10px",
-                background: "var(--bg-inset)",
-                border: "1px solid var(--border)",
-                borderRadius: 4,
-                marginBottom: 6,
-                fontSize: "0.85rem",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: 16,
               }}
             >
-              <strong>{c.full_name || "(name unknown)"}</strong>
-              {c.title ? ` — ${c.title}` : ` — ${c.role_category.replace(/_/g, " ")}`}
-              {c.direct_phone && (
-                <>
-                  {" · "}
-                  <a href={`tel:${c.direct_phone}`}>{c.direct_phone}</a>
-                </>
+              <div style={{ minWidth: 0 }}>
+                <h1
+                  style={{
+                    marginBottom: 4,
+                    textTransform: "none",
+                    letterSpacing: 0,
+                    fontSize: "1.35rem",
+                  }}
+                >
+                  {lead.business_name}
+                </h1>
+                <p className="muted" style={{ fontSize: "0.85rem" }}>
+                  {[lead.address, lead.city, lead.state].filter(Boolean).join(", ")}
+                </p>
+              </div>
+              {lead.phone && (
+                <a
+                  href={`tel:${lead.phone}`}
+                  style={{
+                    fontSize: "1.7rem",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    lineHeight: 1.1,
+                  }}
+                >
+                  {lead.phone}
+                </a>
               )}
-              {c.extension && ` · ext ${c.extension}`}
-              {c.email && ` · ${c.email}`}
-              <span
-                className="faint"
-                style={{ marginLeft: 8 }}
-              >{`[${c.contact_source.replace(/_/g, " ")}]`}</span>
             </div>
-          ))}
-        </div>
-      )}
-
-      {data.aiTip && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <h3 style={{ marginBottom: 6, color: "var(--text-dim)" }}>Call tip</h3>
-          <p style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem" }} className="muted">
-            {data.aiTip}
-          </p>
-        </div>
-      )}
-
-      {history.length > 0 && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <h3 style={{ marginBottom: 8 }}>Previous calls</h3>
-          {history.map((h, i) => (
-            <div key={i} className="faint" style={{ marginBottom: 4 }}>
-              {new Date(h.created_at).toLocaleDateString()} —{" "}
-              {h.outcome.replace(/_/g, " ")}
-              {h.callers?.name ? ` (${h.callers.name})` : ""}
-              {h.notes ? ` — ${h.notes.slice(0, 60)}` : ""}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              {lead.industry && <span className="tag-dim">{lead.industry}</span>}
+              {lead.rating != null && (
+                <span className="tag-dim">
+                  ★ {lead.rating} ({lead.review_count} reviews)
+                </span>
+              )}
+              {lead.website && (
+                <a
+                  className="tag-dim"
+                  href={lead.website}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  website ↗
+                </a>
+              )}
             </div>
-          ))}
-        </div>
-      )}
+          </div>
 
-      <div className="card" style={{ marginBottom: 14 }}>
+          {data.approach && (
+            <div className="card" style={{ borderColor: "var(--amber-dim)" }}>
+              <h3 style={{ color: "var(--amber)", marginBottom: 6 }}>
+                Who to ask for
+              </h3>
+              <p style={{ fontSize: "1rem", lineHeight: 1.5 }}>{data.approach.text}</p>
+            </div>
+          )}
+
+          {contacts.length > 0 && (
+            <div className="card">
+              <h3 style={{ marginBottom: 8 }}>Known contacts</h3>
+              {contacts.map((c) => (
+                <div
+                  key={c.id}
+                  style={{
+                    padding: "8px 10px",
+                    background: "var(--bg-inset)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 4,
+                    marginBottom: 6,
+                    fontSize: "0.85rem",
+                  }}
+                >
+                  <strong>{c.full_name || "(name unknown)"}</strong>
+                  {c.title ? ` — ${c.title}` : ` — ${c.role_category.replace(/_/g, " ")}`}
+                  {c.direct_phone && (
+                    <>
+                      {" · "}
+                      <a href={`tel:${c.direct_phone}`}>{c.direct_phone}</a>
+                    </>
+                  )}
+                  {c.extension && ` · ext ${c.extension}`}
+                  {c.email && ` · ${c.email}`}
+                  <span className="faint" style={{ marginLeft: 8 }}>
+                    [{c.contact_source.replace(/_/g, " ")}]
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {history.length > 0 && (
+            <div className="card">
+              <h3 style={{ marginBottom: 8 }}>Previous calls</h3>
+              {history.map((h, i) => (
+                <div key={i} className="faint" style={{ marginBottom: 4 }}>
+                  {new Date(h.created_at).toLocaleDateString()} —{" "}
+                  {h.outcome.replace(/_/g, " ")}
+                  {h.callers?.name ? ` (${h.callers.name})` : ""}
+                  {h.notes ? ` — ${h.notes.slice(0, 80)}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {data.aiTip && (
+            <details className="card">
+              <summary
+                style={{
+                  cursor: "pointer",
+                  fontSize: "0.78rem",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "var(--text-dim)",
+                  fontWeight: 700,
+                }}
+              >
+                Call tip
+              </summary>
+              <p
+                className="muted"
+                style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem", marginTop: 8 }}
+              >
+                {data.aiTip}
+              </p>
+            </details>
+          )}
+        </div>
+
+        {/* ---------------- RIGHT: what you record ---------------- */}
         <div
           style={{
             display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
+            flexDirection: "column",
+            gap: 14,
+            position: "sticky",
+            top: 16,
           }}
         >
-          <h3>Learned something? Save it</h3>
-          <button
-            className="btn-ghost"
-            style={{ padding: "3px 10px" }}
-            onClick={() => setShowDiscovery(!showDiscovery)}
-          >
-            {showDiscovery ? "Hide" : "Open"}
-          </button>
-        </div>
-        {showDiscovery && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 8,
-              marginTop: 12,
-            }}
-          >
-            <input
-              placeholder="Decision-maker name"
-              value={discovery.owner_name}
-              onChange={(e) => setDiscovery({ ...discovery, owner_name: e.target.value })}
+          <div className="card">
+            <h3 style={{ marginBottom: 10 }}>Log outcome</h3>
+            <textarea
+              placeholder="Notes (optional)"
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              style={{ marginBottom: 12 }}
             />
-            <input
-              placeholder="Their title (owner, GM…)"
-              value={discovery.title}
-              onChange={(e) => setDiscovery({ ...discovery, title: e.target.value })}
-            />
-            <input
-              placeholder="Direct number"
-              value={discovery.direct_number}
-              onChange={(e) =>
-                setDiscovery({ ...discovery, direct_number: e.target.value })
-              }
-            />
-            <input
-              placeholder="Extension"
-              value={discovery.extension}
-              onChange={(e) => setDiscovery({ ...discovery, extension: e.target.value })}
-            />
-            <input
-              placeholder="Email"
-              value={discovery.email}
-              onChange={(e) => setDiscovery({ ...discovery, email: e.target.value })}
-            />
-            <input
-              placeholder="Best callback time"
-              value={discovery.best_callback_time}
-              onChange={(e) =>
-                setDiscovery({ ...discovery, best_callback_time: e.target.value })
-              }
-            />
-            <input
-              placeholder="Gatekeeper name"
-              value={discovery.gatekeeper_name}
-              onChange={(e) =>
-                setDiscovery({ ...discovery, gatekeeper_name: e.target.value })
-              }
-            />
-            <input
-              placeholder="Transfer instructions"
-              value={discovery.transfer_instructions}
-              onChange={(e) =>
-                setDiscovery({ ...discovery, transfer_instructions: e.target.value })
-              }
-            />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              {CALL_OUTCOMES.map((o) => (
+                <button
+                  key={o.value}
+                  className={
+                    o.value === "dm_conversation" || o.value === "appointment_set"
+                      ? "btn"
+                      : o.value === "do_not_call"
+                        ? "btn-danger"
+                        : "btn-ghost"
+                  }
+                  onClick={() => logOutcome(o.value)}
+                  disabled={logging}
+                  style={{ justifyContent: "center", padding: "10px 8px" }}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
           </div>
-        )}
-        <p className="faint" style={{ marginTop: 8 }}>
-          Saved with the outcome — the team never has to rediscover it.
-        </p>
-      </div>
 
-      <div className="card">
-        <h3 style={{ marginBottom: 10 }}>Log outcome</h3>
-        <textarea
-          placeholder="Notes (optional)"
-          rows={2}
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          style={{ marginBottom: 12 }}
-        />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {CALL_OUTCOMES.map((o) => (
-            <button
-              key={o.value}
-              className={
-                o.value === "dm_conversation" || o.value === "appointment_set"
-                  ? "btn"
-                  : o.value === "do_not_call"
-                    ? "btn-danger"
-                    : "btn-ghost"
-              }
-              onClick={() => logOutcome(o.value)}
-              disabled={logging}
-              style={{ justifyContent: "center" }}
+          <div className="card">
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
             >
-              {o.label}
-            </button>
-          ))}
+              <h3>Learned something?</h3>
+              <button
+                className="btn-ghost"
+                style={{ padding: "3px 10px" }}
+                onClick={() => setShowDiscovery(!showDiscovery)}
+              >
+                {showDiscovery ? "Hide" : "Open"}
+              </button>
+            </div>
+            {showDiscovery && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 8,
+                  marginTop: 12,
+                }}
+              >
+                <input
+                  placeholder="Decision-maker name"
+                  value={discovery.owner_name}
+                  onChange={(e) =>
+                    setDiscovery({ ...discovery, owner_name: e.target.value })
+                  }
+                />
+                <input
+                  placeholder="Their title"
+                  value={discovery.title}
+                  onChange={(e) => setDiscovery({ ...discovery, title: e.target.value })}
+                />
+                <input
+                  placeholder="Direct number"
+                  value={discovery.direct_number}
+                  onChange={(e) =>
+                    setDiscovery({ ...discovery, direct_number: e.target.value })
+                  }
+                />
+                <input
+                  placeholder="Extension"
+                  value={discovery.extension}
+                  onChange={(e) =>
+                    setDiscovery({ ...discovery, extension: e.target.value })
+                  }
+                />
+                <input
+                  placeholder="Email"
+                  value={discovery.email}
+                  onChange={(e) => setDiscovery({ ...discovery, email: e.target.value })}
+                />
+                <input
+                  placeholder="Best callback time"
+                  value={discovery.best_callback_time}
+                  onChange={(e) =>
+                    setDiscovery({ ...discovery, best_callback_time: e.target.value })
+                  }
+                />
+                <input
+                  placeholder="Gatekeeper name"
+                  value={discovery.gatekeeper_name}
+                  onChange={(e) =>
+                    setDiscovery({ ...discovery, gatekeeper_name: e.target.value })
+                  }
+                />
+                <input
+                  placeholder="Transfer instructions"
+                  value={discovery.transfer_instructions}
+                  onChange={(e) =>
+                    setDiscovery({ ...discovery, transfer_instructions: e.target.value })
+                  }
+                />
+              </div>
+            )}
+            <p className="faint" style={{ marginTop: 8 }}>
+              Saved with the outcome — the team never has to rediscover it.
+            </p>
+          </div>
         </div>
       </div>
     </div>

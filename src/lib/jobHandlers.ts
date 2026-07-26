@@ -13,8 +13,7 @@ import {
 } from "./normalize";
 import { needsEnrichmentQueue } from "./machineStatus";
 import { findIndustry, roleBasedAsk } from "./industries";
-import { crawlSite } from "./crawler";
-import { extractPeople, discoverPeoplePages, CANDIDATE_PATHS } from "./extractPeople";
+import { SOURCES, STOP_CONFIDENCE } from "./sources";
 import { logEvent } from "./events";
 
 type Handler = (job: Job) => Promise<void>;
@@ -680,8 +679,8 @@ const enrichLead: Handler = async (job) => {
       : null) ||
     siblingContact;
 
-  // --- Step 2: the business's own website. Only when the internal database
-  // did not already give us a name, so we never crawl needlessly. ---
+  // --- Steps 2+: pluggable public sources, cheapest first, stop when
+  // confident. Adding a registry or directory means adding one adapter. ---
   let websiteFinding: {
     name: string;
     title: string;
@@ -690,60 +689,71 @@ const enrichLead: Handler = async (job) => {
     confidence: number;
   } | null = null;
 
-  if (!named && lead.website) {
-    stepsAttempted.push("website");
-    try {
-      const { pages, blockedByRobots } = await crawlSite(lead.website, {
-        candidatePaths: CANDIDATE_PATHS,
-        discover: discoverPeoplePages,
-        maxPages: 5,
-        stopWhen: (page) =>
-          extractPeople(page.html, lead.business_name).some((c) => c.confidence >= 0.85),
-      });
+  if (!named) {
+    const ctx = {
+      leadId,
+      businessName: lead.business_name,
+      website: lead.website,
+      domain: lead.domain,
+      city: lead.city,
+      state: null as string | null,
+      industry: lead.industry,
+    };
 
-      if (blockedByRobots) {
+    for (const source of SOURCES) {
+      if (!source.isAvailable()) continue;
+      stepsAttempted.push(source.key);
+
+      let result;
+      try {
+        result = await source.run(ctx);
+      } catch (e) {
+        console.error(`[enrich] source ${source.key} threw:`, e);
+        continue;
+      }
+
+      if (result.skipped) {
         await db.from("enrichment_evidence").insert({
           lead_id: leadId,
-          source_type: "website",
-          source_url: lead.website,
+          source_type: source.key,
+          source_url: null,
           field: "role",
           value: null,
-          supporting_text: "Site robots.txt disallows crawling; skipped.",
+          supporting_text: `Skipped: ${result.skipped}`,
           extraction_method: "deterministic",
           confidence: 0,
         });
+        continue;
       }
 
-      let best: { c: ReturnType<typeof extractPeople>[number]; url: string } | null = null;
-      for (const page of pages) {
-        for (const c of extractPeople(page.html, lead.business_name)) {
-          // Record every claim, including weaker and conflicting ones.
-          await db.from("enrichment_evidence").insert({
-            lead_id: leadId,
-            source_type: "website",
-            source_url: page.url,
-            field: "owner_name",
-            value: c.name,
-            supporting_text: `${c.title} — "${c.supportingText}"`,
-            extraction_method: c.method,
-            confidence: c.confidence,
-            is_conflicting: !!best && best.c.name.toLowerCase() !== c.name.toLowerCase(),
-          });
-          if (!best || c.confidence > best.c.confidence) best = { c, url: page.url };
-        }
+      let best: (typeof result.findings)[number] | null = null;
+      for (const f of result.findings) {
+        // Record every claim, including weaker and contradictory ones.
+        await db.from("enrichment_evidence").insert({
+          lead_id: leadId,
+          source_type: source.key,
+          source_url: f.sourceUrl,
+          field: "owner_name",
+          value: f.name,
+          supporting_text: `${f.title} — "${f.supportingText}"`,
+          extraction_method: f.method,
+          confidence: f.confidence,
+          is_conflicting: !!best && best.name.toLowerCase() !== f.name.toLowerCase(),
+        });
+        if (!best || f.confidence > best.confidence) best = f;
       }
 
-      if (best) {
+      if (best && (!websiteFinding || best.confidence > websiteFinding.confidence)) {
         websiteFinding = {
-          name: best.c.name,
-          title: best.c.title,
-          url: best.url,
-          supportingText: best.c.supportingText,
-          confidence: best.c.confidence,
+          name: best.name,
+          title: best.title,
+          url: best.sourceUrl || "",
+          supportingText: best.supportingText,
+          confidence: best.confidence,
         };
       }
-    } catch (e) {
-      console.error(`[enrich] website crawl failed for ${leadId}:`, e);
+
+      if (websiteFinding && websiteFinding.confidence >= STOP_CONFIDENCE) break;
     }
   }
 
@@ -847,7 +857,7 @@ const enrichLead: Handler = async (job) => {
   await db.from("enrichment_runs").insert({
     lead_id: leadId,
     steps_attempted: stepsAttempted,
-    succeeded_at_step: websiteFinding ? "website" : "internal_db",
+    succeeded_at_step: websiteFinding ? stepsAttempted[stepsAttempted.length - 1] : "internal_db",
     success_level: successLevel,
     duration_ms: Date.now() - startedAt,
     finished_at: new Date().toISOString(),
