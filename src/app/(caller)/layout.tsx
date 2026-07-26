@@ -44,6 +44,17 @@ export default function CallerLayout({
         >
           Dialer
         </span>
+        <span style={{ flex: 1 }} />
+        <span
+          style={{
+            fontSize: "0.68rem",
+            color: "var(--text-faint)",
+            letterSpacing: "0.05em",
+          }}
+          title="Deployed commit — quote this if something looks out of date"
+        >
+          build {(process.env.VERCEL_GIT_COMMIT_SHA || "local").slice(0, 7)}
+        </span>
       </header>
       <main style={{ padding: "20px 24px" }}>{children}</main>
     </>

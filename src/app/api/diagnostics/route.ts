@@ -30,6 +30,10 @@ export async function GET() {
     anthropic_key_present: !!process.env.ANTHROPIC_API_KEY,
     caller_secret_present: !!process.env.CALLER_SESSION_SECRET,
     vercel_env: process.env.VERCEL_ENV || "local",
+    // Which commit is actually serving this request.
+    git_sha: (process.env.VERCEL_GIT_COMMIT_SHA || "unknown").slice(0, 7),
+    git_branch: process.env.VERCEL_GIT_COMMIT_REF || "unknown",
+    git_message: (process.env.VERCEL_GIT_COMMIT_MESSAGE || "").split("\n")[0].slice(0, 80),
     fetched_at: new Date().toISOString(),
   };
 
