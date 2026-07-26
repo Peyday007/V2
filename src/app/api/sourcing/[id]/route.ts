@@ -46,6 +46,20 @@ export async function GET(
   const jobsByStatus = tally(jobCounts.data, "status");
   const outstanding = (jobsByStatus.pending || 0) + (jobsByStatus.running || 0);
 
+  // 144 copies of the same message is noise. Collapse to distinct causes.
+  const seen = new Set<string>();
+  const distinctErrors: { type: string; last_error: string; count: number }[] = [];
+  for (const e of recentErrors.data || []) {
+    const key = String(e.last_error).slice(0, 120);
+    if (seen.has(key)) {
+      const hit = distinctErrors.find((d) => d.last_error.startsWith(key));
+      if (hit) hit.count++;
+      continue;
+    }
+    seen.add(key);
+    distinctErrors.push({ type: e.type, last_error: String(e.last_error), count: 1 });
+  }
+
   return NextResponse.json({
     campaign,
     places_key_configured: placesKeyConfigured(),
@@ -53,7 +67,12 @@ export async function GET(
     jobs: jobsByStatus,
     outstanding_jobs: outstanding,
     leads_by_machine_status: tally(statusCounts.data, "machine_status"),
-    recent_errors: recentErrors.data || [],
+    recent_errors: distinctErrors,
+    env: {
+      places_key: placesKeyConfigured(),
+      caller_session_secret: !!process.env.CALLER_SESSION_SECRET,
+      anthropic_key: !!process.env.ANTHROPIC_API_KEY,
+    },
   });
 }
 
@@ -98,14 +117,31 @@ export async function POST(
       .eq("id", id);
 
     if (action === "resume") {
-      // Re-arm any tasks that were skipped while paused/stopped.
+      // Re-arm tasks that were skipped while paused/stopped AND ones that
+      // failed on a configuration problem (bad key, API not enabled), so
+      // fixing Google Cloud and pressing Resume actually recovers them.
       const { data: skipped } = await db
         .from("search_tasks")
         .select("id")
         .eq("campaign_id", id)
-        .in("status", ["skipped", "pending"]);
+        .in("status", ["skipped", "pending", "failed"]);
+
+      // Clear out the dead jobs from the failed run so they don't linger.
+      await db
+        .from("jobs")
+        .update({ status: "cancelled" })
+        .eq("campaign_id", id)
+        .in("status", ["pending", "failed"]);
+      await db
+        .from("sourcing_campaigns")
+        .update({ error_count: 0, last_error: null })
+        .eq("id", id);
+
       for (const t of skipped || []) {
-        await db.from("search_tasks").update({ status: "pending" }).eq("id", t.id);
+        await db
+          .from("search_tasks")
+          .update({ status: "pending", retry_count: 0, last_error: null })
+          .eq("id", t.id);
         await enqueue({
           type: "execute_places_search",
           payload: { task_id: t.id, campaign_id: id },

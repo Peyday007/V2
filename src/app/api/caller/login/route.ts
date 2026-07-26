@@ -3,6 +3,19 @@ import { supabase } from "@/lib/supabase";
 import { makeSessionToken, CALLER_COOKIE } from "@/lib/callerSession";
 
 export async function POST(req: NextRequest) {
+  // Without this secret no session cookie can be signed, so login can never
+  // succeed. Say so plainly instead of throwing a 500 the caller can't read.
+  if (!process.env.CALLER_SESSION_SECRET) {
+    console.error("[caller/login] CALLER_SESSION_SECRET is not set");
+    return NextResponse.json(
+      {
+        error:
+          "Sign-in is not configured on this deployment. An admin needs to add CALLER_SESSION_SECRET in Vercel → Settings → Environment Variables, then redeploy.",
+      },
+      { status: 503 }
+    );
+  }
+
   const { pin } = await req.json();
   if (!pin || !/^\d{6}$/.test(pin)) {
     return NextResponse.json({ error: "Enter your 6-digit PIN" }, { status: 400 });

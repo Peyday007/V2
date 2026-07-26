@@ -47,12 +47,37 @@ export type PlacesPage = {
   nextPageToken: string | null;
 };
 
+/** Turn Google's raw error into something the admin can act on. */
+function explain(status: number, body: string): string {
+  if (status === 403) {
+    if (/blocked|has not been used|is disabled|SERVICE_DISABLED/i.test(body)) {
+      return (
+        "Google is blocking this request. Enable **Places API (New)** in Google Cloud Console " +
+        "→ APIs & Services → Library (note: 'Places API' and 'Places API (New)' are different " +
+        "products — you need the New one). If your API key has API restrictions, add Places API " +
+        "(New) to its allowed list. Changes take a minute to propagate."
+      );
+    }
+    return (
+      "Google rejected the key (403). Check that billing is enabled on the Google Cloud project " +
+      "and that the key has no HTTP-referrer restriction — this is a server-side call, so a " +
+      "referrer-restricted key will always fail."
+    );
+  }
+  if (status === 400) return "Google rejected the request as malformed (400).";
+  if (status === 429) return "Google rate limit hit (429). It will retry automatically.";
+  return "";
+}
+
 export class PlacesError extends Error {
   status: number;
   retryable: boolean;
+  hint: string;
   constructor(status: number, message: string) {
-    super(`Places API ${status}: ${message}`);
+    const hint = explain(status, message);
+    super(`Places API ${status}: ${hint || message}`);
     this.status = status;
+    this.hint = hint;
     // 429/5xx are transient; 4xx (bad key, bad request) are not.
     this.retryable = status === 429 || status >= 500;
   }
@@ -116,7 +141,8 @@ export async function searchPlaces(opts: {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new PlacesError(res.status, text.slice(0, 300));
+    console.error(`[places] ${res.status}:`, text.slice(0, 1000));
+    throw new PlacesError(res.status, text);
   }
 
   const json = (await res.json()) as {

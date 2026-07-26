@@ -32,7 +32,8 @@ type Progress = {
   jobs: Record<string, number>;
   outstanding_jobs: number;
   leads_by_machine_status: Record<string, number>;
-  recent_errors: { type: string; last_error: string; attempts: number }[];
+  recent_errors: { type: string; last_error: string; count: number }[];
+  env?: { places_key: boolean; caller_session_secret: boolean; anthropic_key: boolean };
 };
 
 export default function SourcingPage() {
@@ -160,6 +161,20 @@ export default function SourcingPage() {
       {error && (
         <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>
           <p style={{ color: "var(--red)", fontSize: "0.85rem" }}>{error}</p>
+        </div>
+      )}
+
+      {progress?.env && !progress.env.caller_session_secret && (
+        <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>
+          <h3 style={{ color: "var(--red)", marginBottom: 6 }}>
+            Callers cannot sign in
+          </h3>
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            <code>CALLER_SESSION_SECRET</code> is not set on this deployment, so
+            the dialer can&apos;t create a login session — entering a correct PIN
+            will still fail. Add it in Vercel → Settings → Environment Variables
+            (any long random string, 30+ characters), then redeploy.
+          </p>
         </div>
       )}
 
@@ -322,11 +337,25 @@ export default function SourcingPage() {
               </div>
               {progress.recent_errors.length > 0 && (
                 <div style={{ marginTop: 12 }}>
-                  <h3 style={{ color: "var(--red)", marginBottom: 6 }}>Recent errors</h3>
+                  <h3 style={{ color: "var(--red)", marginBottom: 6 }}>What went wrong</h3>
                   {progress.recent_errors.map((e, i) => (
-                    <div key={i} className="faint" style={{ marginBottom: 4 }}>
-                      <strong>{e.type}</strong> (attempt {e.attempts}):{" "}
-                      {e.last_error?.slice(0, 120)}
+                    <div
+                      key={i}
+                      style={{
+                        marginBottom: 8,
+                        padding: "8px 10px",
+                        background: "var(--bg-inset)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 4,
+                        fontSize: "0.78rem",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <strong>{e.type}</strong>
+                      {e.count > 1 && (
+                        <span className="faint"> · {e.count} more like this</span>
+                      )}
+                      <div style={{ marginTop: 4 }}>{e.last_error}</div>
                     </div>
                   ))}
                 </div>
