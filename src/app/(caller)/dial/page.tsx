@@ -345,26 +345,18 @@ export default function DialPage() {
           )}
 
           {data.aiTip && (
-            <details className="card">
-              <summary
-                style={{
-                  cursor: "pointer",
-                  fontSize: "0.78rem",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                  color: "var(--text-dim)",
-                  fontWeight: 700,
-                }}
-              >
-                Call tip
-              </summary>
+            <div className="card">
+              <h3 style={{ marginBottom: 8, color: "var(--text-dim)" }}>Call tip</h3>
               <p
-                className="muted"
-                style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem", marginTop: 8 }}
+                style={{
+                  whiteSpace: "pre-wrap",
+                  fontSize: "0.88rem",
+                  lineHeight: 1.6,
+                }}
               >
                 {data.aiTip}
               </p>
-            </details>
+            </div>
           )}
         </div>
 
