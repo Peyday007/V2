@@ -138,9 +138,12 @@ export default function SourcingPage() {
             Google Places key not detected
           </h3>
           <p className="muted" style={{ fontSize: "0.85rem" }}>
-            Add <code>GOOGLE_PLACES_API_KEY</code> in Vercel → Settings →
-            Environment Variables (Production), then redeploy. Campaigns cannot
-            start without it.
+            If you already added <code>GOOGLE_PLACES_API_KEY</code> in Vercel,
+            you still need to <strong>redeploy</strong> — environment variables
+            are baked in at build time and do not reach a deployment that was
+            built before you added them. Vercel → Deployments → ⋯ on the newest
+            one → <strong>Redeploy</strong>. Campaigns cannot start until this
+            shows as detected.
           </p>
         </div>
       )}

@@ -8,7 +8,10 @@ export async function GET() {
   const ai = anthropic();
   if (!ai) {
     return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY is not set on the server" },
+      {
+        error:
+          "ANTHROPIC_API_KEY is not available to this deployment. If you just added it in Vercel, you must REDEPLOY — environment variables only apply to new builds, not to already-running ones. Vercel → Deployments → ⋯ on the newest one → Redeploy.",
+      },
       { status: 500 }
     );
   }
