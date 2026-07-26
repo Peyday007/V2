@@ -2,8 +2,8 @@
 // without a database.
 //
 // Only events for workflows that ACTUALLY EXIST in the app today. Future
-// types (scripts, objections, experiments, recommendations) get added here
-// when those features are built — the schema does not need to change.
+// types (script variants, experiments, recommendations) get added here when
+// those features are built — the schema does not need to change.
 
 export const EVENT_TYPES = [
   // lead lifecycle
@@ -50,6 +50,8 @@ export const EVENT_TYPES = [
   "call.outcome_recorded",
   "callback.scheduled",
   "appointment.booked",
+  "appointment.attendance_recorded",
+  "objection.raised",
   "note.added",
 
   // callers
@@ -76,6 +78,7 @@ export const ENTITY_TYPES = [
   "deal",
   "callback",
   "appointment",
+  "objection",
   "contact",
 ] as const;
 
@@ -108,6 +111,7 @@ export function primaryEntityFor(type: string): EntityType | null {
     call: "call",
     callback: "callback",
     appointment: "appointment",
+    objection: "objection",
     packet: "packet",
     caller: "caller",
     campaign: "campaign",

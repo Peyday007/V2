@@ -6,7 +6,12 @@ import {
   DM_REACHED_OUTCOMES,
 } from "../src/lib/outcomeForms";
 import { whoToAskFor, callObjective, callScript, OBJECTIONS } from "../src/lib/callGuidance";
-import { nextAttemptAt, windowForAttempt, CALL_WINDOWS } from "../src/lib/callWindows";
+import {
+  nextAttemptAt,
+  windowForAttempt,
+  CALL_WINDOWS,
+  localHourParts,
+} from "../src/lib/callWindows";
 
 const BASE = {
   owner_name: null,
@@ -213,5 +218,42 @@ describe("objection help stays short", () => {
     expect(labels).toContain("owner is unavailable");
     expect(labels).toContain("send some information");
     expect(labels).toContain("how much does it cost");
+  });
+});
+
+describe("localHourParts records the hour AT THE BUSINESS", () => {
+  // 16:00 UTC on Wednesday 1 July 2026.
+  const when = new Date("2026-07-01T16:00:00Z");
+
+  it("converts to the business's own clock, not the caller's", () => {
+    expect(localHourParts(when, "America/New_York").hour).toBe(12);
+    expect(localHourParts(when, "America/Los_Angeles").hour).toBe(9);
+  });
+
+  it("reports the day of week in that zone", () => {
+    expect(localHourParts(when, "America/New_York").dayOfWeek).toBe(3);
+  });
+
+  it("rolls the day back when the zone is behind midnight UTC", () => {
+    const justAfterMidnightUtc = new Date("2026-07-02T03:00:00Z");
+    const la = localHourParts(justAfterMidnightUtc, "America/Los_Angeles");
+    expect(la.hour).toBe(20);
+    expect(la.dayOfWeek).toBe(3); // still Wednesday in California
+  });
+
+  it("says which zone it used, so unknown zones are not passed off as local", () => {
+    expect(localHourParts(when, "America/Denver").timezone).toBe("America/Denver");
+    expect(localHourParts(when, null).timezone).toBeNull();
+  });
+
+  it("falls back to UTC rather than throwing on a bad zone", () => {
+    const r = localHourParts(when, "Not/AZone");
+    expect(r.hour).toBe(16);
+    expect(r.timezone).toBeNull();
+  });
+
+  it("never returns 24 for midnight", () => {
+    const midnight = new Date("2026-07-02T04:00:00Z"); // 00:00 in New York
+    expect(localHourParts(midnight, "America/New_York").hour).toBe(0);
   });
 });

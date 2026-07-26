@@ -105,3 +105,39 @@ export function timezoneForState(state: string | null | undefined): string | nul
   if (!state) return null;
   return STATE_TZ[state.toUpperCase()] || null;
 }
+
+/**
+ * Hour and day of week AT THE BUSINESS, not at the caller.
+ *
+ * "Call roofers before 9am" is only a usable finding in the roofer's time
+ * zone; a Michigan caller dialing California at 8am local is really calling
+ * at 5am. Falls back to the server's own clock when no zone is known, and
+ * says which it used so the analytics page does not overclaim.
+ */
+export function localHourParts(
+  when: Date,
+  timezone: string | null | undefined
+): { hour: number; dayOfWeek: number; timezone: string | null } {
+  if (timezone) {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: "numeric",
+        hour12: false,
+        weekday: "short",
+      }).formatToParts(when);
+      const hourPart = parts.find((p) => p.type === "hour")?.value;
+      const dayPart = parts.find((p) => p.type === "weekday")?.value;
+      const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const hour = Number(hourPart);
+      const dayOfWeek = days.indexOf(dayPart || "");
+      if (Number.isFinite(hour) && dayOfWeek >= 0) {
+        // Intl renders midnight as 24 in some runtimes.
+        return { hour: hour % 24, dayOfWeek, timezone };
+      }
+    } catch {
+      // fall through to the server clock
+    }
+  }
+  return { hour: when.getUTCHours(), dayOfWeek: when.getUTCDay(), timezone: null };
+}

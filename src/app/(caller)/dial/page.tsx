@@ -93,12 +93,34 @@ export default function DialPage() {
   const [scriptStep, setScriptStep] = useState(0);
   const [copied, setCopied] = useState(false);
 
+  // Measured, not asked for. The caller never types a duration; the clock
+  // starts when the lead appears and stops when the outcome is saved.
+  const [startedAt, setStartedAt] = useState<string>(() => new Date().toISOString());
+  const [elapsed, setElapsed] = useState(0);
+  // Every objection the caller actually opened on this call, saved with the
+  // outcome so objection effectiveness becomes measurable.
+  const [raised, setRaised] = useState<
+    { key: string; label: string; rebuttal_shown: boolean }[]
+  >([]);
+
+  useEffect(() => {
+    if (state !== "ready") return;
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)),
+      1000
+    );
+    return () => clearInterval(id);
+  }, [state, startedAt]);
+
   async function fetchNext() {
     setState("loading");
     setIntel({});
     setPendingOutcome(null);
     setScriptStep(0);
     setOpenObjection(null);
+    setRaised([]);
+    setStartedAt(new Date().toISOString());
+    setElapsed(0);
     const res = await fetch("/api/dial/next");
     if (res.status === 401) {
       setState("login");
@@ -149,6 +171,8 @@ export default function DialPage() {
         intel,
         confirmed,
         notes: values.note || "",
+        started_at: startedAt,
+        objections: raised,
       }),
     });
     if (!res.ok) {
@@ -175,6 +199,8 @@ export default function DialPage() {
         values: { what_happened: "Other", note: `Skipped: ${reason.trim()}` },
         intel: {},
         confirmed: true,
+        started_at: startedAt,
+        objections: raised,
       }),
     }).catch(() => {});
     setLogging(false);
@@ -294,6 +320,10 @@ export default function DialPage() {
         <span className="tag-dim">{data.remaining} left</span>
         <span className="tag-dim">{data.doneToday ?? 0} done today</span>
         <span className="tag-dim">attempt #{(lead.attempt_count ?? 0) + 1}</span>
+        <span className="tag-dim" title="Time on this lead. Saved automatically with the outcome.">
+          {String(Math.floor(elapsed / 60)).padStart(2, "0")}:
+          {String(elapsed % 60).padStart(2, "0")}
+        </span>
         {localTime && (
           <span className="tag-dim">
             local {localTime}
@@ -504,7 +534,14 @@ export default function DialPage() {
 
           <div className="card">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3>Objections</h3>
+              <h3>
+                Objections
+                {raised.length > 0 && (
+                  <span className="faint" style={{ marginLeft: 8, textTransform: "none" }}>
+                    {raised.length} logged
+                  </span>
+                )}
+              </h3>
               <button className="btn-ghost" style={{ padding: "3px 10px" }} onClick={() => setShowObjections(!showObjections)}>
                 {showObjections ? "Hide" : "Open"}
               </button>
@@ -516,8 +553,19 @@ export default function DialPage() {
                     <button
                       className="btn-ghost"
                       style={{ width: "100%", justifyContent: "flex-start", padding: "5px 10px", fontSize: "0.72rem" }}
-                      onClick={() => setOpenObjection(openObjection === o.key ? null : o.key)}
+                      onClick={() => {
+                        const opening = openObjection !== o.key;
+                        setOpenObjection(opening ? o.key : null);
+                        if (opening) {
+                          setRaised((prev) =>
+                            prev.some((r) => r.key === o.key)
+                              ? prev
+                              : [...prev, { key: o.key, label: o.label, rebuttal_shown: true }]
+                          );
+                        }
+                      }}
                     >
+                      {raised.some((r) => r.key === o.key) ? "• " : ""}
                       {o.label}
                     </button>
                     {openObjection === o.key && (

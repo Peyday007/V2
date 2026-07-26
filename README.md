@@ -6,6 +6,8 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 - **Board** (`/`) — the Sales board shows your **leads** as cards moving through New Lead → Contact Attempted → Qualified → Discovery Booked → Discovery Completed → Closed Won/Lost. Call outcomes logged in the dialer advance the card automatically. The Delivery board tracks won deals through onboarding.
 - **Dial** (`/dial`) — caller signs in with a 6-digit PIN, works one lead at a time: sees who to ask for (recommended calling approach), known decision-maker contacts, previous call history, logs outcomes with one click, and saves anything learned on the call (names, extensions, callback times, transfer instructions) so it's never rediscovered
 - **Metrics** (`/metrics`) — DM-conversations-per-100-dials and related rates
+- **Analytics** (`/admin/analytics`) — what the call data actually supports, with confidence intervals and significance tests on every number
+- **Appointments** (`/admin/appointments`) — mark each booked appointment held / no-show / cancelled, which is the only way show-rate can ever be measured
 - **Campaigns** (`/admin/campaigns`) — create campaigns, generate locked lead packets per caller, "What to Attack Today" AI prioritizer
 - **Import** (`/admin/import`) — upload any lead CSV, map its columns, and import with normalization (phone/domain/name/state) and duplicate linking (same phone, domain, or place ID links to the existing lead — nothing deleted, no duplicate calling)
 - **Callers** (`/admin/callers`) — add callers (auto-generated PIN), revoke instantly
@@ -35,6 +37,7 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 9. Repeat with `supabase/migrations/0008_packets_from_sourcing.sql` (new query, paste, Run).
 9b. Repeat with `supabase/migrations/0011_owner_intel.sql` (new query, paste, Run).
 9c. Repeat with `supabase/migrations/0012_event_memory.sql` (new query, paste, Run).
+9d. Repeat with `supabase/migrations/0013_call_analytics.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -142,3 +145,36 @@ board shows that lead's own history inline.
 
 Writing an event never breaks the action it records: failures are logged, not
 thrown.
+
+## Analytics
+
+The **Analytics** tab answers operational questions from real calls only:
+when to dial, which trades to buy more leads in, how many attempts are worth
+making, who is converting, which objections end calls, and whether enrichment
+pays for itself.
+
+**Nothing is asserted that the data cannot support.** Every rate carries a
+Wilson confidence interval ("could really be 12%–48%"), every comparison
+carries a two-proportion significance test, and every dimension is labelled
+*Not enough data* / *Early signal* / *Reliable*. A 100% success rate from one
+call is never reported as a finding — it is reported as one call. Where a
+comparison is too thin, the page states roughly how many more calls per group
+would settle it.
+
+**What is captured on every call**, because none of it can be recovered later:
+
+| Fact | Why it has to be captured live |
+|---|---|
+| Call duration | Timed automatically in the dialer; nothing can infer it afterwards |
+| Attempt number | Which attempt on that company this was |
+| Hour and day, in the *business's* time zone | A Michigan caller dialing California at 8am is really calling at 5am |
+| Industry, city, state, rating, review count | Snapshotted as they were at dial time, because the lead changes afterwards |
+| Whether the owner's name was known *before* dialing | The measurement that tells you whether enrichment is worth its cost |
+| Objections raised | Logged when a caller opens one in the dialer, plus anything typed into an outcome form |
+| Appointment attendance | Recorded by hand on the Appointments page — a booked appointment is not a held one |
+
+The **Data coverage** table at the bottom of the page shows what share of
+logged calls actually carries each field, so a thin analysis is never mistaken
+for a thorough one. Calls logged before this migration have no duration or
+objection data and honestly report as blank rather than being back-filled with
+guesses.

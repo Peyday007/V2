@@ -3,11 +3,26 @@ import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
 import { eventChain } from "@/lib/events";
 import { missingRequired, DM_REACHED_OUTCOMES, OUTCOME_FORM_MAP } from "@/lib/outcomeForms";
-import { nextAttemptAt } from "@/lib/callWindows";
+import { nextAttemptAt, localHourParts, timezoneForState } from "@/lib/callWindows";
 import { coerceStage, nextStageAfterOutcome } from "@/lib/stages";
 import { normalizePhone } from "@/lib/normalize";
 
 type Values = Record<string, string>;
+
+/** An objection the caller hit during the call, sent from the dialer. */
+type RaisedObjection = { key: string; label?: string; rebuttal_shown?: boolean };
+
+/** How the dialer measures a call. Anything absurd is discarded, not stored. */
+const MAX_PLAUSIBLE_CALL_SECONDS = 3 * 60 * 60;
+
+function durationFrom(startedAt: unknown, endedAt: Date): number | null {
+  if (typeof startedAt !== "string") return null;
+  const start = new Date(startedAt);
+  if (Number.isNaN(start.getTime())) return null;
+  const seconds = Math.round((endedAt.getTime() - start.getTime()) / 1000);
+  if (seconds < 0 || seconds > MAX_PLAUSIBLE_CALL_SECONDS) return null;
+  return seconds;
+}
 
 function combine(date?: string, time?: string): Date | null {
   if (!date) return null;
@@ -55,7 +70,7 @@ export async function POST(req: NextRequest) {
   const db = supabase();
   const { data: lead } = await db
     .from("leads")
-    .select("id, attempt_count, pipeline_stage, normalized_phone, owner_reached, owner_name, owner_title, gatekeeper_name, best_call_day, best_call_time, direct_number, extension, answering_setup, existing_provider, other_decision_maker")
+    .select("id, attempt_count, pipeline_stage, normalized_phone, owner_reached, owner_name, owner_title, gatekeeper_name, best_call_day, best_call_time, direct_number, extension, answering_setup, existing_provider, other_decision_maker, industry, city, state, rating, review_count, timezone, enrichment_confidence")
     .eq("id", lead_id)
     .single();
   if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
@@ -72,6 +87,16 @@ export async function POST(req: NextRequest) {
             : "gatekeeper"
           : "unknown";
 
+  /* ----- facts that can only be captured now, never reconstructed later ----- */
+  const endedAt = new Date();
+  const durationSeconds = durationFrom(body.started_at, endedAt);
+  const leadTz = lead.timezone || timezoneForState(lead.state);
+  const { hour, dayOfWeek, timezone: usedTz } = localHourParts(endedAt, leadTz);
+  const attemptNumber = (lead.attempt_count ?? 0) + 1;
+  // Snapshotted deliberately: the lead changes after this call, and joining
+  // back to it later would silently rewrite what we knew at dial time.
+  const ownerKnownBefore = !!lead.owner_name;
+
   const { data: call, error } = await db
     .from("calls")
     .insert({
@@ -84,6 +109,24 @@ export async function POST(req: NextRequest) {
       details: values,
       next_step: values.next_step || null,
       spoke_with_role: spokeWithRole,
+      started_at:
+        typeof body.started_at === "string" && durationSeconds !== null
+          ? body.started_at
+          : null,
+      ended_at: endedAt.toISOString(),
+      duration_seconds: durationSeconds,
+      attempt_number: attemptNumber,
+      dialed_hour: hour,
+      dialed_dow: dayOfWeek,
+      lead_timezone: usedTz,
+      lead_industry: lead.industry ?? null,
+      lead_city: lead.city ?? null,
+      lead_state: lead.state ?? null,
+      lead_rating: lead.rating ?? null,
+      lead_review_count: lead.review_count ?? null,
+      owner_known_before: ownerKnownBefore,
+      enrichment_confidence: lead.enrichment_confidence ?? null,
+      script_variant: typeof body.script_variant === "string" ? body.script_variant : "owner_first_v1",
     })
     .select()
     .single();
@@ -102,10 +145,75 @@ export async function POST(req: NextRequest) {
     leadId: lead_id,
     packetId: packet_id || null,
     callId: call.id,
-    newValue: { outcome, spoke_with_role: spokeWithRole, reached_dm: reachedDm },
-    metadata: { fields: Object.keys(values), notes: notes || values.note || null },
+    newValue: {
+      outcome,
+      spoke_with_role: spokeWithRole,
+      reached_dm: reachedDm,
+      duration_seconds: durationSeconds,
+      attempt_number: attemptNumber,
+      dialed_hour: hour,
+      owner_known_before: ownerKnownBefore,
+    },
+    metadata: {
+      fields: Object.keys(values),
+      notes: notes || values.note || null,
+      lead_industry: lead.industry ?? null,
+      lead_state: lead.state ?? null,
+      lead_timezone: usedTz,
+    },
     verificationStatus: "verified",
   });
+
+  /* ---------------- objections raised on this call ---------------- */
+  // Previously the objection panel was display-only. Every objection a
+  // caller hit was thrown away, so "which objection kills the most calls"
+  // was unanswerable. Now each one is a row tied to the call's outcome.
+  const rawObjections: RaisedObjection[] = Array.isArray(body.objections)
+    ? body.objections
+    : [];
+  const seen = new Set<string>();
+  const objections = rawObjections.filter((o) => {
+    if (!o || typeof o.key !== "string" || !o.key) return false;
+    if (seen.has(o.key)) return false;
+    seen.add(o.key);
+    return true;
+  });
+  // The outcome form also captures a free-text objection; count it too.
+  if (values.objection && !seen.has(`typed:${values.objection}`)) {
+    objections.push({ key: `typed:${values.objection}`, label: values.objection });
+  }
+
+  if (objections.length > 0) {
+    const { error: objErr } = await db.from("call_objections").insert(
+      objections.map((o) => ({
+        call_id: call.id,
+        lead_id,
+        caller_id: callerId,
+        objection_key: o.key,
+        objection_label: o.label || o.key,
+        rebuttal_shown: o.rebuttal_shown === true,
+        outcome,
+        reached_dm: reachedDm,
+      }))
+    );
+    if (objErr) {
+      console.error(
+        "[dial/outcome] objections not saved — run supabase/migrations/0013_call_analytics.sql:",
+        objErr.message
+      );
+    } else {
+      await chain.record({
+        type: "objection.raised",
+        entityType: "objection",
+        entityId: call.id,
+        leadId: lead_id,
+        callId: call.id,
+        newValue: { objections: objections.map((o) => o.key), outcome },
+        metadata: { count: objections.length },
+        verificationStatus: "verified",
+      });
+    }
+  }
 
   /* ---------------- durable lead intelligence ---------------- */
   const leadPatch: Record<string, unknown> = {
