@@ -5,6 +5,8 @@ import { planSearches } from "@/lib/searchPlan";
 import { placesKeyConfigured } from "@/lib/places";
 import { enqueue } from "@/lib/jobs";
 import { requestBudgetFor } from "@/lib/budget";
+import { DEFAULT_METROS, QUICK_MIX_TRADES } from "@/lib/metros";
+import { INDUSTRY_MAP } from "@/lib/industries";
 
 export const dynamic = "force-dynamic";
 
@@ -53,38 +55,58 @@ function toNumber(v: unknown): number | null {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-
-  const searchTerms = toArray(body.search_terms);
-  const zips = toArray(body.zips);
-  if (searchTerms.length === 0 && !body.industry?.trim()) {
-    return NextResponse.json(
-      { error: "Pick at least one trade" },
-      { status: 400 }
-    );
-  }
-  if (zips.length === 0 && !body.city?.trim() && !body.state?.trim()) {
-    return NextResponse.json(
-      { error: "Add a city or state to search" },
-      { status: 400 }
-    );
-  }
-
   const target = toNumber(body.target_lead_count) ?? 300;
+
+  // "Mix" mode: no trades, no geography, no decisions. Spread across a curated
+  // set of phone-driven home-service trades and major metros so the data comes
+  // back varied enough to learn from.
+  const isMix = body.mix === true;
+
+  let searchTerms = toArray(body.search_terms);
+  let locations = toArray(body.locations);
+  const zips = toArray(body.zips);
+
+  if (isMix) {
+    searchTerms = QUICK_MIX_TRADES.map(
+      (k) => INDUSTRY_MAP[k]?.searchTerms[0]
+    ).filter(Boolean) as string[];
+    locations = DEFAULT_METROS;
+  } else {
+    if (searchTerms.length === 0 && !body.industry?.trim()) {
+      return NextResponse.json({ error: "Pick at least one trade" }, { status: 400 });
+    }
+    if (
+      locations.length === 0 &&
+      zips.length === 0 &&
+      !body.city?.trim() &&
+      !body.state?.trim()
+    ) {
+      return NextResponse.json(
+        { error: "Add a city or state to search" },
+        { status: 400 }
+      );
+    }
+  }
 
   // Name the campaign from what it actually targets, so nobody has to invent one.
   const where = [body.city?.trim(), body.state?.trim()?.toUpperCase()]
     .filter(Boolean)
     .join(", ");
-  const autoName =
-    body.name?.trim() ||
-    `${body.industry?.trim() || "Home Services"}${where ? ` — ${where}` : ""}`;
+  const autoName = isMix
+    ? `Home Services Mix — ${new Date().toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      })}`
+    : body.name?.trim() ||
+      `${body.industry?.trim() || "Home Services"}${where ? ` — ${where}` : ""}`;
 
   const record = {
     name: autoName,
-    industry: body.industry?.trim() || null,
+    industry: isMix ? "Home Services" : body.industry?.trim() || null,
     state: body.state?.trim()?.toUpperCase() || null,
     city: body.city?.trim() || null,
     zips: zips.length ? zips : null,
+    locations: locations.length ? locations : null,
     latitude: toNumber(body.latitude),
     longitude: toNumber(body.longitude),
     radius_m: toNumber(body.radius_m),

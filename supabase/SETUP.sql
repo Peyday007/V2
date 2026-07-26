@@ -225,6 +225,7 @@ create table if not exists sourcing_campaigns (
   updated_at timestamptz not null default now()
 );
 
+alter table sourcing_campaigns add column if not exists locations text[];
 alter table sourcing_campaigns
   add column if not exists auto_assign_packets boolean not null default true;
 alter table sourcing_campaigns

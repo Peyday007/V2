@@ -41,6 +41,7 @@ export default function SourcingPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [showMix, setShowMix] = useState(false);
   const [error, setError] = useState("");
   const [ticking, setTicking] = useState(false);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -128,8 +129,15 @@ export default function SourcingPage() {
         <button className="btn-ghost" onClick={runWorkerOnce} disabled={ticking}>
           {ticking ? "Running…" : "Run worker now"}
         </button>
-        <button className="btn" onClick={() => setShowForm(true)}>
-          + New Campaign
+        <button
+          className="btn-ghost"
+          onClick={() => setShowForm(true)}
+          title="Choose specific trades and a city"
+        >
+          Custom…
+        </button>
+        <button className="btn" onClick={() => setShowMix(true)}>
+          ⚡ Generate Leads
         </button>
       </div>
 
@@ -328,6 +336,17 @@ export default function SourcingPage() {
         </>
       )}
 
+      {showMix && (
+        <MixDialog
+          onClose={() => setShowMix(false)}
+          onCreated={(id) => {
+            setShowMix(false);
+            setSelected(id);
+            loadCampaigns();
+          }}
+        />
+      )}
+
       {showForm && (
         <CampaignForm
           onClose={() => setShowForm(false)}
@@ -494,6 +513,112 @@ function Stat({
         {value}
       </div>
       <div className="faint">{label}</div>
+    </div>
+  );
+}
+
+/**
+ * The default path: no trades, no city, no settings. Pick how many leads and
+ * the engine spreads the run across a curated mix of phone-driven home-service
+ * trades and major metros, so the data comes back varied enough to learn from.
+ */
+function MixDialog({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const [target, setTarget] = useState(300);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function go() {
+    setSaving(true);
+    setError("");
+    const res = await fetch("/api/sourcing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mix: true, target_lead_count: target }),
+    });
+    const j = await res.json();
+    if (!res.ok) {
+      setError(j.error || "Could not start");
+      setSaving(false);
+      return;
+    }
+    if (j.start_error) setError(j.start_error);
+    onCreated(j.campaign.id);
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.65)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 50,
+        padding: 20,
+      }}
+    >
+      <div
+        className="card"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 460, maxWidth: "94vw", textAlign: "center" }}
+      >
+        <h2 style={{ marginBottom: 6 }}>How many leads?</h2>
+        <p className="faint" style={{ marginBottom: 20 }}>
+          A mix of home-service trades across major metros. Everything else is
+          automatic.
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            justifyContent: "center",
+            marginBottom: 20,
+            flexWrap: "wrap",
+          }}
+        >
+          {[100, 300, 500, 1000].map((n) => (
+            <button
+              key={n}
+              className={target === n ? "btn" : "btn-ghost"}
+              style={{ padding: "10px 20px", fontSize: "0.9rem" }}
+              onClick={() => setTarget(n)}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        {error && (
+          <p style={{ color: "var(--red)", marginBottom: 12, fontSize: "0.85rem" }}>
+            {error}
+          </p>
+        )}
+
+        <button
+          className="btn"
+          onClick={go}
+          disabled={saving}
+          style={{ width: "100%", justifyContent: "center", padding: "12px" }}
+        >
+          {saving ? "Starting…" : `Generate ${target} leads`}
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={onClose}
+          style={{ width: "100%", justifyContent: "center", marginTop: 8 }}
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }

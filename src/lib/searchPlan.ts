@@ -7,6 +7,8 @@ export type CampaignPlanInput = {
   city: string | null;
   state: string | null;
   zips: string[] | null;
+  /** Explicit multi-metro targeting, e.g. ["Detroit, MI", "Dallas, TX"]. */
+  locations?: string[] | null;
 };
 
 export type PlannedSearch = { search_term: string; location: string };
@@ -23,8 +25,11 @@ export function planSearches(campaign: CampaignPlanInput): PlannedSearch[] {
   if (terms.length === 0 && campaign.industry) terms.push(campaign.industry.trim());
 
   const locations: string[] = [];
+  const explicit = (campaign.locations || []).map((l) => l.trim()).filter(Boolean);
   const zips = (campaign.zips || []).map((z) => z.trim()).filter(Boolean);
-  if (zips.length > 0) {
+  if (explicit.length > 0) {
+    locations.push(...explicit);
+  } else if (zips.length > 0) {
     for (const zip of zips) {
       locations.push(campaign.state ? `${zip} ${campaign.state}` : zip);
     }

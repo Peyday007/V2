@@ -249,3 +249,51 @@ describe("API request budget derived from lead target", () => {
     expect(requestBudgetFor(NaN)).toBe(5);
   });
 });
+
+import { DEFAULT_METROS, QUICK_MIX_TRADES } from "../src/lib/metros";
+import { INDUSTRY_MAP } from "../src/lib/industries";
+
+describe("mix mode (no trades, no city required)", () => {
+  it("every quick-mix trade resolves to a real vertical with search terms", () => {
+    for (const key of QUICK_MIX_TRADES) {
+      expect(INDUSTRY_MAP[key], `missing vertical: ${key}`).toBeDefined();
+      expect(INDUSTRY_MAP[key].searchTerms.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("spans several trades and metros so the data is varied", () => {
+    expect(QUICK_MIX_TRADES.length).toBeGreaterThanOrEqual(10);
+    expect(DEFAULT_METROS.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("metros are formatted as 'City, ST' for Places text search", () => {
+    for (const m of DEFAULT_METROS) {
+      expect(m).toMatch(/^[A-Za-z .'-]+, [A-Z]{2}$/);
+    }
+  });
+
+  it("plans a grid from explicit locations with no city/state set", () => {
+    const plan = planSearches({
+      search_terms: ["plumber", "roofer"],
+      industry: null,
+      city: null,
+      state: null,
+      zips: null,
+      locations: ["Detroit, MI", "Dallas, TX"],
+    });
+    expect(plan).toHaveLength(4);
+    expect(plan.map((p) => p.location)).toContain("Dallas, TX");
+  });
+
+  it("explicit locations win over city/state", () => {
+    const plan = planSearches({
+      search_terms: ["plumber"],
+      industry: null,
+      city: "Detroit",
+      state: "MI",
+      zips: null,
+      locations: ["Austin, TX"],
+    });
+    expect(plan).toEqual([{ search_term: "plumber", location: "Austin, TX" }]);
+  });
+});
