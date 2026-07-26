@@ -723,8 +723,8 @@ function MixDialog({
       >
         <h2 style={{ marginBottom: 6 }}>How many leads?</h2>
         <p className="faint" style={{ marginBottom: 20 }}>
-          A mix of home-service trades across major metros. Everything else is
-          automatic.
+          A mix of home-service trades across major metros. Owner-operator sized
+          businesses only — big call-centre operations are filtered out.
         </p>
 
         <div

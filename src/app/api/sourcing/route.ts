@@ -115,7 +115,10 @@ export async function POST(req: NextRequest) {
     // Sensible defaults; the create form never asks about these.
     min_rating: toNumber(body.min_rating) ?? 3.5,
     min_review_count: toNumber(body.min_review_count),
-    max_review_count: toNumber(body.max_review_count),
+    // Businesses with thousands of reviews are multi-location operations with
+    // call centres and procurement — no reachable owner, poor fit. Cap by
+    // default; the custom form can raise or clear it.
+    max_review_count: toNumber(body.max_review_count) ?? 600,
     require_website: !!body.require_website,
     exclude_franchises: body.exclude_franchises !== false,
     max_api_requests: toNumber(body.max_api_requests) ?? requestBudgetFor(target),

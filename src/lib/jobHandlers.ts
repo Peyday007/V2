@@ -13,6 +13,8 @@ import {
 } from "./normalize";
 import { needsEnrichmentQueue } from "./machineStatus";
 import { findIndustry, roleBasedAsk } from "./industries";
+import { crawlSite } from "./crawler";
+import { extractPeople, discoverPeoplePages, CANDIDATE_PATHS } from "./extractPeople";
 import { logEvent } from "./events";
 
 type Handler = (job: Job) => Promise<void>;
@@ -606,7 +608,7 @@ const enrichLead: Handler = async (job) => {
   const { data: lead } = await db
     .from("leads")
     .select(
-      "id, business_name, industry, normalized_phone, domain, city, machine_status, archived_at"
+      "id, business_name, industry, normalized_phone, domain, website, city, machine_status, archived_at"
     )
     .eq("id", leadId)
     .single();
@@ -678,9 +680,102 @@ const enrichLead: Handler = async (job) => {
       : null) ||
     siblingContact;
 
+  // --- Step 2: the business's own website. Only when the internal database
+  // did not already give us a name, so we never crawl needlessly. ---
+  let websiteFinding: {
+    name: string;
+    title: string;
+    url: string;
+    supportingText: string;
+    confidence: number;
+  } | null = null;
+
+  if (!named && lead.website) {
+    stepsAttempted.push("website");
+    try {
+      const { pages, blockedByRobots } = await crawlSite(lead.website, {
+        candidatePaths: CANDIDATE_PATHS,
+        discover: discoverPeoplePages,
+        maxPages: 5,
+        stopWhen: (page) =>
+          extractPeople(page.html, lead.business_name).some((c) => c.confidence >= 0.85),
+      });
+
+      if (blockedByRobots) {
+        await db.from("enrichment_evidence").insert({
+          lead_id: leadId,
+          source_type: "website",
+          source_url: lead.website,
+          field: "role",
+          value: null,
+          supporting_text: "Site robots.txt disallows crawling; skipped.",
+          extraction_method: "deterministic",
+          confidence: 0,
+        });
+      }
+
+      let best: { c: ReturnType<typeof extractPeople>[number]; url: string } | null = null;
+      for (const page of pages) {
+        for (const c of extractPeople(page.html, lead.business_name)) {
+          // Record every claim, including weaker and conflicting ones.
+          await db.from("enrichment_evidence").insert({
+            lead_id: leadId,
+            source_type: "website",
+            source_url: page.url,
+            field: "owner_name",
+            value: c.name,
+            supporting_text: `${c.title} — "${c.supportingText}"`,
+            extraction_method: c.method,
+            confidence: c.confidence,
+            is_conflicting: !!best && best.c.name.toLowerCase() !== c.name.toLowerCase(),
+          });
+          if (!best || c.confidence > best.c.confidence) best = { c, url: page.url };
+        }
+      }
+
+      if (best) {
+        websiteFinding = {
+          name: best.c.name,
+          title: best.c.title,
+          url: best.url,
+          supportingText: best.c.supportingText,
+          confidence: best.c.confidence,
+        };
+      }
+    } catch (e) {
+      console.error(`[enrich] website crawl failed for ${leadId}:`, e);
+    }
+  }
+
   let recommendedAsk: string;
 
-  if (named && named.full_name) {
+  if (websiteFinding) {
+    successLevel = websiteFinding.confidence >= 0.8 ? "A" : "B";
+    finalStatus = "decision_maker_found";
+    confidence = websiteFinding.confidence;
+    recommendedAsk = `Call the main line and ask for ${websiteFinding.name}, the ${websiteFinding.title.toLowerCase()}.`;
+
+    await db.from("contacts").insert({
+      lead_id: leadId,
+      full_name: websiteFinding.name,
+      title: websiteFinding.title,
+      role_category: /owner|founder|president|proprietor|managing member/i.test(
+        websiteFinding.title
+      )
+        ? "owner"
+        : /general manager/i.test(websiteFinding.title)
+          ? "general_manager"
+          : /operations/i.test(websiteFinding.title)
+            ? "operations_manager"
+            : /office/i.test(websiteFinding.title)
+              ? "office_manager"
+              : "unknown_decision_maker",
+      contact_source: "website",
+      confidence: websiteFinding.confidence,
+      verified_status: "verified_by_public_source",
+      notes: `Found on ${websiteFinding.url}`,
+    });
+  } else if (named && named.full_name) {
     successLevel = "A";
     finalStatus = "decision_maker_found";
     confidence = 0.85;
@@ -752,7 +847,7 @@ const enrichLead: Handler = async (job) => {
   await db.from("enrichment_runs").insert({
     lead_id: leadId,
     steps_attempted: stepsAttempted,
-    succeeded_at_step: "internal_db",
+    succeeded_at_step: websiteFinding ? "website" : "internal_db",
     success_level: successLevel,
     duration_ms: Date.now() - startedAt,
     finished_at: new Date().toISOString(),
