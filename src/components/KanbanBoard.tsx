@@ -316,7 +316,16 @@ function EmptyExplainer() {
     assigned: number;
     failed: number;
     checked: boolean;
-  }>({ campaigns: 0, running: 0, inFlight: 0, assigned: 0, failed: 0, checked: false });
+    engineError: string | null;
+  }>({
+    campaigns: 0,
+    running: 0,
+    inFlight: 0,
+    assigned: 0,
+    failed: 0,
+    checked: false,
+    engineError: null,
+  });
 
   useEffect(() => {
     (async () => {
@@ -325,6 +334,11 @@ function EmptyExplainer() {
           fetch("/api/sourcing").then((r) => r.json()),
           fetch("/api/diagnostics").then((r) => r.json()),
         ]);
+        // Never report "no campaign" when the request actually failed.
+        if (campRes.error) {
+          setInfo((i) => ({ ...i, checked: true, engineError: campRes.error }));
+          return;
+        }
         const camps = campRes.campaigns || [];
         const byStatus: Record<string, number> = diagRes.leads?.by_machine_status || {};
         const inFlight = IN_FLIGHT.reduce((n, s) => n + (byStatus[s] || 0), 0);
@@ -335,9 +349,14 @@ function EmptyExplainer() {
           assigned: (byStatus.assigned_to_packet || 0) + (byStatus.contacted || 0),
           failed: byStatus.enrichment_failed || 0,
           checked: true,
+          engineError: null,
         });
-      } catch {
-        setInfo((i) => ({ ...i, checked: true }));
+      } catch (e) {
+        setInfo((i) => ({
+          ...i,
+          checked: true,
+          engineError: e instanceof Error ? e.message : "Could not reach the engine",
+        }));
       }
     })();
   }, []);
@@ -345,6 +364,22 @@ function EmptyExplainer() {
   let headline = "No leads in the database yet";
   let detail =
     "This is a real empty database, not a loading error. Start a sourcing campaign to generate leads automatically.";
+
+  if (info.checked && info.engineError) {
+    return (
+      <div
+        className="card"
+        style={{ marginBottom: 14, flexShrink: 0, borderColor: "var(--red)" }}
+      >
+        <h3 style={{ marginBottom: 6, color: "var(--red)" }}>
+          The sourcing engine is not set up yet
+        </h3>
+        <p className="muted" style={{ fontSize: "0.85rem" }}>
+          {info.engineError}
+        </p>
+      </div>
+    );
+  }
 
   if (info.checked) {
     if (info.running > 0) {
@@ -837,6 +872,51 @@ function DiagnosticsPanel({
             <div style={{ color: "var(--red)" }}>
               ⚠ {diag.leads.unrecognized_stage_count} lead(s) have an unrecognized
               stage — run migration 0005.
+            </div>
+          )}
+          {diag.engine && (
+            <div
+              style={{
+                marginTop: 6,
+                paddingTop: 6,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <div>
+                Engine — Places key:{" "}
+                <strong
+                  style={{
+                    color: diag.engine.places_key_present
+                      ? "var(--green)"
+                      : "var(--red)",
+                  }}
+                >
+                  {diag.engine.places_key_present ? "✓ set" : "✗ MISSING"}
+                </strong>{" "}
+                · worker secret: {diag.engine.worker_secret_set ? "✓" : "not set"} ·
+                service-role key:{" "}
+                {diag.engine.service_role_key_present ? "✓" : "not set"}
+              </div>
+              <div>
+                Jobs — pending/running: {diag.engine.jobs_pending_or_running} ·
+                failed:{" "}
+                <span
+                  style={{
+                    color: diag.engine.jobs_failed > 0 ? "var(--red)" : undefined,
+                  }}
+                >
+                  {diag.engine.jobs_failed}
+                </span>
+              </div>
+              <div className="faint">
+                Machine status:{" "}
+                {diag.leads?.by_machine_status &&
+                Object.keys(diag.leads.by_machine_status).length > 0
+                  ? Object.entries(diag.leads.by_machine_status)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join(" · ")
+                  : "no leads"}
+              </div>
             </div>
           )}
           <div className="faint">

@@ -49,6 +49,9 @@ export default function SourcingPage() {
     const j = await res.json();
     if (!res.ok) {
       setError(j.error || "Could not load campaigns");
+      if (typeof j.places_key_configured === "boolean") {
+        setKeyOk(j.places_key_configured);
+      }
       return;
     }
     setCampaigns(j.campaigns || []);

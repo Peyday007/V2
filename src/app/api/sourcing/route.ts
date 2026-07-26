@@ -11,7 +11,21 @@ export async function GET() {
     .from("sourcing_campaigns")
     .select("*")
     .order("created_at", { ascending: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (error) {
+    const missingTable = /does not exist|schema cache/i.test(error.message);
+    return NextResponse.json(
+      {
+        error: missingTable
+          ? "The sourcing engine tables don't exist yet. Run supabase/migrations/0006_engine_foundation.sql in the Supabase SQL Editor."
+          : `Could not load campaigns: ${error.message}`,
+        migration_required: missingTable,
+        places_key_configured: placesKeyConfigured(),
+      },
+      { status: 500 }
+    );
+  }
+
   return NextResponse.json({
     campaigns: data,
     places_key_configured: placesKeyConfigured(),
