@@ -16,11 +16,14 @@ export type Lead = {
   rating: number | null;
   review_count: number | null;
   status: string;
+  machine_status: string;
   pipeline_stage: SalesStage;
   do_not_call: boolean;
   archived_at: string | null;
   notes: string | null;
   created_at: string;
+  qualification_failure_reason: string | null;
+  sourcing_campaign_id: string | null;
   /** True when the stored stage was not a recognized value. */
   stage_was_unrecognized?: boolean;
 };
@@ -58,7 +61,7 @@ export function useLeads() {
       const { data, error } = await db
         .from("leads")
         .select(
-          "id, business_name, phone, website, city, state, industry, rating, review_count, status, pipeline_stage, do_not_call, archived_at, notes, created_at"
+          "id, business_name, phone, website, city, state, industry, rating, review_count, status, machine_status, pipeline_stage, do_not_call, archived_at, notes, created_at, qualification_failure_reason, sourcing_campaign_id"
         )
         .is("archived_at", null)
         .order("created_at", { ascending: false })

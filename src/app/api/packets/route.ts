@@ -37,18 +37,25 @@ export async function POST(req: NextRequest) {
   const db = supabase();
 
   // Only leads never placed in any packet (status 'new') are eligible — no duplicate calling.
+  // Only fully-processed leads are eligible for calling. Newly generated
+  // businesses stay out of packets until enrichment marks them ready.
   const { data: leads, error: leadsErr } = await db
     .from("leads")
     .select("id")
     .eq("campaign_id", campaign_id)
     .eq("status", "new")
     .eq("do_not_call", false)
+    .eq("machine_status", "ready_for_calling")
+    .is("archived_at", null)
     .order("created_at")
     .limit(size);
   if (leadsErr) return NextResponse.json({ error: leadsErr.message }, { status: 500 });
   if (!leads || leads.length === 0) {
     return NextResponse.json(
-      { error: "No available leads in this campaign" },
+      {
+        error:
+          "No leads are ready for calling in this campaign. Leads become eligible once enrichment marks them 'ready_for_calling'.",
+      },
       { status: 400 }
     );
   }
@@ -81,7 +88,7 @@ export async function POST(req: NextRequest) {
 
   await db
     .from("leads")
-    .update({ status: "in_packet" })
+    .update({ status: "in_packet", machine_status: "assigned_to_packet" })
     .in("id", leads.map((l) => l.id));
 
   await logEvent("packet.created", "packet", packet.id, {

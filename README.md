@@ -2,6 +2,7 @@
 
 Cold-calling CRM for a small team selling AI Receptionist services to roofing companies.
 
+- **Sourcing** (`/admin/sourcing`) — **the lead-generation engine.** Create a campaign (industry, city/ZIPs, search terms, target count, rating/review filters, franchise exclusion, API request cap) and press Start. The engine searches Google Places in the background, saves each business the moment it's returned, deduplicates it, runs quick qualification, and queues it for enrichment. Live progress: searches planned/completed, API requests used, businesses returned, unique saved, duplicates skipped, qualification failures, enrichment queued, errors. Pause/Resume/Stop at any time.
 - **Board** (`/`) — the Sales board shows your **leads** as cards moving through New Lead → Contact Attempted → Qualified → Discovery Booked → Discovery Completed → Closed Won/Lost. Call outcomes logged in the dialer advance the card automatically. The Delivery board tracks won deals through onboarding.
 - **Dial** (`/dial`) — caller signs in with a 6-digit PIN, works one lead at a time: sees who to ask for (recommended calling approach), known decision-maker contacts, previous call history, logs outcomes with one click, and saves anything learned on the call (names, extensions, callback times, transfer instructions) so it's never rediscovered
 - **Metrics** (`/metrics`) — DM-conversations-per-100-dials and related rates
@@ -30,6 +31,27 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 5. Repeat with `supabase/migrations/0003_enrichment.sql` (new query, paste, Run).
 6. Repeat with `supabase/migrations/0004_lead_stages.sql` (new query, paste, Run).
 7. Repeat with `supabase/migrations/0005_canonical_stages.sql` (new query, paste, Run).
+8. Repeat with `supabase/migrations/0006_engine_foundation.sql` (new query, paste, Run).
+9. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
+
+### How the engine works
+
+Lead generation and enrichment are **separate asynchronous stages** — Places
+never waits for enrichment:
+
+```
+Places search → business saved immediately (discovered)
+              → normalized → quick qualification
+              → enrichment job queued (enrichment_queued)
+              → [Milestone 3] enrichment runs independently
+              → ready_for_calling → eligible for caller packets
+```
+
+Every step is a separate persisted job: idempotent (a lead can never get two
+enrichment jobs), retryable with exponential backoff, and resumable — a
+deployment or crash mid-campaign loses nothing, because all state is in
+Postgres. Only leads marked `ready_for_calling` can enter caller packets, so
+freshly generated businesses never reach a caller before they're processed.
 
 `0005` is self-healing: it creates anything missing, converts every historical
 stage value to the canonical key, blocks invalid stages at the database level,

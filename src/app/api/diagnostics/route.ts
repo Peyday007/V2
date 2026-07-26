@@ -68,6 +68,23 @@ export async function GET() {
       countOf("source_records"),
     ]);
 
+  // Machine status distribution — lets the board explain WHY it is empty.
+  const { data: msRows } = await db.from("leads").select("machine_status").limit(5000);
+  const byMachineStatus: Record<string, number> = {};
+  for (const r of msRows || []) {
+    const k = String(r.machine_status);
+    byMachineStatus[k] = (byMachineStatus[k] || 0) + 1;
+  }
+
+  const { count: pendingJobs } = await db
+    .from("jobs")
+    .select("*", { count: "exact", head: true })
+    .in("status", ["pending", "running"]);
+  const { count: failedJobs } = await db
+    .from("jobs")
+    .select("*", { count: "exact", head: true })
+    .eq("status", "failed");
+
   const byStage: Record<string, number | string> = {};
   for (const stage of SALES_STAGES) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -105,10 +122,18 @@ export async function GET() {
       do_not_call: dnc.count,
       assigned_to_packet: assigned.count,
       by_stage: byStage,
+      by_machine_status: byMachineStatus,
       unrecognized_stage_count: strayRows?.length ?? 0,
       unrecognized_stage_examples: strayRows || [],
     },
     contacts_total: contactsCount.count,
     source_records_total: sourceCount.count,
+    engine: {
+      places_key_present: !!process.env.GOOGLE_PLACES_API_KEY,
+      worker_secret_set: !!process.env.WORKER_SECRET,
+      service_role_key_present: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+      jobs_pending_or_running: pendingJobs ?? 0,
+      jobs_failed: failedJobs ?? 0,
+    },
   });
 }

@@ -9,6 +9,7 @@ import {
   DEFAULT_STAGE,
 } from "@/lib/stages";
 import { DELIVERY_STAGES } from "@/lib/constants";
+import { MACHINE_STATUS_LABELS, MachineStatus, IN_FLIGHT } from "@/lib/machineStatus";
 import { useLeads, Lead, ContactLite } from "@/hooks/useLeads";
 
 type Pipeline = "sales" | "delivery";
@@ -235,16 +236,7 @@ function SalesBoard({
         </p>
       )}
 
-      {state.status === "success_empty" && (
-        <div className="card" style={{ marginBottom: 14, flexShrink: 0 }}>
-          <h3 style={{ marginBottom: 6 }}>No leads in the database yet</h3>
-          <p className="muted" style={{ fontSize: "0.85rem" }}>
-            This is a real empty database, not a loading error. Add one with
-            <strong> + New Lead</strong>, or upload a CSV on the
-            <strong> Import</strong> tab.
-          </p>
-        </div>
-      )}
+      {state.status === "success_empty" && <EmptyExplainer />}
 
       {(state.status === "success_with_data" || state.status === "success_empty") && (
         <>
@@ -308,6 +300,83 @@ function SalesBoard({
         />
       )}
     </>
+  );
+}
+
+/**
+ * An empty board must never be ambiguous. This asks the engine why there is
+ * nothing to show: no campaign yet, sourcing running, everything still
+ * enriching, or everything already assigned.
+ */
+function EmptyExplainer() {
+  const [info, setInfo] = useState<{
+    campaigns: number;
+    running: number;
+    inFlight: number;
+    assigned: number;
+    failed: number;
+    checked: boolean;
+  }>({ campaigns: 0, running: 0, inFlight: 0, assigned: 0, failed: 0, checked: false });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [campRes, diagRes] = await Promise.all([
+          fetch("/api/sourcing").then((r) => r.json()),
+          fetch("/api/diagnostics").then((r) => r.json()),
+        ]);
+        const camps = campRes.campaigns || [];
+        const byStatus: Record<string, number> = diagRes.leads?.by_machine_status || {};
+        const inFlight = IN_FLIGHT.reduce((n, s) => n + (byStatus[s] || 0), 0);
+        setInfo({
+          campaigns: camps.length,
+          running: camps.filter((c: { status: string }) => c.status === "running").length,
+          inFlight,
+          assigned: (byStatus.assigned_to_packet || 0) + (byStatus.contacted || 0),
+          failed: byStatus.enrichment_failed || 0,
+          checked: true,
+        });
+      } catch {
+        setInfo((i) => ({ ...i, checked: true }));
+      }
+    })();
+  }, []);
+
+  let headline = "No leads in the database yet";
+  let detail =
+    "This is a real empty database, not a loading error. Start a sourcing campaign to generate leads automatically.";
+
+  if (info.checked) {
+    if (info.running > 0) {
+      headline = "Sourcing is running";
+      detail =
+        "The engine is searching Google Places right now. Businesses appear here as soon as they're saved — watch progress on the Sourcing tab.";
+    } else if (info.inFlight > 0) {
+      headline = "Leads are still being processed";
+      detail = `${info.inFlight} lead(s) are moving through normalization and enrichment. They'll appear once processing completes.`;
+    } else if (info.assigned > 0) {
+      headline = "All leads are already assigned or called";
+      detail = `${info.assigned} lead(s) exist but are in caller packets or already contacted.`;
+    } else if (info.failed > 0) {
+      headline = "All generated leads failed qualification";
+      detail = `${info.failed} business(es) were found but didn't meet your campaign's rating, review, website, or franchise rules. Loosen the filters and run again.`;
+    } else if (info.campaigns === 0) {
+      headline = "No sourcing campaign has been run yet";
+      detail =
+        "Go to the Sourcing tab, create a campaign (industry, city, search terms, target count), and press Start. The engine generates and saves businesses automatically.";
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 14, flexShrink: 0 }}>
+      <h3 style={{ marginBottom: 6 }}>{headline}</h3>
+      <p className="muted" style={{ fontSize: "0.85rem" }}>
+        {detail}
+      </p>
+      <a href="/admin/sourcing" className="btn" style={{ marginTop: 12 }}>
+        Go to Sourcing →
+      </a>
+    </div>
   );
 }
 
@@ -448,6 +517,28 @@ function LeadCard({
         <span className="tag-dim" style={{ whiteSpace: "nowrap" }}>
           {lead.do_not_call ? "DNC" : assignTag}
         </span>
+      </div>
+
+      <div style={{ marginBottom: 6 }}>
+        <span
+          className="tag-dim"
+          style={{
+            color:
+              lead.machine_status === "ready_for_calling"
+                ? "var(--green)"
+                : lead.machine_status === "enrichment_failed"
+                  ? "var(--red)"
+                  : "var(--text-dim)",
+          }}
+        >
+          {MACHINE_STATUS_LABELS[lead.machine_status as MachineStatus] ||
+            lead.machine_status}
+        </span>
+        {lead.qualification_failure_reason && (
+          <span className="faint" style={{ marginLeft: 6 }}>
+            {lead.qualification_failure_reason}
+          </span>
+        )}
       </div>
 
       {lead.stage_was_unrecognized && (

@@ -7,6 +7,7 @@ const links = [
   { href: "/", label: "Board" },
   { href: "/dial", label: "Dial" },
   { href: "/metrics", label: "Metrics" },
+  { href: "/admin/sourcing", label: "Sourcing" },
   { href: "/admin/campaigns", label: "Campaigns" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/callers", label: "Callers" },
