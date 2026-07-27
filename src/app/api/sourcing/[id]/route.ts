@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { cancelCampaignJobs, enqueue } from "@/lib/jobs";
 import { logEvent } from "@/lib/events";
 import { placesKeyConfigured } from "@/lib/places";
+import { requestBudgetFor } from "@/lib/budget";
 
 export const dynamic = "force-dynamic";
 
@@ -76,7 +77,54 @@ export async function GET(
   });
 }
 
-/** start | pause | resume | stop */
+/** Rename a batch, or change how many callable leads it should end up with. */
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const body = await req.json().catch(() => ({}));
+  const db = supabaseAdmin();
+
+  const { data: before } = await db
+    .from("sourcing_campaigns")
+    .select("id, name, target_lead_count, max_api_requests, status")
+    .eq("id", id)
+    .single();
+  if (!before) return NextResponse.json({ error: "Batch not found" }, { status: 404 });
+
+  const patch: Record<string, unknown> = {};
+  if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
+
+  if (body.target_lead_count !== undefined) {
+    const target = Number(body.target_lead_count);
+    if (!Number.isFinite(target) || target < 1) {
+      return NextResponse.json({ error: "Target must be at least 1" }, { status: 400 });
+    }
+    patch.target_lead_count = Math.floor(target);
+    // Raising the target needs room to spend, or the campaign would stop
+    // immediately on a cap set for the smaller number.
+    const needed = requestBudgetFor(Math.floor(target));
+    if (needed > before.max_api_requests) patch.max_api_requests = needed;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: "Nothing to change" }, { status: 400 });
+  }
+
+  const { error } = await db.from("sourcing_campaigns").update(patch).eq("id", id);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  await logEvent("campaign.created", "sourcing_campaign", id, {
+    edited: true,
+    previous: { name: before.name, target_lead_count: before.target_lead_count },
+    next: patch,
+  });
+
+  return NextResponse.json({ ok: true, ...patch });
+}
+
+/** start | pause | resume | stop | topup */
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -91,6 +139,69 @@ export async function POST(
     .eq("id", id)
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
+
+  /**
+   * Go back out for the leads a finished batch never delivered. Re-arms every
+   * search that was skipped or failed, which is the same recovery path Resume
+   * uses — the difference is only that this one is offered on a batch that
+   * already reported itself finished.
+   */
+  if (action === "topup") {
+    if (!placesKeyConfigured()) {
+      return NextResponse.json(
+        { error: "GOOGLE_PLACES_API_KEY is not set on this deployment." },
+        { status: 400 }
+      );
+    }
+    const { data: reusable } = await db
+      .from("search_tasks")
+      .select("id")
+      .eq("campaign_id", id)
+      .in("status", ["skipped", "pending", "failed"]);
+
+    if (!reusable || reusable.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "This batch has already used every search it planned. Generate a new batch instead — it will search different trades and metros.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Give it room to spend, in case the cap was set for a smaller target.
+    const needed = requestBudgetFor(campaign.target_lead_count);
+    await db
+      .from("sourcing_campaigns")
+      .update({
+        status: "running",
+        finished_at: null,
+        completion_reason: null,
+        last_error: null,
+        error_count: 0,
+        max_api_requests: Math.max(campaign.max_api_requests, needed),
+      })
+      .eq("id", id);
+
+    for (const t of reusable) {
+      await db
+        .from("search_tasks")
+        .update({ status: "pending", retry_count: 0, last_error: null })
+        .eq("id", t.id);
+      await enqueue({
+        type: "execute_places_search",
+        payload: { task_id: t.id, campaign_id: id },
+        idempotencyKey: `execute_places_search:${t.id}:topup:${Date.now()}`,
+        campaignId: id,
+      });
+    }
+
+    await logEvent("campaign.refilled", "sourcing_campaign", id, {
+      searches_rearmed: reusable.length,
+      requested_by: "admin",
+    });
+    return NextResponse.json({ ok: true, searches: reusable.length });
+  }
 
   if (action === "start" || action === "resume") {
     if (!placesKeyConfigured()) {

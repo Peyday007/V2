@@ -69,6 +69,7 @@ export default function SourcingPage() {
   const [showMix, setShowMix] = useState(false);
   const [showTest, setShowTest] = useState(false);
   const [showEngine, setShowEngine] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState("");
   const [ticking, setTicking] = useState(false);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -183,6 +184,14 @@ export default function SourcingPage() {
     ? Math.max(0, c.unique_saved - callable - (byStatus.enrichment_failed || 0) - (byStatus.archived || 0))
     : 0;
   const pct = c ? callableProgressPercent(callable, c.target_lead_count) : 0;
+  // Finished, but did not deliver what was asked for. Offer the fix rather
+  // than just reporting the shortfall.
+  const isShort =
+    !!c &&
+    (c.status === "completed" || c.status === "stopped") &&
+    callable < c.target_lead_count &&
+    stillProcessing === 0;
+  const legacyBatch = !!c?.completion_reason?.includes("before callable-lead targeting");
 
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto" }}>
@@ -371,6 +380,13 @@ export default function SourcingPage() {
               <span className={c.status === "running" ? "tag" : "tag-dim"}>
                 {campaignStatusText(c.status)}
               </span>
+              <button
+                className="btn-ghost"
+                style={{ padding: "3px 10px", fontSize: "0.7rem" }}
+                onClick={() => setEditing(!editing)}
+              >
+                {editing ? "Done" : "Edit"}
+              </button>
               <div style={{ flex: 1 }} />
               {(c.status === "draft" || c.status === "completed") && (
                 <button
@@ -413,6 +429,16 @@ export default function SourcingPage() {
               )}
             </div>
 
+            {editing && (
+              <BatchEditor
+                campaign={c}
+                onSaved={async () => {
+                  setEditing(false);
+                  await refresh();
+                }}
+              />
+            )}
+
             <div
               style={{
                 height: 8,
@@ -440,14 +466,35 @@ export default function SourcingPage() {
             <p className="faint" style={{ marginTop: 4 }}>
               It looked at {c.unique_saved} businesses to get there
               {c.duplicates_skipped > 0 && `, skipping ${c.duplicates_skipped} it already had`}
-              . The engine keeps searching until it has the number you asked
-              for, so you never have to over-order.
+              .
             </p>
 
-            {c.status === "completed" && c.completion_reason && callable < c.target_lead_count && (
-              <p style={{ color: "var(--amber)", fontSize: "0.82rem", marginTop: 8 }}>
-                Stopped short: {c.completion_reason}
-              </p>
+            {isShort && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: "10px 12px",
+                  background: "var(--amber-soft)",
+                  border: "1px solid var(--amber-dim)",
+                  borderRadius: 4,
+                }}
+              >
+                <div style={{ color: "var(--amber)", fontWeight: 700, fontSize: "0.85rem" }}>
+                  {c.target_lead_count - callable} short of what you asked for
+                </div>
+                <p className="faint" style={{ margin: "4px 0 10px", lineHeight: 1.55 }}>
+                  {legacyBatch
+                    ? "This batch finished under the old rule that stopped at businesses found rather than leads you can actually call. Go get the rest — it will re-run the searches it skipped."
+                    : `It stopped because: ${c.completion_reason}`}
+                </p>
+                <button
+                  className="btn"
+                  style={{ padding: "6px 14px", fontSize: "0.75rem" }}
+                  onClick={() => act(c.id, "topup")}
+                >
+                  Go get the rest
+                </button>
+              </div>
             )}
 
             {c.error_count > 0 && (
@@ -609,6 +656,80 @@ export default function SourcingPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** Rename a batch, or change how many callable leads it should deliver. */
+function BatchEditor({
+  campaign,
+  onSaved,
+}: {
+  campaign: Campaign;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(campaign.name);
+  const [target, setTarget] = useState(String(campaign.target_lead_count));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setBusy(true);
+    setErr("");
+    const res = await fetch(`/api/sourcing/${campaign.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, target_lead_count: Number(target) }),
+    });
+    const j = await res.json();
+    setBusy(false);
+    if (!res.ok) {
+      setErr(j.error || "Could not save that.");
+      return;
+    }
+    onSaved();
+  }
+
+  const raised = Number(target) > campaign.target_lead_count;
+
+  return (
+    <div
+      style={{
+        marginBottom: 14,
+        padding: "12px 14px",
+        background: "var(--bg-inset)",
+        border: "1px solid var(--border)",
+        borderRadius: 4,
+      }}
+    >
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Batch name"
+          style={{ flex: "1 1 220px" }}
+        />
+        <span className="faint">wants</span>
+        <input
+          type="number"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          style={{ maxWidth: 90 }}
+          min={1}
+        />
+        <span className="faint">callable leads</span>
+        <button className="btn" onClick={save} disabled={busy || !name.trim()}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {raised && (
+        <p className="faint" style={{ marginTop: 8 }}>
+          Raising the target also raises this batch&apos;s Google request budget so it
+          can actually reach the new number. Press <strong>Go get the rest</strong>{" "}
+          afterwards to send it back out.
+        </p>
+      )}
+      {err && <p style={{ color: "var(--red)", marginTop: 8 }}>{err}</p>}
     </div>
   );
 }

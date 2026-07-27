@@ -8,7 +8,7 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 - **Metrics** (`/metrics`) — DM-conversations-per-100-dials and related rates
 - **Analytics** (`/admin/analytics`) — what the call data actually supports, with confidence intervals and significance tests on every number
 - **Appointments** (`/admin/appointments`) — mark each booked appointment held / no-show / cancelled, which is the only way show-rate can ever be measured
-- **Campaigns** (`/admin/campaigns`) — create campaigns, generate locked lead packets per caller, "What to Attack Today" AI prioritizer
+- **Packets** (`/admin/campaigns`) — a caller's list of leads to work. Send one out, move it to a different caller, top it up with more leads, take the un-dialed ones back so someone else can have them, or delete it if nobody has started. Everything is reversible: returned leads go straight back into the ready pool, and a packet with calls logged against it can be closed but never deleted, so history stays intact. Also holds the "What to Attack Today" AI prioritizer.
 - **Import** (`/admin/import`) — upload any lead CSV, map its columns, and import with normalization (phone/domain/name/state) and duplicate linking (same phone, domain, or place ID links to the existing lead — nothing deleted, no duplicate calling)
 - **Callers** (`/admin/callers`) — add callers (auto-generated PIN), revoke instantly
 

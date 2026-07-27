@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const db = supabase();
   let q = db
     .from("packets")
-    .select("*, callers(name)")
+    .select("*, callers(id, name, active)")
     .order("created_at", { ascending: false });
   if (campaignId) q = q.eq("campaign_id", campaignId);
   const { data: packets, error } = await q;
@@ -25,7 +25,20 @@ export async function GET(req: NextRequest) {
       .select("*", { count: "exact", head: true })
       .eq("packet_id", p.id)
       .eq("status", "done");
-    result.push({ ...p, total: total || 0, done: done || 0 });
+    const { count: callsMade } = await db
+      .from("calls")
+      .select("*", { count: "exact", head: true })
+      .eq("packet_id", p.id);
+    result.push({
+      ...p,
+      total: total || 0,
+      done: done || 0,
+      remaining: (total || 0) - (done || 0),
+      callsMade: callsMade || 0,
+      // A packet with calls against it can be closed but never deleted:
+      // removing it would leave those calls pointing at nothing.
+      canDelete: (callsMade || 0) === 0,
+    });
   }
   return NextResponse.json(result);
 }
