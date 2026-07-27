@@ -92,6 +92,8 @@ export default function DialPage() {
   const [openObjection, setOpenObjection] = useState<string | null>(null);
   const [scriptStep, setScriptStep] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [skipping, setSkipping] = useState(false);
+  const [skipReason, setSkipReason] = useState("");
 
   // Measured, not asked for. The caller never types a duration; the clock
   // starts when the lead appears and stops when the outcome is saved.
@@ -119,6 +121,8 @@ export default function DialPage() {
     setScriptStep(0);
     setOpenObjection(null);
     setRaised([]);
+    setSkipping(false);
+    setSkipReason("");
     setStartedAt(new Date().toISOString());
     setElapsed(0);
     const res = await fetch("/api/dial/next");
@@ -185,9 +189,11 @@ export default function DialPage() {
     fetchNext();
   }
 
-  async function skipLead() {
-    const reason = prompt("Why are you skipping this lead?");
-    if (!reason?.trim()) return;
+  // Native prompt() is blocked by some browsers and returns nothing, which
+  // made Skip look like a dead button. Asked for in-page instead.
+  async function skipLead(reason: string) {
+    if (!reason.trim()) return;
+    setSkipping(false);
     setLogging(true);
     await fetch("/api/dial/outcome", {
       method: "POST",
@@ -331,7 +337,11 @@ export default function DialPage() {
           </span>
         )}
         <div style={{ flex: 1 }} />
-        <button className="btn-ghost" onClick={skipLead} style={{ padding: "4px 12px" }}>
+        <button
+          className="btn-ghost"
+          onClick={() => setSkipping(true)}
+          style={{ padding: "4px 12px" }}
+        >
           Skip
         </button>
         <button className="btn-ghost" onClick={logout} style={{ padding: "4px 12px" }}>
@@ -606,6 +616,50 @@ export default function DialPage() {
 
         </div>
       </div>
+
+      {skipping && (
+        <div
+          onClick={() => setSkipping(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+            padding: 20,
+          }}
+        >
+          <div
+            className="card"
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: 420, maxWidth: "94vw" }}
+          >
+            <h3 style={{ marginBottom: 10 }}>Why are you skipping this lead?</h3>
+            <input
+              value={skipReason}
+              onChange={(e) => setSkipReason(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && skipReason.trim() && skipLead(skipReason)}
+              placeholder="e.g. wrong industry, already a customer"
+              autoFocus
+              style={{ width: "100%", marginBottom: 12 }}
+            />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="btn"
+                disabled={!skipReason.trim() || logging}
+                onClick={() => skipLead(skipReason)}
+              >
+                Skip this lead
+              </button>
+              <button className="btn-ghost" onClick={() => setSkipping(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingOutcome && (
         <OutcomeModal

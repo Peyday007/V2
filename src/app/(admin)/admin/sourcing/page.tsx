@@ -6,6 +6,7 @@ import { MACHINE_STATUS_LABELS, MachineStatus } from "@/lib/machineStatus";
 import { INDUSTRIES, searchTermsFor } from "@/lib/industries";
 import { campaignStatusText, type NextAction, type PipelineCounts } from "@/lib/pipelineState";
 import { callableProgressPercent } from "@/lib/leadYield";
+import { useConfirm } from "@/components/Confirm";
 
 type Campaign = {
   id: string;
@@ -70,6 +71,7 @@ export default function SourcingPage() {
   const [showTest, setShowTest] = useState(false);
   const [showEngine, setShowEngine] = useState(false);
   const [editing, setEditing] = useState(false);
+  const { ask, dialog } = useConfirm();
   const [error, setError] = useState("");
   const [ticking, setTicking] = useState(false);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -408,13 +410,17 @@ export default function SourcingPage() {
                   </button>
                   <button
                     className="btn-danger"
-                    onClick={() => {
-                      if (
-                        confirm(
-                          "Stop this batch?\n\nEvery lead already found is kept and stays callable. Only the remaining searches are cancelled. You can start it again later."
-                        )
-                      )
-                        act(c.id, "stop");
+                    onClick={async () => {
+                      const ok = await ask({
+                        title: "Stop this batch?",
+                        body: [
+                          "Every lead already found is kept and stays callable. Only the remaining searches are cancelled.",
+                          "You can start it again later.",
+                        ],
+                        confirmLabel: "Stop it",
+                        danger: true,
+                      });
+                      if (ok) act(c.id, "stop");
                     }}
                     title="Cancels the remaining searches. Leads already found are kept."
                   >
@@ -430,17 +436,17 @@ export default function SourcingPage() {
               <button
                 className="btn-danger"
                 title="Archive every lead from this batch that nobody is holding, so they are never handed to a caller"
-                onClick={() => {
-                  if (
-                    confirm(
-                      "Bin the unused leads from this batch?\n\n" +
-                        "Every lead from this batch that is not already with a caller gets archived — " +
-                        "kept in the database with its history, but never handed to anyone again.\n\n" +
-                        "Leads already in a packet or already called are left alone. To clear those, " +
-                        "use the Packets tab."
-                    )
-                  )
-                    act(c.id, "discard_leads");
+                onClick={async () => {
+                  const ok = await ask({
+                    title: "Bin the unused leads from this batch?",
+                    body: [
+                      "Every lead from this batch that is not already with a caller gets archived — kept in the database with its history, but never handed to anyone again.",
+                      "Leads already in a packet or already called are left alone. To clear those, use the Packets tab.",
+                    ],
+                    confirmLabel: "Bin them",
+                    danger: true,
+                  });
+                  if (ok) act(c.id, "discard_leads");
                 }}
               >
                 Bin unused leads
@@ -674,6 +680,8 @@ export default function SourcingPage() {
           }}
         />
       )}
+
+      {dialog}
     </div>
   );
 }

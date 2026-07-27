@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useConfirm } from "@/components/Confirm";
 
 type Caller = { id: string; name: string; active: boolean };
 
@@ -30,6 +31,7 @@ export default function PacketsAdmin() {
   const [busy, setBusy] = useState<string | null>(null);
   const [attack, setAttack] = useState("");
   const [attackLoading, setAttackLoading] = useState(false);
+  const { ask, dialog } = useConfirm();
 
   const load = useCallback(async () => {
     const [pRes, kRes, pipeRes] = await Promise.all([
@@ -57,8 +59,14 @@ export default function PacketsAdmin() {
     setMsg("");
     setErr("");
     const res = await fn();
+    // An expired admin session returns 401 from middleware. Silently doing
+    // nothing is how these buttons looked broken, so say so and go sign in.
+    if (res.status === 401) {
+      window.location.href = `/admin-login?next=${encodeURIComponent(window.location.pathname)}`;
+      return;
+    }
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) setErr(j.error || "That did not work.");
+    if (!res.ok) setErr(j.error || `That did not work (HTTP ${res.status}).`);
     else setMsg(success(j as never));
     setBusy(null);
     await load();
@@ -109,15 +117,16 @@ export default function PacketsAdmin() {
     );
   }
 
-  function returnLeads(p: Packet) {
-    if (
-      !confirm(
-        `Take back the ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} in this packet?\n\n` +
-          `They go back into the ready pool so you can send them to someone else. ` +
-          `Calls already logged are kept. The packet closes.`
-      )
-    )
-      return;
+  async function returnLeads(p: Packet) {
+    const ok = await ask({
+      title: `Take back ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"}?`,
+      body: [
+        "They go back into the ready pool, so you can send them to someone else.",
+        "Calls already logged are kept. The packet closes.",
+      ],
+      confirmLabel: "Take them back",
+    });
+    if (!ok) return;
     return run(
       p.id,
       () =>
@@ -131,16 +140,18 @@ export default function PacketsAdmin() {
     );
   }
 
-  function discardLeads(p: Packet) {
-    if (
-      !confirm(
-        `Bin the ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} in this packet?\n\n` +
-          `Use this when the leads themselves are no good. They are archived — kept in the ` +
-          `database with their history, but never handed to a caller again. They will NOT ` +
-          `come back into the pool.\n\nCalls already logged are kept. The packet closes.`
-      )
-    )
-      return;
+  async function discardLeads(p: Packet) {
+    const ok = await ask({
+      title: `Bin ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"}?`,
+      body: [
+        "Use this when the leads themselves are no good.",
+        "They are archived — kept in the database with their history, but never handed to a caller again. They will NOT come back into the pool.",
+        "Calls already logged are kept. The packet closes.",
+      ],
+      confirmLabel: "Bin them",
+      danger: true,
+    });
+    if (!ok) return;
     return run(
       p.id,
       () =>
@@ -154,15 +165,24 @@ export default function PacketsAdmin() {
     );
   }
 
-  function remove(p: Packet, discard: boolean) {
-    const fate = discard
-      ? `The ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} will be BINNED — archived, and never handed to a caller again.`
-      : `The ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} go back into the ready pool, so you can send them to someone else.`;
-    const callsNote =
-      p.callsMade > 0
-        ? `\n\n${p.callsMade} call${p.callsMade === 1 ? "" : "s"} were logged from this packet. Every one is kept — who was called, when, by whom and what happened. They just stop showing which packet they came from.`
-        : "";
-    if (!confirm(`Delete "${p.name}"?\n\n${fate}${callsNote}`)) return;
+  async function remove(p: Packet, discard: boolean) {
+    const body = [
+      discard
+        ? `The ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} will be BINNED — archived, and never handed to a caller again.`
+        : `The ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} go back into the ready pool, so you can send them to someone else.`,
+    ];
+    if (p.callsMade > 0) {
+      body.push(
+        `${p.callsMade} call${p.callsMade === 1 ? " was" : "s were"} logged from this packet. Every one is kept — who was called, when, by whom and what happened. They just stop showing which packet they came from.`
+      );
+    }
+    const ok = await ask({
+      title: `Delete "${p.name}"?`,
+      body,
+      confirmLabel: discard ? "Delete and bin the leads" : "Delete it",
+      danger: true,
+    });
+    if (!ok) return;
     return run(
       p.id,
       () =>
@@ -335,6 +355,7 @@ export default function PacketsAdmin() {
         </div>
         {attack && <p style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{attack}</p>}
       </div>
+      {dialog}
     </div>
   );
 }

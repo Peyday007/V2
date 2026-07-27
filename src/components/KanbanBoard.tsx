@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { useConfirm } from "@/components/Confirm";
 import {
   SALES_STAGES,
   STAGE_LABELS,
@@ -680,6 +681,7 @@ function LeadModal({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const { ask, dialog } = useConfirm();
 
   function set(k: string, v: string) {
     setForm({ ...form, [k]: v });
@@ -705,13 +707,29 @@ function LeadModal({
 
   async function archive() {
     if (!lead) return;
-    if (!confirm("Archive this lead? It will be hidden from the board.")) return;
+    const ok = await ask({
+      title: "Archive this lead?",
+      body: [
+        `${lead.business_name} disappears from the board and is never handed to a caller again.`,
+        "Nothing is deleted — the record and its full history stay in the database.",
+      ],
+      confirmLabel: "Archive it",
+      danger: true,
+    });
+    if (!ok) return;
     setSaving(true);
-    await fetch(`/api/leads/${lead.id}`, {
+    setError("");
+    const res = await fetch(`/api/leads/${lead.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archived: true }),
     });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setError(j.error || `Could not archive (HTTP ${res.status}).`);
+      setSaving(false);
+      return;
+    }
     onSaved();
   }
 
@@ -816,6 +834,7 @@ function LeadModal({
           )}
         </div>
       </div>
+      {dialog}
     </div>
   );
 }
@@ -1187,10 +1206,13 @@ function DealModal({
   const [value, setValue] = useState(deal?.value?.toString() || "");
   const [notes, setNotes] = useState(deal?.notes || "");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const { ask, dialog } = useConfirm();
 
   async function save() {
     if (!name.trim()) return;
     setSaving(true);
+    setError("");
     const payload = {
       name: name.trim(),
       pipeline: "delivery",
@@ -1198,19 +1220,38 @@ function DealModal({
       value: value ? Number(value) : null,
       notes: notes || null,
     };
-    await fetch(deal ? `/api/deals/${deal.id}` : "/api/deals", {
+    const res = await fetch(deal ? `/api/deals/${deal.id}` : "/api/deals", {
       method: deal ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setError(j.error || `Could not save (HTTP ${res.status}).`);
+      setSaving(false);
+      return;
+    }
     onSaved();
   }
 
   async function remove() {
     if (!deal) return;
-    if (!confirm("Delete this deal?")) return;
+    const ok = await ask({
+      title: `Delete "${deal.name}"?`,
+      body: ["This removes the deal from the delivery board for good."],
+      confirmLabel: "Delete it",
+      danger: true,
+    });
+    if (!ok) return;
     setSaving(true);
-    await fetch(`/api/deals/${deal.id}`, { method: "DELETE" });
+    setError("");
+    const res = await fetch(`/api/deals/${deal.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      setError(j.error || `Could not delete (HTTP ${res.status}).`);
+      setSaving(false);
+      return;
+    }
     onSaved();
   }
 
@@ -1272,7 +1313,11 @@ function DealModal({
             </button>
           )}
         </div>
+        {error && (
+          <p style={{ color: "var(--red)", marginTop: 10, fontSize: "0.85rem" }}>{error}</p>
+        )}
       </div>
+      {dialog}
     </div>
   );
 }
