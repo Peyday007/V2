@@ -10,6 +10,7 @@ import {
   normalizeZip,
 } from "@/lib/normalize";
 import { DEFAULT_STAGE } from "@/lib/stages";
+import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +66,27 @@ export async function POST(req: NextRequest) {
     if (l.place_id) byPlaceId.set(l.place_id, l.id);
   }
 
+  // A number on the do-not-call list stays on it across imports. Without
+  // this, re-importing a list would quietly resurrect every business that had
+  // already asked not to be contacted.
+  const { data: suppressions, error: supErr } = await db
+    .from("suppressions")
+    .select("lead_id, normalized_phone");
+  if (supErr) {
+    return NextResponse.json(
+      {
+        error:
+          `Import cancelled: the do-not-call list could not be read, so imported ` +
+          `leads could not be checked against it. If this mentions a missing table ` +
+          `or column, run supabase/migrations/0014_dnc_enforcement.sql. (${supErr.message})`,
+      },
+      { status: 500 }
+    );
+  }
+  const suppressionIndex = buildSuppressionIndex(suppressions || []);
+
   let created = 0;
+  let suppressed = 0;
   let duplicates = 0;
   let errorRows = 0;
   const errors: { line: number; error: string }[] = [];
@@ -119,6 +140,14 @@ export async function POST(req: NextRequest) {
     const rating = row.rating ? Number(row.rating) : null;
     const reviewCount = row.review_count ? parseInt(row.review_count, 10) : null;
 
+    // Imported, but never callable: the record is kept so the history is
+    // complete, and flagged so no packet can ever pick it up.
+    const onDncList = checkSuppressed(
+      { id: "pending-insert", phone: row.phone, normalized_phone: normPhone },
+      suppressionIndex
+    ).suppressed;
+    if (onDncList) suppressed++;
+
     const { data: lead, error } = await db
       .from("leads")
       .insert({
@@ -139,6 +168,7 @@ export async function POST(req: NextRequest) {
           reviewCount != null && !Number.isNaN(reviewCount) ? reviewCount : null,
         place_id: sourceId,
         source: row.source || "csv_import",
+        do_not_call: onDncList,
         // Every imported lead lands in a real column, always.
         pipeline_stage: DEFAULT_STAGE,
       })
@@ -173,6 +203,7 @@ export async function POST(req: NextRequest) {
     total_rows: rows.length - 1,
     created,
     duplicates,
+    suppressed,
     errors: errorRows,
   });
 
@@ -181,6 +212,7 @@ export async function POST(req: NextRequest) {
     total_rows: rows.length - 1,
     created,
     duplicates,
+    suppressed,
     error_rows: errorRows,
     errors: errors.slice(0, 50),
   });

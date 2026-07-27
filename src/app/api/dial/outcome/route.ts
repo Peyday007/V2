@@ -349,25 +349,88 @@ export async function POST(req: NextRequest) {
   /* ---------------- do not call: suppress everywhere ---------------- */
   if (outcome === "do_not_call") {
     leadPatch.do_not_call = true;
-    await db.from("suppressions").insert({
-      lead_id,
-      normalized_phone: lead.normalized_phone || normalizePhone(values.phone) || null,
-      requested_by: values.requested_by || "unknown",
-      reason: values.reason || null,
-      note: values.note || null,
-    });
-    // Pull it out of every open packet so nobody dials it again.
-    await db.from("packet_leads").update({ status: "done" }).eq("lead_id", lead_id);
+    const suppressedPhone =
+      normalizePhone(lead.normalized_phone) || normalizePhone(values.phone) || null;
+
+    // upsert, not insert: the same number can be asked to stop twice, and a
+    // duplicate key must not turn a compliance request into a 500.
+    await db
+      .from("suppressions")
+      .upsert(
+        {
+          lead_id,
+          normalized_phone: suppressedPhone,
+          requested_by: values.requested_by || "unknown",
+          reason: values.reason || null,
+          note: values.note || null,
+          source: "call",
+        },
+        { onConflict: "normalized_phone", ignoreDuplicates: false }
+      );
+
+    // A DNC is about the phone number, not about this row. The same business
+    // is routinely in the database more than once — imported twice, sourced
+    // from two search terms, listed under a second trade. Suppress every
+    // record that shares the number, or the next caller dials them again.
+    let siblingIds: string[] = [];
+    if (suppressedPhone) {
+      const { data: siblings } = await db
+        .from("leads")
+        .select("id")
+        .eq("normalized_phone", suppressedPhone)
+        .neq("id", lead_id)
+        .eq("do_not_call", false);
+      siblingIds = (siblings || []).map((s) => s.id);
+      if (siblingIds.length > 0) {
+        await db.from("leads").update({ do_not_call: true }).in("id", siblingIds);
+      }
+    }
+
+    // Pull this lead and every sibling out of every open packet so nobody
+    // dials the number again tomorrow morning.
+    await db
+      .from("packet_leads")
+      .update({ status: "done" })
+      .in("lead_id", [lead_id, ...siblingIds]);
+
     await chain.record({
       type: "lead.suppressed",
       entityType: "lead",
       entityId: lead_id,
       leadId: lead_id,
       callId: call.id,
-      newValue: { do_not_call: true, requested_by: values.requested_by || "unknown" },
-      metadata: { reason: values.reason || null, note: values.note || null },
+      newValue: {
+        do_not_call: true,
+        requested_by: values.requested_by || "unknown",
+        normalized_phone: suppressedPhone,
+      },
+      metadata: {
+        reason: values.reason || null,
+        note: values.note || null,
+        sibling_leads_suppressed: siblingIds.length,
+      },
       verificationStatus: "verified",
     });
+
+    // Each sibling gets its own event, so a lead's own history explains why
+    // it stopped being called without anyone having to know about the other
+    // record.
+    for (const id of siblingIds) {
+      await chain.record({
+        type: "lead.suppressed",
+        entityType: "lead",
+        entityId: id,
+        leadId: id,
+        previousValue: { do_not_call: false },
+        newValue: { do_not_call: true },
+        metadata: {
+          reason: "Shares a phone number with a lead that requested do not call",
+          normalized_phone: suppressedPhone,
+          origin_lead_id: lead_id,
+        },
+        verificationStatus: "verified",
+      });
+    }
   }
 
   /* ---------------- retry scheduling ---------------- */

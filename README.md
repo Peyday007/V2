@@ -12,7 +12,7 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 - **Import** (`/admin/import`) — upload any lead CSV, map its columns, and import with normalization (phone/domain/name/state) and duplicate linking (same phone, domain, or place ID links to the existing lead — nothing deleted, no duplicate calling)
 - **Callers** (`/admin/callers`) — add callers (auto-generated PIN), revoke instantly
 
-Leads marked "Do not call" are excluded from all future packets automatically.
+- **Do Not Call** (`/admin/suppressions`) — the suppression list, and a box to add a number by hand for a request that didn't come in on a call
 
 There is **no login** on the app itself by design — anyone with the URL has access. Caller PINs only control the dialer.
 
@@ -38,6 +38,7 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 9b. Repeat with `supabase/migrations/0011_owner_intel.sql` (new query, paste, Run).
 9c. Repeat with `supabase/migrations/0012_event_memory.sql` (new query, paste, Run).
 9d. Repeat with `supabase/migrations/0013_call_analytics.sql` (new query, paste, Run).
+9e. Repeat with `supabase/migrations/0014_dnc_enforcement.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -125,6 +126,32 @@ node scripts/enrich-leads.mjs "Metro Detroit Roofing" 5
 2. Admin opens **Campaigns**, generates a packet (e.g. 25 leads) assigned to a caller. A lead can only ever be in one packet — no duplicate calling.
 3. Caller opens `/dial`, enters their PIN, and works the packet one lead at a time.
 4. Admin watches **Metrics** and asks **What to Attack Today** on the Campaigns page.
+
+## Do not call
+
+A do-not-call request is about a **phone number**, not about a row in the
+database. The same business is routinely in there more than once — imported
+twice, sourced from two search terms, listed under a second trade — so
+suppressing only the record the caller was looking at would leave every
+duplicate dialable.
+
+The list is enforced at four points, all matching on the number:
+
+1. **When a caller logs Do Not Call** — the number is added to the list and
+   every lead record sharing it is flagged and pulled out of its packet.
+2. **When a packet is generated** — candidates are checked against the list
+   before the packet is written. If the list can't be read, no packet is
+   created; the build fails loudly rather than guessing.
+3. **The moment before a lead reaches a caller's screen** — the final gate,
+   which catches a number suppressed *after* the packet was built. Same rule:
+   if the list can't be read, no lead is served.
+4. **On CSV import** — a matching number is imported (so the record exists)
+   but flagged uncallable, so re-importing a list can't resurrect a business
+   that already asked you to stop.
+
+A suppression outlives the lead it came from: deleting a lead sets the link to
+null instead of deleting the request. Migration `0014` also back-fills every
+lead that should already have been protected.
 
 ## Organizational memory
 

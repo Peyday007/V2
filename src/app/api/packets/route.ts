@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { logEvent } from "@/lib/events";
+import { buildSuppressionIndex, partitionEligible } from "@/lib/suppression";
 
 export async function GET(req: NextRequest) {
   const campaignId = req.nextUrl.searchParams.get("campaign_id");
@@ -44,7 +45,7 @@ export async function POST(req: NextRequest) {
   // lead when no campaign is specified.
   let query = db
     .from("leads")
-    .select("id")
+    .select("id, phone, normalized_phone, do_not_call")
     .eq("status", "new")
     .eq("do_not_call", false)
     .eq("machine_status", "ready_for_calling")
@@ -57,13 +58,56 @@ export async function POST(req: NextRequest) {
     query = query.eq("campaign_id", campaign_id);
   }
 
-  const { data: leads, error: leadsErr } = await query.order("created_at").limit(size);
+  // Over-fetch, because suppressed leads are removed after the query. A DNC
+  // is matched on the phone number, which no single column filter can express.
+  const { data: candidates, error: leadsErr } = await query
+    .order("created_at")
+    .limit(size * 3 + 50);
   if (leadsErr) return NextResponse.json({ error: leadsErr.message }, { status: 500 });
+
+  // The do-not-call list is authoritative and is checked against the NUMBER,
+  // so a second record for the same business can never slip into a packet.
+  const { data: suppressions, error: supErr } = await db
+    .from("suppressions")
+    .select("lead_id, normalized_phone");
+  if (supErr) {
+    // Never build a packet from an unknown suppression state — that is how
+    // someone who asked not to be called gets called.
+    return NextResponse.json(
+      {
+        error:
+          `Could not read the do-not-call list, so no packet was created. ` +
+          `If this mentions a missing table or column, run ` +
+          `supabase/migrations/0014_dnc_enforcement.sql. (${supErr.message})`,
+      },
+      { status: 500 }
+    );
+  }
+
+  const index = buildSuppressionIndex(suppressions || []);
+  const { eligible, blocked } = partitionEligible(candidates || [], index);
+  const leads = eligible.slice(0, size);
+
+  if (blocked.length > 0) {
+    // Self-heal: flag them so the cheap column filter catches them next time.
+    await db
+      .from("leads")
+      .update({ do_not_call: true })
+      .in("id", blocked.map((b) => b.lead.id));
+    await logEvent("lead.suppressed", "lead", null, {
+      lead_ids: blocked.map((b) => b.lead.id),
+      count: blocked.length,
+      reason: "Excluded from packet generation: phone number is on the do-not-call list",
+    });
+  }
+
   if (!leads || leads.length === 0) {
     return NextResponse.json(
       {
         error:
-          "No leads are ready for calling. Generate leads on the Sourcing tab, then press 'Release leads to calling' there.",
+          blocked.length > 0
+            ? `No callable leads are left — ${blocked.length} were excluded because their phone number is on the do-not-call list. Generate more leads on the Sourcing tab.`
+            : "No leads are ready for calling. Generate leads on the Sourcing tab, then press 'Release leads to calling' there.",
       },
       { status: 400 }
     );
@@ -116,5 +160,10 @@ export async function POST(req: NextRequest) {
     lead_count: leads.length,
   });
 
-  return NextResponse.json({ ...packet, total: leads.length, done: 0 });
+  return NextResponse.json({
+    ...packet,
+    total: leads.length,
+    done: 0,
+    suppressed_excluded: blocked.length,
+  });
 }

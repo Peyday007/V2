@@ -10,6 +10,7 @@ type Result = {
   total_rows: number;
   created: number;
   duplicates: number;
+  suppressed?: number;
   error_rows: number;
   errors: { line: number; error: string }[];
 };
@@ -176,6 +177,15 @@ export default function ImportPage() {
           <p>
             {result.total_rows} rows → <strong>{result.created} new leads</strong>,{" "}
             {result.duplicates} duplicates linked, {result.error_rows} errors
+            {!!result.suppressed && result.suppressed > 0 && (
+              <>
+                ,{" "}
+                <span style={{ color: "var(--amber)" }}>
+                  {result.suppressed} imported but blocked from calling (on the
+                  do-not-call list)
+                </span>
+              </>
+            )}
           </p>
           {result.errors.length > 0 && (
             <ul style={{ marginTop: 8, paddingLeft: 20 }} className="muted">

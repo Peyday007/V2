@@ -3,6 +3,8 @@ import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
 import { anthropic, APPROACH_MODEL } from "@/lib/anthropic";
 import { recommendApproach } from "@/lib/approach";
+import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
+import { logEvent } from "@/lib/events";
 
 export async function GET() {
   const callerId = await getCallerId();
@@ -41,7 +43,73 @@ export async function GET() {
     return NextResponse.json({ caller: caller.name, lead: null, remaining: 0 });
   }
 
-  const next = pending[0];
+  /* -------------------- do-not-call, checked at the last moment --------------------
+   * A lead can be suppressed after the packet was built — someone else calls
+   * the same number and gets a DNC, or it is added to the list by hand. This
+   * is the final gate before a number reaches a caller's screen, so a
+   * suppressed business is never dialed even if it is already sitting in an
+   * open packet.
+   */
+  const scanIds = pending.slice(0, 50).map((p) => p.lead_id);
+  const [{ data: scanLeads }, { data: suppressions, error: supErr }] = await Promise.all([
+    db.from("leads").select("id, phone, normalized_phone, do_not_call").in("id", scanIds),
+    db.from("suppressions").select("lead_id, normalized_phone"),
+  ]);
+
+  if (supErr) {
+    // Refuse to serve a lead rather than guess. Being unable to read the
+    // do-not-call list is exactly how someone who asked not to be called
+    // gets called.
+    return NextResponse.json(
+      {
+        caller: caller.name,
+        lead: null,
+        remaining: pending.length,
+        error:
+          "The do-not-call list could not be read, so no lead was served. " +
+          "Tell your admin to run supabase/migrations/0014_dnc_enforcement.sql.",
+      },
+      { status: 503 }
+    );
+  }
+
+  const index = buildSuppressionIndex(suppressions || []);
+  const leadById = new Map((scanLeads || []).map((l) => [l.id, l]));
+
+  let next: (typeof pending)[number] | null = null;
+  const skipped: string[] = [];
+  for (const candidate of pending) {
+    const row = leadById.get(candidate.lead_id);
+    if (!row) continue; // outside the scan window; leave it for the next call
+    if (checkSuppressed(row, index).suppressed) {
+      skipped.push(candidate.lead_id);
+      continue;
+    }
+    next = candidate;
+    break;
+  }
+
+  if (skipped.length > 0) {
+    // Close them out of the packet and flag them, so this work is done once.
+    await db.from("packet_leads").update({ status: "done" }).in("lead_id", skipped);
+    await db.from("leads").update({ do_not_call: true }).in("id", skipped);
+    await logEvent("lead.suppressed", "lead", null, {
+      lead_ids: skipped,
+      count: skipped.length,
+      caller_id: callerId,
+      reason: "Removed from a packet at dial time: phone number is on the do-not-call list",
+    });
+  }
+
+  if (!next) {
+    return NextResponse.json({
+      caller: caller.name,
+      lead: null,
+      remaining: 0,
+      suppressed_removed: skipped.length,
+    });
+  }
+
   const [{ data: lead }, { data: contacts }, { data: discoveries }, { data: history }] =
     await Promise.all([
       db.from("leads").select("*").eq("id", next.lead_id).single(),
@@ -136,6 +204,6 @@ Notes: ${lead.notes || "none"}`,
     approach,
     aiTip,
     packetId: next.packet_id,
-    remaining: pending.length,
+    remaining: pending.length - skipped.length,
   });
 }
