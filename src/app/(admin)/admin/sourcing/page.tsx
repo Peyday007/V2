@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { MACHINE_STATUS_LABELS, MachineStatus } from "@/lib/machineStatus";
 import { INDUSTRIES, searchTermsFor } from "@/lib/industries";
+import { campaignStatusText, type NextAction, type PipelineCounts } from "@/lib/pipelineState";
 
 type Campaign = {
   id: string;
@@ -36,30 +38,51 @@ type Progress = {
   env?: { places_key: boolean; caller_session_secret: boolean; anthropic_key: boolean };
 };
 
+type Pipeline = {
+  counts: PipelineCounts;
+  pendingInPackets: number;
+  activeCallers: number;
+  openPackets: number;
+  campaignRunning: boolean;
+  placesKeyConfigured: boolean;
+  callerSecretConfigured: boolean;
+  discardReasons: { reason: string; count: number }[];
+  next: NextAction;
+};
+
+const TONE_COLOR: Record<NextAction["tone"], string> = {
+  blocked: "var(--red)",
+  action: "var(--amber)",
+  waiting: "var(--text-dim)",
+  good: "var(--amber)",
+};
+
 export default function SourcingPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [keyOk, setKeyOk] = useState(true);
+  const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showMix, setShowMix] = useState(false);
   const [showTest, setShowTest] = useState(false);
+  const [showEngine, setShowEngine] = useState(false);
   const [error, setError] = useState("");
   const [ticking, setTicking] = useState(false);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadPipeline = useCallback(async () => {
+    const res = await fetch("/api/pipeline");
+    if (res.ok) setPipeline(await res.json());
+  }, []);
 
   const loadCampaigns = useCallback(async () => {
     const res = await fetch("/api/sourcing");
     const j = await res.json();
     if (!res.ok) {
       setError(j.error || "Could not load campaigns");
-      if (typeof j.places_key_configured === "boolean") {
-        setKeyOk(j.places_key_configured);
-      }
       return;
     }
     setCampaigns(j.campaigns || []);
-    setKeyOk(j.places_key_configured);
     if (!selected && j.campaigns?.length) setSelected(j.campaigns[0].id);
   }, [selected]);
 
@@ -68,9 +91,15 @@ export default function SourcingPage() {
     if (res.ok) setProgress(await res.json());
   }, []);
 
+  const refresh = useCallback(async () => {
+    await Promise.all([loadPipeline(), loadCampaigns()]);
+    if (selected) await loadProgress(selected);
+  }, [loadPipeline, loadCampaigns, loadProgress, selected]);
+
   useEffect(() => {
+    loadPipeline();
     loadCampaigns();
-  }, [loadCampaigns]);
+  }, [loadPipeline, loadCampaigns]);
 
   useEffect(() => {
     if (selected) loadProgress(selected);
@@ -90,12 +119,13 @@ export default function SourcingPage() {
         await fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
         loadProgress(selected);
         loadCampaigns();
+        loadPipeline();
       }, 5000);
     }
     return () => {
       if (tickTimer.current) clearInterval(tickTimer.current);
     };
-  }, [progress?.campaign.status, selected, loadProgress, loadCampaigns]);
+  }, [progress?.campaign.status, selected, loadProgress, loadCampaigns, loadPipeline]);
 
   async function act(id: string, action: string) {
     setError("");
@@ -106,16 +136,36 @@ export default function SourcingPage() {
     });
     const j = await res.json();
     if (!res.ok) setError(j.error || `${action} failed`);
-    await loadCampaigns();
-    await loadProgress(id);
+    await refresh();
   }
 
-  async function runWorkerOnce() {
+  /**
+   * The one "unstick it" button. Re-queues anything sitting before
+   * ready_for_calling, then runs the worker a few times so the work actually
+   * happens while the admin is watching. Both halves are idempotent: a lead
+   * cannot end up with two enrichment jobs, so pressing this twice is safe.
+   */
+  async function pushEngine() {
     setTicking(true);
-    await fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
-    if (selected) await loadProgress(selected);
-    await loadCampaigns();
+    await fetch("/api/leads/release", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+    // Several passes, because one tick only claims a batch of jobs.
+    for (let i = 0; i < 4; i++) {
+      await fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
+    }
+    await refresh();
     setTicking(false);
+  }
+
+  function handleCta(goes: string) {
+    if (goes === "#generate") setShowMix(true);
+    else if (goes === "#push") pushEngine();
+    else if (goes === "#assign") {
+      document.getElementById("assign")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }
 
   const c = progress?.campaign;
@@ -125,42 +175,18 @@ export default function SourcingPage() {
 
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <h1>Sourcing Campaigns</h1>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+        <h1>Leads</h1>
         <div style={{ flex: 1 }} />
-        <button className="btn-ghost" onClick={() => setShowTest(true)}>
-          Test Google key
-        </button>
-        <button className="btn-ghost" onClick={runWorkerOnce} disabled={ticking}>
-          {ticking ? "Running…" : "Run worker now"}
-        </button>
-        <button
-          className="btn-ghost"
-          onClick={() => setShowForm(true)}
-          title="Choose specific trades and a city"
-        >
-          Custom…
-        </button>
         <button className="btn" onClick={() => setShowMix(true)}>
-          ⚡ Generate Leads
+          ⚡ Generate leads
         </button>
       </div>
-
-      {!keyOk && (
-        <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>
-          <h3 style={{ color: "var(--red)", marginBottom: 6 }}>
-            Google Places key not detected
-          </h3>
-          <p className="muted" style={{ fontSize: "0.85rem" }}>
-            If you already added <code>GOOGLE_PLACES_API_KEY</code> in Vercel,
-            you still need to <strong>redeploy</strong> — environment variables
-            are baked in at build time and do not reach a deployment that was
-            built before you added them. Vercel → Deployments → ⋯ on the newest
-            one → <strong>Redeploy</strong>. Campaigns cannot start until this
-            shows as detected.
-          </p>
-        </div>
-      )}
+      <p className="faint" style={{ marginBottom: 22 }}>
+        This page finds businesses and gets them ready for your callers.{" "}
+        <strong>Nothing on this page can delete a lead or lose your data</strong> — the
+        worst any button here does is make the engine repeat work it has already done.
+      </p>
 
       {error && (
         <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>
@@ -168,21 +194,139 @@ export default function SourcingPage() {
         </div>
       )}
 
-      {progress?.env && !progress.env.caller_session_secret && (
-        <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>
-          <h3 style={{ color: "var(--red)", marginBottom: 6 }}>
-            Callers cannot sign in
-          </h3>
-          <p className="muted" style={{ fontSize: "0.85rem" }}>
-            <code>CALLER_SESSION_SECRET</code> is not set on this deployment, so
-            the dialer can&apos;t create a login session — entering a correct PIN
-            will still fail. Add it in Vercel → Settings → Environment Variables
-            (any long random string, 30+ characters), then redeploy.
-          </p>
-        </div>
+      {/* ------------------------- where things stand ------------------------- */}
+      {pipeline && (
+        <>
+          <h2 style={{ marginBottom: 10 }}>Where things stand</h2>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <Big
+              value={pipeline.counts.readyToCall}
+              label="Ready to call"
+              sub="processed, nobody has them yet"
+              accent
+            />
+            <Big
+              value={pipeline.pendingInPackets}
+              label="With your callers"
+              sub="handed out, still to be dialed"
+            />
+            <Big
+              value={pipeline.counts.beingResearched}
+              label="Being researched"
+              sub="engine still working on these"
+            />
+            <Big
+              value={pipeline.counts.called}
+              label="Called"
+              sub="dialed at least once"
+            />
+            <Big
+              value={pipeline.counts.notUsable}
+              label="Discarded"
+              sub="not worth calling"
+              dim
+            />
+          </div>
+
+          {pipeline.discardReasons.length > 0 && (
+            <details style={{ marginBottom: 22 }}>
+              <summary
+                className="faint"
+                style={{ cursor: "pointer", padding: "6px 0", userSelect: "none" }}
+              >
+                Why were {pipeline.counts.notUsable} leads discarded?
+              </summary>
+              <div className="card" style={{ marginTop: 8 }}>
+                <p className="faint" style={{ marginBottom: 10 }}>
+                  These are decisions the engine made on purpose, not failures.
+                  A discarded lead is kept in the database — it is just never
+                  given to a caller.
+                </p>
+                {pipeline.discardReasons.map((r) => (
+                  <div
+                    key={r.reason}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: "0.85rem",
+                      padding: "4px 0",
+                    }}
+                  >
+                    <span className="muted">{r.reason}</span>
+                    <strong>{r.count}</strong>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          {/* ---------------------------- do this next --------------------------- */}
+          <h2 style={{ marginBottom: 10 }}>Do this next</h2>
+          <div
+            className="card"
+            style={{
+              marginBottom: 26,
+              borderColor:
+                pipeline.next.tone === "blocked" ? "var(--red)" : "var(--amber-dim)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: "1.05rem",
+                fontWeight: 700,
+                color: TONE_COLOR[pipeline.next.tone],
+                marginBottom: 6,
+              }}
+            >
+              {pipeline.next.tone === "waiting" && "⏳ "}
+              {pipeline.next.tone === "blocked" && "⚠ "}
+              {pipeline.next.headline}
+            </div>
+            <p style={{ fontSize: "0.88rem", lineHeight: 1.6, marginBottom: 12 }}>
+              {pipeline.next.detail}
+            </p>
+            {pipeline.next.cta &&
+              (pipeline.next.cta.goes.startsWith("/") ? (
+                <Link href={pipeline.next.cta.goes} className="btn">
+                  {pipeline.next.cta.label}
+                </Link>
+              ) : (
+                <button
+                  className="btn"
+                  disabled={ticking}
+                  onClick={() => handleCta(pipeline.next.cta!.goes)}
+                >
+                  {ticking ? "Working…" : pipeline.next.cta.label}
+                </button>
+              ))}
+          </div>
+        </>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+      {/* ---------------------------- assign to caller ------------------------ */}
+      <div id="assign">
+        <AssignPanel
+          campaignId={selected}
+          readyCount={pipeline?.counts.readyToCall ?? 0}
+          activeCallers={pipeline?.activeCallers ?? 0}
+          onDone={refresh}
+        />
+      </div>
+
+      {/* -------------------------------- batches ----------------------------- */}
+      <h2 style={{ marginBottom: 4 }}>Lead batches</h2>
+      <p className="faint" style={{ marginBottom: 10 }}>
+        Each batch is one run of the engine. Old finished batches are just
+        history — you can ignore them.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         {campaigns.map((cam) => (
           <button
             key={cam.id}
@@ -196,9 +340,7 @@ export default function SourcingPage() {
           </button>
         ))}
         {campaigns.length === 0 && (
-          <p className="muted">
-            No sourcing campaigns yet. Create one to start generating leads.
-          </p>
+          <p className="muted">No batches yet. Press Generate leads above.</p>
         )}
       </div>
 
@@ -216,20 +358,39 @@ export default function SourcingPage() {
             >
               <h2>{c.name}</h2>
               <span className={c.status === "running" ? "tag" : "tag-dim"}>
-                {c.status}
+                {campaignStatusText(c.status)}
               </span>
               <div style={{ flex: 1 }} />
               {(c.status === "draft" || c.status === "completed") && (
-                <button className="btn" onClick={() => act(c.id, "start")}>
-                  ▶ Start
+                <button
+                  className="btn"
+                  onClick={() => act(c.id, "start")}
+                  title="Runs this batch again, looking for businesses it has not already saved."
+                >
+                  ▶ Run again
                 </button>
               )}
               {c.status === "running" && (
                 <>
-                  <button className="btn-ghost" onClick={() => act(c.id, "pause")}>
+                  <button
+                    className="btn-ghost"
+                    onClick={() => act(c.id, "pause")}
+                    title="Stops the searching. Everything already found is kept, and Resume picks up where it left off."
+                  >
                     ⏸ Pause
                   </button>
-                  <button className="btn-danger" onClick={() => act(c.id, "stop")}>
+                  <button
+                    className="btn-danger"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          "Stop this batch?\n\nEvery lead already found is kept and stays callable. Only the remaining searches are cancelled. You can start it again later."
+                        )
+                      )
+                        act(c.id, "stop");
+                    }}
+                    title="Cancels the remaining searches. Leads already found are kept."
+                  >
                     ■ Stop
                   </button>
                 </>
@@ -259,113 +420,147 @@ export default function SourcingPage() {
                 }}
               />
             </div>
-            <p className="faint" style={{ marginBottom: 14 }}>
-              {c.unique_saved} of {c.target_lead_count} leads · {pct}%
-              {c.status === "running" && " · worker running…"}
+            <p className="faint">
+              Found <strong>{c.unique_saved}</strong> businesses out of the{" "}
+              {c.target_lead_count} asked for
+              {c.status === "running" && " · still searching…"}
+              {c.duplicates_skipped > 0 &&
+                ` · skipped ${c.duplicates_skipped} it already had`}
             </p>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-                gap: 10,
-              }}
-            >
-              <Stat label="Searches planned" value={c.searches_planned} />
-              <Stat label="Searches completed" value={c.searches_completed} />
-              <Stat
-                label="API requests"
-                value={`${c.api_requests_used}/${c.max_api_requests}`}
-                warn={c.api_requests_used >= c.max_api_requests}
-              />
-              <Stat label="Businesses returned" value={c.businesses_returned} />
-              <Stat label="Unique saved" value={c.unique_saved} accent />
-              <Stat label="Duplicates skipped" value={c.duplicates_skipped} />
-              <Stat label="Failed qualification" value={c.qualification_failures} />
-              <Stat label="Enrichment queued" value={c.enrichment_queued} accent />
-              <Stat label="Jobs outstanding" value={progress.outstanding_jobs} />
-              <Stat label="Errors" value={c.error_count} warn={c.error_count > 0} />
-            </div>
+            {c.error_count > 0 && (
+              <p style={{ color: "var(--red)", fontSize: "0.82rem", marginTop: 8 }}>
+                {c.error_count} search{c.error_count === 1 ? "" : "es"} hit an error.
+                Open the engine details below to see what Google said.
+              </p>
+            )}
           </div>
 
-          <ReleaseAndPacket
-            campaignId={c.id}
-            readyCount={progress.leads_by_machine_status.ready_for_calling || 0}
-            onDone={() => {
-              loadProgress(c.id);
-              loadCampaigns();
-            }}
-          />
+          {/* --------------------------- engine details -------------------------- */}
+          <button
+            className="btn-ghost"
+            onClick={() => setShowEngine(!showEngine)}
+            style={{ marginBottom: 12 }}
+          >
+            {showEngine ? "Hide engine details" : "Show engine details"}
+          </button>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <div className="card">
-              <h3 style={{ marginBottom: 10 }}>Leads by machine status</h3>
-              {Object.keys(progress.leads_by_machine_status).length === 0 && (
-                <p className="muted" style={{ fontSize: "0.85rem" }}>
-                  No leads generated yet.
-                </p>
-              )}
-              {Object.entries(progress.leads_by_machine_status).map(([k, v]) => (
-                <div
-                  key={k}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    fontSize: "0.82rem",
-                    padding: "3px 0",
-                  }}
-                >
-                  <span className="muted">
-                    {MACHINE_STATUS_LABELS[k as MachineStatus] || k}
-                  </span>
-                  <strong>{v}</strong>
-                </div>
-              ))}
-            </div>
+          {showEngine && (
+            <>
+              <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
+                Diagnostics. You never need these to run the business — they are
+                here so a problem can be identified instead of guessed at.
+              </p>
 
-            <div className="card">
-              <h3 style={{ marginBottom: 10 }}>Search tasks / jobs</h3>
-              <div style={{ fontSize: "0.82rem" }}>
-                <div className="muted" style={{ marginBottom: 6 }}>
-                  Tasks:{" "}
-                  {Object.entries(progress.search_tasks)
-                    .map(([k, v]) => `${k} ${v}`)
-                    .join(" · ") || "none"}
-                </div>
-                <div className="muted">
-                  Jobs:{" "}
-                  {Object.entries(progress.jobs)
-                    .map(([k, v]) => `${k} ${v}`)
-                    .join(" · ") || "none"}
-                </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                <button className="btn-ghost" onClick={() => setShowTest(true)}>
+                  Test the Google key
+                </button>
+                <button className="btn-ghost" onClick={pushEngine} disabled={ticking}>
+                  {ticking ? "Working…" : "Push the engine along"}
+                </button>
+                <button className="btn-ghost" onClick={() => setShowForm(true)}>
+                  Pick trades and a city yourself
+                </button>
               </div>
-              {progress.recent_errors.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <h3 style={{ color: "var(--red)", marginBottom: 6 }}>What went wrong</h3>
-                  {progress.recent_errors.map((e, i) => (
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                  gap: 10,
+                  marginBottom: 16,
+                }}
+              >
+                <Stat label="Searches planned" value={c.searches_planned} />
+                <Stat label="Searches completed" value={c.searches_completed} />
+                <Stat
+                  label="API requests"
+                  value={`${c.api_requests_used}/${c.max_api_requests}`}
+                  warn={c.api_requests_used >= c.max_api_requests}
+                />
+                <Stat label="Businesses returned" value={c.businesses_returned} />
+                <Stat label="Unique saved" value={c.unique_saved} accent />
+                <Stat label="Duplicates skipped" value={c.duplicates_skipped} />
+                <Stat label="Failed qualification" value={c.qualification_failures} />
+                <Stat label="Enrichment queued" value={c.enrichment_queued} accent />
+                <Stat label="Jobs outstanding" value={progress.outstanding_jobs} />
+                <Stat label="Errors" value={c.error_count} warn={c.error_count > 0} />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div className="card">
+                  <h3 style={{ marginBottom: 10 }}>Leads by machine status</h3>
+                  {Object.keys(progress.leads_by_machine_status).length === 0 && (
+                    <p className="muted" style={{ fontSize: "0.85rem" }}>
+                      No leads generated yet.
+                    </p>
+                  )}
+                  {Object.entries(progress.leads_by_machine_status).map(([k, v]) => (
                     <div
-                      key={i}
+                      key={k}
                       style={{
-                        marginBottom: 8,
-                        padding: "8px 10px",
-                        background: "var(--bg-inset)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 4,
-                        fontSize: "0.78rem",
-                        lineHeight: 1.5,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        fontSize: "0.82rem",
+                        padding: "3px 0",
                       }}
                     >
-                      <strong>{e.type}</strong>
-                      {e.count > 1 && (
-                        <span className="faint"> · {e.count} more like this</span>
-                      )}
-                      <div style={{ marginTop: 4 }}>{e.last_error}</div>
+                      <span className="muted">
+                        {MACHINE_STATUS_LABELS[k as MachineStatus] || k}
+                      </span>
+                      <strong>{v}</strong>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          </div>
+
+                <div className="card">
+                  <h3 style={{ marginBottom: 10 }}>Search tasks / jobs</h3>
+                  <div style={{ fontSize: "0.82rem" }}>
+                    <div className="muted" style={{ marginBottom: 6 }}>
+                      Tasks:{" "}
+                      {Object.entries(progress.search_tasks)
+                        .map(([k, v]) => `${k} ${v}`)
+                        .join(" · ") || "none"}
+                    </div>
+                    <div className="muted">
+                      Jobs:{" "}
+                      {Object.entries(progress.jobs)
+                        .map(([k, v]) => `${k} ${v}`)
+                        .join(" · ") || "none"}
+                    </div>
+                  </div>
+                  {progress.recent_errors.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <h3 style={{ color: "var(--red)", marginBottom: 6 }}>
+                        What went wrong
+                      </h3>
+                      {progress.recent_errors.map((e, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            marginBottom: 8,
+                            padding: "8px 10px",
+                            background: "var(--bg-inset)",
+                            border: "1px solid var(--border)",
+                            borderRadius: 4,
+                            fontSize: "0.78rem",
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          <strong>{e.type}</strong>
+                          {e.count > 1 && (
+                            <span className="faint"> · {e.count} more like this</span>
+                          )}
+                          <div style={{ marginTop: 4 }}>{e.last_error}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -377,7 +572,7 @@ export default function SourcingPage() {
           onCreated={(id) => {
             setShowMix(false);
             setSelected(id);
-            loadCampaigns();
+            refresh();
           }}
         />
       )}
@@ -388,7 +583,7 @@ export default function SourcingPage() {
           onCreated={(id) => {
             setShowForm(false);
             setSelected(id);
-            loadCampaigns();
+            refresh();
           }}
         />
       )}
@@ -396,14 +591,16 @@ export default function SourcingPage() {
   );
 }
 
-/** Turn generated businesses into callable packets without leaving this page. */
-function ReleaseAndPacket({
+/** Hand finished leads to a caller. The one action on this page that matters. */
+function AssignPanel({
   campaignId,
   readyCount,
+  activeCallers,
   onDone,
 }: {
-  campaignId: string;
+  campaignId: string | null;
   readyCount: number;
+  activeCallers: number;
   onDone: () => void;
 }) {
   const [callers, setCallers] = useState<{ id: string; name: string }[]>([]);
@@ -422,31 +619,7 @@ function ReleaseAndPacket({
         if (active.length) setCallerId(active[0].id);
       })
       .catch(() => {});
-  }, []);
-
-  async function release() {
-    setBusy(true);
-    setErr("");
-    setMsg("");
-    const res = await fetch("/api/leads/release", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourcing_campaign_id: campaignId }),
-    });
-    const j = await res.json();
-    if (!res.ok) {
-      setErr(j.error || "Release failed");
-      setBusy(false);
-      return;
-    }
-    // Drive the worker so the leads actually move now.
-    for (let i = 0; i < 3; i++) {
-      await fetch("/api/worker/tick", { method: "POST" }).catch(() => {});
-    }
-    setMsg(j.message || "Done.");
-    setBusy(false);
-    onDone();
-  }
+  }, [activeCallers]);
 
   async function makePacket() {
     setBusy(true);
@@ -456,42 +629,52 @@ function ReleaseAndPacket({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        sourcing_campaign_id: campaignId,
+        sourcing_campaign_id: campaignId || undefined,
         caller_id: callerId,
         size: Number(size),
       }),
     });
     const j = await res.json();
-    if (!res.ok) setErr(j.error || "Could not create packet");
-    else setMsg(`Packet created: ${j.name}`);
+    if (!res.ok) setErr(j.error || "Could not create the packet");
+    else {
+      const name = callers.find((k) => k.id === callerId)?.name || "the caller";
+      setMsg(
+        `Done. ${j.total} leads are now in ${name}'s dialer` +
+          (j.suppressed_excluded
+            ? ` (${j.suppressed_excluded} skipped — on the do-not-call list).`
+            : ".")
+      );
+    }
     setBusy(false);
     onDone();
   }
 
+  const canAssign = !!callerId && readyCount > 0;
+
   return (
-    <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber-dim)" }}>
-      <h3 style={{ marginBottom: 8, color: "var(--amber)" }}>Caller packets</h3>
-      <p className="faint" style={{ marginBottom: 12 }}>
-        Packets are built and assigned automatically as leads finish processing.
-        <strong> {readyCount}</strong> ready and not yet assigned. Use these only if
-        you want to force it along or assign a specific caller yourself.
+    <div className="card" style={{ marginBottom: 26, borderColor: "var(--amber-dim)" }}>
+      <h3 style={{ marginBottom: 6, color: "var(--amber)" }}>Hand leads to a caller</h3>
+      <p className="faint" style={{ marginBottom: 14, lineHeight: 1.6 }}>
+        This is the only step between a finished lead and someone dialing it.
+        Packets are also built automatically as leads finish, so most days you
+        will not need this — it is here for when you want a specific caller to
+        get a specific number of leads. A lead can only ever be in one packet,
+        so nobody gets called twice.
       </p>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button className="btn-ghost" onClick={release} disabled={busy}>
-          Reprocess stuck leads
-        </button>
         <select
           value={callerId}
           onChange={(e) => setCallerId(e.target.value)}
-          style={{ maxWidth: 190 }}
+          style={{ maxWidth: 200 }}
         >
-          <option value="">Assign to caller…</option>
+          <option value="">Choose a caller…</option>
           {callers.map((k) => (
             <option key={k.id} value={k.id}>
               {k.name}
             </option>
           ))}
         </select>
+        <span className="faint">get</span>
         <input
           type="number"
           value={size}
@@ -499,21 +682,55 @@ function ReleaseAndPacket({
           style={{ maxWidth: 80 }}
           min={1}
         />
-        <button
-          className="btn"
-          onClick={makePacket}
-          disabled={busy || !callerId || readyCount === 0}
-        >
-          Assign manually
+        <span className="faint">leads</span>
+        <button className="btn" onClick={makePacket} disabled={busy || !canAssign}>
+          {busy ? "Assigning…" : "Hand them over"}
         </button>
       </div>
       {callers.length === 0 && (
-        <p className="faint" style={{ marginTop: 8 }}>
-          No active callers yet — add them on the Callers tab first.
+        <p className="faint" style={{ marginTop: 10 }}>
+          No callers yet — add one on the <Link href="/admin/callers">Callers</Link> tab
+          first.
         </p>
       )}
-      {msg && <p style={{ color: "var(--amber)", marginTop: 10 }}>{msg}</p>}
-      {err && <p style={{ color: "var(--red)", marginTop: 10 }}>{err}</p>}
+      {callers.length > 0 && readyCount === 0 && (
+        <p className="faint" style={{ marginTop: 10 }}>
+          Nothing is ready to hand over right now.
+        </p>
+      )}
+      {msg && <p style={{ color: "var(--amber)", marginTop: 12 }}>{msg}</p>}
+      {err && <p style={{ color: "var(--red)", marginTop: 12 }}>{err}</p>}
+    </div>
+  );
+}
+
+function Big({
+  value,
+  label,
+  sub,
+  accent,
+  dim,
+}: {
+  value: number;
+  label: string;
+  sub: string;
+  accent?: boolean;
+  dim?: boolean;
+}) {
+  return (
+    <div className="card" style={{ padding: "14px 16px" }}>
+      <div
+        style={{
+          fontSize: "2rem",
+          fontWeight: 700,
+          lineHeight: 1.1,
+          color: dim ? "var(--text-dim)" : accent ? "var(--amber)" : "var(--text)",
+        }}
+      >
+        {value}
+      </div>
+      <div style={{ fontWeight: 700, fontSize: "0.8rem", marginTop: 2 }}>{label}</div>
+      <div className="faint">{sub}</div>
     </div>
   );
 }
@@ -724,7 +941,9 @@ function MixDialog({
         <h2 style={{ marginBottom: 6 }}>How many leads?</h2>
         <p className="faint" style={{ marginBottom: 20 }}>
           A mix of home-service trades across major metros. Owner-operator sized
-          businesses only — big call-centre operations are filtered out.
+          businesses only — big call-centre operations are filtered out. Roughly
+          half of what Google returns gets discarded, so ask for about twice what
+          you want to end up with.
         </p>
 
         <div
@@ -934,9 +1153,7 @@ function CampaignForm({
             Cancel
           </button>
           <div style={{ flex: 1 }} />
-          {!ready && (
-            <span className="faint">Pick a trade and a location</span>
-          )}
+          {!ready && <span className="faint">Pick a trade and a location</span>}
         </div>
       </div>
     </div>

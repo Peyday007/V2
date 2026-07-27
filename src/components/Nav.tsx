@@ -7,7 +7,7 @@ import { usePathname } from "next/navigation";
 // and is intentionally NOT linked from here.
 const links = [
   { href: "/", label: "Board" },
-  { href: "/admin/sourcing", label: "Sourcing" },
+  { href: "/admin/sourcing", label: "Leads" },
   { href: "/metrics", label: "Metrics" },
   { href: "/admin/analytics", label: "Analytics" },
   { href: "/admin/appointments", label: "Appointments" },
