@@ -131,17 +131,48 @@ export default function PacketsAdmin() {
     );
   }
 
-  function remove(p: Packet) {
+  function discardLeads(p: Packet) {
     if (
       !confirm(
-        `Delete "${p.name}"?\n\nNobody has dialed from it, so all ${p.total} leads go straight back into the ready pool. Nothing is lost.`
+        `Bin the ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} in this packet?\n\n` +
+          `Use this when the leads themselves are no good. They are archived — kept in the ` +
+          `database with their history, but never handed to a caller again. They will NOT ` +
+          `come back into the pool.\n\nCalls already logged are kept. The packet closes.`
       )
     )
       return;
     return run(
       p.id,
-      () => fetch(`/api/packets/${p.id}`, { method: "DELETE" }),
-      (j: { returned: number }) => `Packet deleted. ${j.returned} leads went back to the pool.`
+      () =>
+        fetch(`/api/packets/${p.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "discard_leads" }),
+        }),
+      (j: { discarded: number }) =>
+        `${j.discarded} leads binned. They will not be handed to anyone again.`
+    );
+  }
+
+  function remove(p: Packet, discard: boolean) {
+    const fate = discard
+      ? `The ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} will be BINNED — archived, and never handed to a caller again.`
+      : `The ${p.remaining} un-dialed lead${p.remaining === 1 ? "" : "s"} go back into the ready pool, so you can send them to someone else.`;
+    const callsNote =
+      p.callsMade > 0
+        ? `\n\n${p.callsMade} call${p.callsMade === 1 ? "" : "s"} were logged from this packet. Every one is kept — who was called, when, by whom and what happened. They just stop showing which packet they came from.`
+        : "";
+    if (!confirm(`Delete "${p.name}"?\n\n${fate}${callsNote}`)) return;
+    return run(
+      p.id,
+      () =>
+        fetch(`/api/packets/${p.id}${discard ? "?discard=1" : ""}`, { method: "DELETE" }),
+      (j: { returned: number; discarded: number; callsDetached: number }) =>
+        `Packet deleted. ` +
+        (j.discarded > 0
+          ? `${j.discarded} leads binned.`
+          : `${j.returned} leads went back to the pool.`) +
+        (j.callsDetached > 0 ? ` ${j.callsDetached} logged calls kept.` : "")
     );
   }
 
@@ -162,9 +193,15 @@ export default function PacketsAdmin() {
       <h1 style={{ marginBottom: 6 }}>Packets</h1>
       <p className="faint" style={{ marginBottom: 22, lineHeight: 1.6 }}>
         A packet is a caller&apos;s list of leads to work through. A lead can only
-        be in one packet at a time, so nobody ever gets called twice. Everything
-        here is reversible — taking leads back puts them straight into the ready
-        pool for someone else.
+        be in one packet at a time, so nobody ever gets called twice.
+      </p>
+      <p className="faint" style={{ marginBottom: 22, lineHeight: 1.6 }}>
+        <strong>Take back</strong> returns the un-dialed leads to the ready pool
+        so someone else can have them. <strong>Bin</strong> is for when the leads
+        themselves are no good — they are archived and never handed to anyone
+        again. Deleting a packet never deletes a logged call: every call keeps
+        its lead, caller, outcome and timing, it just stops showing which packet
+        it came from.
       </p>
 
       {(msg || err) && (
@@ -249,6 +286,7 @@ export default function PacketsAdmin() {
               onReassign={reassign}
               onAdd={addLeads}
               onReturn={returnLeads}
+              onDiscard={discardLeads}
               onDelete={remove}
             />
           ))}
@@ -269,6 +307,7 @@ export default function PacketsAdmin() {
                 onReassign={reassign}
                 onAdd={addLeads}
                 onReturn={returnLeads}
+                onDiscard={discardLeads}
                 onDelete={remove}
               />
             ))}
@@ -307,6 +346,7 @@ function PacketRow({
   onReassign,
   onAdd,
   onReturn,
+  onDiscard,
   onDelete,
 }: {
   p: Packet;
@@ -315,7 +355,8 @@ function PacketRow({
   onReassign: (p: Packet, callerId: string) => void;
   onAdd: (p: Packet, size: number) => void;
   onReturn: (p: Packet) => void;
-  onDelete: (p: Packet) => void;
+  onDiscard: (p: Packet) => void;
+  onDelete: (p: Packet, discard: boolean) => void;
 }) {
   const [addSize, setAddSize] = useState("25");
   const [showAdd, setShowAdd] = useState(false);
@@ -349,6 +390,7 @@ function PacketRow({
           </div>
           <div className="faint">
             {p.done} of {p.total} worked · <strong>{p.remaining} still to dial</strong>
+            {p.callsMade > 0 && ` · ${p.callsMade} calls logged`}
           </div>
         </div>
 
@@ -379,26 +421,46 @@ function PacketRow({
           </button>
 
           {p.remaining > 0 && (
-            <button
-              className="btn-ghost"
-              style={{ padding: "5px 12px", fontSize: "0.72rem" }}
-              onClick={() => onReturn(p)}
-              disabled={busy}
-              title="Take the un-dialed leads back so someone else can have them"
-            >
-              Take back {p.remaining}
-            </button>
+            <>
+              <button
+                className="btn-ghost"
+                style={{ padding: "5px 12px", fontSize: "0.72rem" }}
+                onClick={() => onReturn(p)}
+                disabled={busy}
+                title="Take the un-dialed leads back so someone else can have them"
+              >
+                Take back {p.remaining}
+              </button>
+              <button
+                className="btn-ghost"
+                style={{ padding: "5px 12px", fontSize: "0.72rem" }}
+                onClick={() => onDiscard(p)}
+                disabled={busy}
+                title="These leads are no good — archive them so nobody is ever handed them again"
+              >
+                Bin {p.remaining}
+              </button>
+            </>
           )}
 
-          {p.canDelete && (
+          <button
+            className="btn-danger"
+            style={{ padding: "5px 12px", fontSize: "0.72rem" }}
+            onClick={() => onDelete(p, false)}
+            disabled={busy}
+            title="Remove the packet. Un-dialed leads go back to the pool; logged calls are kept."
+          >
+            Delete
+          </button>
+          {p.remaining > 0 && (
             <button
               className="btn-danger"
               style={{ padding: "5px 12px", fontSize: "0.72rem" }}
-              onClick={() => onDelete(p)}
+              onClick={() => onDelete(p, true)}
               disabled={busy}
-              title="Nobody has dialed from this packet, so it can be removed entirely"
+              title="Remove the packet AND bin its un-dialed leads, so they never come back"
             >
-              Delete
+              Delete + bin leads
             </button>
           )}
         </div>

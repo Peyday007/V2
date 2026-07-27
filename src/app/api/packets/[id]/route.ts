@@ -236,67 +236,151 @@ export async function POST(
     return NextResponse.json({ ok: true, returned: leadIds.length });
   }
 
+  /* ---------------------------- discard leads ----------------------------- */
+  // Returning leads puts them back in the pool, where they get handed straight
+  // to the next caller. When the leads themselves are the problem, that is the
+  // wrong outcome — these ones need to leave circulation for good.
+  if (action === "discard_leads") {
+    const { data: pending } = await db
+      .from("packet_leads")
+      .select("lead_id")
+      .eq("packet_id", id)
+      .eq("status", "pending");
+    const leadIds = (pending || []).map((p) => p.lead_id);
+
+    if (leadIds.length > 0) {
+      await db.from("packet_leads").delete().eq("packet_id", id).in("lead_id", leadIds);
+      // Archived, not deleted. The record and its history survive; it is
+      // simply never eligible for a packet again.
+      await db
+        .from("leads")
+        .update({
+          status: "disqualified",
+          machine_status: "archived",
+          archived_at: new Date().toISOString(),
+          qualification_failure_reason:
+            typeof body.reason === "string" && body.reason.trim()
+              ? body.reason.trim()
+              : "discarded by admin",
+        })
+        .in("id", leadIds);
+    }
+
+    await db.from("packets").update({ status: "completed" }).eq("id", id);
+
+    await recordEvent({
+      type: "lead.archived",
+      entityType: "packet",
+      entityId: id,
+      packetId: id,
+      actorType: "admin",
+      source: "ui",
+      newValue: { discarded: leadIds.length, packet_status: "completed" },
+      metadata: {
+        reason: body.reason || "discarded by admin",
+        lead_ids: leadIds.slice(0, 200),
+      },
+      verificationStatus: "verified",
+    });
+
+    return NextResponse.json({ ok: true, discarded: leadIds.length });
+  }
+
   return NextResponse.json(
-    { error: "Unknown action. Use add_leads or return_leads." },
+    { error: "Unknown action. Use add_leads, return_leads or discard_leads." },
     { status: 400 }
   );
 }
 
 /**
- * Delete a packet outright. Only allowed when nobody has dialed from it —
- * otherwise the calls already logged would point at a packet that no longer
- * exists, and the history would be wrong.
+ * Delete a packet. Always allowed.
+ *
+ * Calls logged from it are DETACHED, not deleted: packet_id is set to null so
+ * every call keeps its lead, caller, outcome, duration and timestamp. All that
+ * is lost is which packet it was dialed from — a far smaller price than not
+ * being able to clear a packet full of leads you do not want called.
+ *
+ * `?discard=1` archives the un-dialed leads instead of returning them to the
+ * pool, for when the leads themselves are the problem.
  */
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const discard = req.nextUrl.searchParams.get("discard") === "1";
   const db = supabase();
 
   const { count: callsMade } = await db
     .from("calls")
     .select("*", { count: "exact", head: true })
     .eq("packet_id", id);
-  if ((callsMade ?? 0) > 0) {
-    return NextResponse.json(
-      {
-        error:
-          `This packet has ${callsMade} call${callsMade === 1 ? "" : "s"} logged against it, ` +
-          `so deleting it would break that history. Use "Return leads" instead — it takes the ` +
-          `un-dialed leads back and closes the packet.`,
-      },
-      { status: 400 }
-    );
-  }
 
   const { data: rows } = await db
     .from("packet_leads")
-    .select("lead_id")
+    .select("lead_id, status")
     .eq("packet_id", id);
-  const leadIds = (rows || []).map((r) => r.lead_id);
+  // Only the un-dialed leads are freed or binned. One that was already worked
+  // keeps whatever state that call left it in.
+  const pendingIds = (rows || []).filter((r) => r.status === "pending").map((r) => r.lead_id);
 
-  if (leadIds.length > 0) {
-    await db
-      .from("leads")
-      .update({ status: "new", machine_status: "ready_for_calling" })
-      .in("id", leadIds)
-      .eq("do_not_call", false);
+  if (pendingIds.length > 0) {
+    if (discard) {
+      await db
+        .from("leads")
+        .update({
+          status: "disqualified",
+          machine_status: "archived",
+          archived_at: new Date().toISOString(),
+          qualification_failure_reason: "discarded by admin",
+        })
+        .in("id", pendingIds);
+    } else {
+      await db
+        .from("leads")
+        .update({ status: "new", machine_status: "ready_for_calling" })
+        .in("id", pendingIds)
+        .eq("do_not_call", false);
+    }
+  }
+
+  // Detach the calls before the packet goes, so the foreign key holds and no
+  // call record is lost.
+  if ((callsMade ?? 0) > 0) {
+    const { error: detachErr } = await db
+      .from("calls")
+      .update({ packet_id: null })
+      .eq("packet_id", id);
+    if (detachErr) {
+      return NextResponse.json(
+        { error: `Could not detach the logged calls: ${detachErr.message}` },
+        { status: 500 }
+      );
+    }
   }
 
   const { error } = await db.from("packets").delete().eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   await recordEvent({
-    type: "lead.removed_from_packet",
+    type: discard ? "lead.archived" : "lead.removed_from_packet",
     entityType: "packet",
     entityId: id,
     actorType: "admin",
     source: "ui",
-    newValue: { deleted: true, returned: leadIds.length },
-    metadata: { lead_ids: leadIds.slice(0, 200) },
+    newValue: {
+      packet_deleted: true,
+      [discard ? "discarded" : "returned"]: pendingIds.length,
+      calls_detached: callsMade ?? 0,
+    },
+    metadata: { lead_ids: pendingIds.slice(0, 200) },
     verificationStatus: "verified",
   });
 
-  return NextResponse.json({ ok: true, returned: leadIds.length });
+  return NextResponse.json({
+    ok: true,
+    returned: discard ? 0 : pendingIds.length,
+    discarded: discard ? pendingIds.length : 0,
+    callsDetached: callsMade ?? 0,
+  });
 }

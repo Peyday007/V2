@@ -427,6 +427,24 @@ export default function SourcingPage() {
                   ▶ Resume
                 </button>
               )}
+              <button
+                className="btn-danger"
+                title="Archive every lead from this batch that nobody is holding, so they are never handed to a caller"
+                onClick={() => {
+                  if (
+                    confirm(
+                      "Bin the unused leads from this batch?\n\n" +
+                        "Every lead from this batch that is not already with a caller gets archived — " +
+                        "kept in the database with its history, but never handed to anyone again.\n\n" +
+                        "Leads already in a packet or already called are left alone. To clear those, " +
+                        "use the Packets tab."
+                    )
+                  )
+                    act(c.id, "discard_leads");
+                }}
+              >
+                Bin unused leads
+              </button>
             </div>
 
             {editing && (

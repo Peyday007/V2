@@ -203,6 +203,52 @@ export async function POST(
     return NextResponse.json({ ok: true, searches: reusable.length });
   }
 
+  /**
+   * Bin every lead from this batch that nobody has dialed and nobody is
+   * holding. For when a whole batch turns out not to be worth calling.
+   *
+   * Archived, not deleted: the records and their history survive, they are
+   * simply never eligible for a packet again. Leads already in a packet or
+   * already called are left alone — clearing those is the packet page's job,
+   * so this can never quietly undo a caller's work.
+   */
+  if (action === "discard_leads") {
+    const { data: victims } = await db
+      .from("leads")
+      .select("id")
+      .eq("sourcing_campaign_id", id)
+      .eq("status", "new")
+      .is("archived_at", null);
+    const ids = (victims || []).map((l) => l.id);
+
+    if (ids.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        discarded: 0,
+        message:
+          "Nothing to bin — every lead in this batch is either with a caller, already called, or already binned.",
+      });
+    }
+
+    await db
+      .from("leads")
+      .update({
+        status: "disqualified",
+        machine_status: "archived",
+        archived_at: new Date().toISOString(),
+        qualification_failure_reason: "batch discarded by admin",
+      })
+      .in("id", ids);
+
+    await logEvent("lead.archived", "sourcing_campaign", id, {
+      discarded: ids.length,
+      reason: "batch discarded by admin",
+      lead_ids: ids.slice(0, 200),
+    });
+
+    return NextResponse.json({ ok: true, discarded: ids.length });
+  }
+
   if (action === "start" || action === "resume") {
     if (!placesKeyConfigured()) {
       return NextResponse.json(
