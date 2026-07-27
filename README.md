@@ -14,7 +14,28 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 
 - **Do Not Call** (`/admin/suppressions`) — the suppression list, and a box to add a number by hand for a request that didn't come in on a call
 
-There is **no login** on the app itself by design — anyone with the URL has access. Caller PINs only control the dialer.
+## Who can see what
+
+The admin console is behind one shared passphrase. Set `ADMIN_PASSWORD` in
+Vercel and every admin page and admin API requires it; you type it once per
+device and the session lasts 30 days. Callers never need it — they go to
+`/dial` and sign in with their 6-digit PIN, and that route is deliberately
+never gated.
+
+Changing `ADMIN_PASSWORD` signs everyone out immediately, because the session
+cookie is signed with the passphrase itself.
+
+**If `ADMIN_PASSWORD` is not set, nothing is gated** and a red banner says so
+on every admin page. That is deliberate: Vercel environment variables only take
+effect after a redeploy, so failing closed would lock you out of your own site
+the moment you added the variable.
+
+**What the passphrase does not cover:** the browser needs
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` to load the board, so that key is in the page
+source — including on `/dial`. With the current wide-open RLS policies, someone
+technical who found it could query the database directly. The passphrase keeps
+people out of the console, not out of Postgres. Tightening RLS is the fix, and
+has not been done yet.
 
 ## First-time setup (do these in order)
 
@@ -100,6 +121,7 @@ apart from a broken query.
 | `NEXT_PUBLIC_SUPABASE_URL` | from step 3 |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | from step 3 |
 | `CALLER_SESSION_SECRET` | any long random string (30+ characters, mash the keyboard) |
+| `ADMIN_PASSWORD` | the passphrase you'll type to reach the admin console. Pick something you'll remember but nobody would guess. Without it, the console is open to anyone with the link. |
 | `ANTHROPIC_API_KEY` | from https://console.anthropic.com → API Keys |
 
 4. Click **Deploy**.

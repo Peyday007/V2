@@ -18,9 +18,26 @@ const links = [
   { href: "/admin/history", label: "History" },
 ];
 
-export default function Nav() {
+export default function Nav({ protectedConsole }: { protectedConsole: boolean }) {
   const pathname = usePathname();
   return (
+    <>
+      {!protectedConsole && (
+        <div
+          style={{
+            background: "var(--red)",
+            color: "#fff",
+            padding: "7px 24px",
+            fontSize: "0.78rem",
+            fontWeight: 700,
+            letterSpacing: "0.04em",
+          }}
+        >
+          Anyone with this link can see every page here, including your callers.
+          Set ADMIN_PASSWORD in Vercel → Settings → Environment Variables, then
+          redeploy.
+        </div>
+      )}
     <nav
       style={{
         display: "flex",
@@ -77,6 +94,20 @@ export default function Nav() {
           </Link>
         );
       })}
+      <div style={{ flex: 1 }} />
+      {protectedConsole && (
+        <button
+          className="btn-ghost"
+          style={{ padding: "4px 12px", fontSize: "0.7rem" }}
+          onClick={async () => {
+            await fetch("/api/admin/logout", { method: "POST" });
+            window.location.href = "/admin-login";
+          }}
+        >
+          Sign out
+        </button>
+      )}
     </nav>
+    </>
   );
 }
