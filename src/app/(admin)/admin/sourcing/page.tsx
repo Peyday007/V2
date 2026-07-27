@@ -5,6 +5,7 @@ import Link from "next/link";
 import { MACHINE_STATUS_LABELS, MachineStatus } from "@/lib/machineStatus";
 import { INDUSTRIES, searchTermsFor } from "@/lib/industries";
 import { campaignStatusText, type NextAction, type PipelineCounts } from "@/lib/pipelineState";
+import { callableProgressPercent } from "@/lib/leadYield";
 
 type Campaign = {
   id: string;
@@ -25,6 +26,8 @@ type Campaign = {
   enrichment_queued: number;
   error_count: number;
   last_error: string | null;
+  completion_reason: string | null;
+  callable_leads: number | null;
 };
 
 type Progress = {
@@ -169,9 +172,17 @@ export default function SourcingPage() {
   }
 
   const c = progress?.campaign;
-  const pct = c
-    ? Math.min(100, Math.round((c.unique_saved / Math.max(1, c.target_lead_count)) * 100))
+  // Progress is measured in CALLABLE leads, not businesses saved — otherwise
+  // the bar reads 100% while the packet is empty.
+  const byStatus = progress?.leads_by_machine_status || {};
+  const callable =
+    (byStatus.ready_for_calling || 0) +
+    (byStatus.assigned_to_packet || 0) +
+    (byStatus.contacted || 0);
+  const stillProcessing = c
+    ? Math.max(0, c.unique_saved - callable - (byStatus.enrichment_failed || 0) - (byStatus.archived || 0))
     : 0;
+  const pct = c ? callableProgressPercent(callable, c.target_lead_count) : 0;
 
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto" }}>
@@ -421,12 +432,23 @@ export default function SourcingPage() {
               />
             </div>
             <p className="faint">
-              Found <strong>{c.unique_saved}</strong> businesses out of the{" "}
-              {c.target_lead_count} asked for
+              <strong>{callable}</strong> callable leads out of the{" "}
+              {c.target_lead_count} you asked for
+              {stillProcessing > 0 && ` · ${stillProcessing} still processing`}
               {c.status === "running" && " · still searching…"}
-              {c.duplicates_skipped > 0 &&
-                ` · skipped ${c.duplicates_skipped} it already had`}
             </p>
+            <p className="faint" style={{ marginTop: 4 }}>
+              It looked at {c.unique_saved} businesses to get there
+              {c.duplicates_skipped > 0 && `, skipping ${c.duplicates_skipped} it already had`}
+              . The engine keeps searching until it has the number you asked
+              for, so you never have to over-order.
+            </p>
+
+            {c.status === "completed" && c.completion_reason && callable < c.target_lead_count && (
+              <p style={{ color: "var(--amber)", fontSize: "0.82rem", marginTop: 8 }}>
+                Stopped short: {c.completion_reason}
+              </p>
+            )}
 
             {c.error_count > 0 && (
               <p style={{ color: "var(--red)", fontSize: "0.82rem", marginTop: 8 }}>
@@ -940,10 +962,10 @@ function MixDialog({
       >
         <h2 style={{ marginBottom: 6 }}>How many leads?</h2>
         <p className="faint" style={{ marginBottom: 20 }}>
-          A mix of home-service trades across major metros. Owner-operator sized
-          businesses only — big call-centre operations are filtered out. Roughly
-          half of what Google returns gets discarded, so ask for about twice what
-          you want to end up with.
+          This is how many <strong>callable</strong> leads you get. Roughly half
+          of what Google returns is discarded — too big to be owner-operated, no
+          phone number, closed down — so the engine keeps searching until it has
+          made up the difference. Ask for the number you actually want.
         </p>
 
         <div

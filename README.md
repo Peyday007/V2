@@ -39,6 +39,7 @@ There is **no login** on the app itself by design — anyone with the URL has ac
 9c. Repeat with `supabase/migrations/0012_event_memory.sql` (new query, paste, Run).
 9d. Repeat with `supabase/migrations/0013_call_analytics.sql` (new query, paste, Run).
 9e. Repeat with `supabase/migrations/0014_dnc_enforcement.sql` (new query, paste, Run).
+9f. Repeat with `supabase/migrations/0015_callable_target.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -59,6 +60,18 @@ enrichment jobs), retryable with exponential backoff, and resumable — a
 deployment or crash mid-campaign loses nothing, because all state is in
 Postgres. Only leads marked `ready_for_calling` can enter caller packets, so
 freshly generated businesses never reach a caller before they're processed.
+
+**When you ask for 100 leads you get 100 callable leads.** Roughly half of what
+Google returns gets discarded — too big to be owner-operated, no phone number
+we can dial, permanently closed — so the engine targets the number that
+survives, not the number it saved. While a run is going it projects how many of
+the businesses still being processed will come out callable, using the yield
+this campaign is actually converting at rather than a guess, and keeps
+searching until the projection covers your target. If enrichment then finishes
+worse than projected, the campaign re-arms its remaining searches and goes back
+out. The only things that stop it short are the API request cap and genuinely
+running out of places to look — and when either happens the campaign says so in
+plain words instead of reporting "completed".
 
 `0005` is self-healing: it creates anything missing, converts every historical
 stage value to the canonical key, blocks invalid stages at the database level,

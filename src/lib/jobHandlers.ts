@@ -15,6 +15,7 @@ import { needsEnrichmentQueue } from "./machineStatus";
 import { findIndustry, roleBasedAsk } from "./industries";
 import { SOURCES, STOP_CONFIDENCE } from "./sources";
 import { logEvent, recordEvent } from "./events";
+import { decideSearching } from "./leadYield";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -47,22 +48,62 @@ async function bumpCampaign(id: string, deltas: Record<string, number>) {
   await db.from("sourcing_campaigns").update(patch).eq("id", id);
 }
 
+/**
+ * How this campaign's leads have actually turned out.
+ *
+ * The target is a number of CALLABLE leads. Counting saved businesses instead
+ * meant a campaign for 100 finished with about 40 usable ones, because
+ * qualification and enrichment discard roughly half of what Google returns.
+ */
+async function campaignLeadCounts(campaignId: string): Promise<{
+  callable: number;
+  discarded: number;
+  inFlight: number;
+}> {
+  const db = supabaseAdmin();
+  const { data } = await db
+    .from("leads")
+    .select("machine_status")
+    .eq("sourcing_campaign_id", campaignId);
+
+  let callable = 0;
+  let discarded = 0;
+  let inFlight = 0;
+  for (const row of data || []) {
+    const s = String(row.machine_status);
+    if (s === "ready_for_calling" || s === "assigned_to_packet" || s === "contacted") {
+      callable++;
+    } else if (s === "enrichment_failed" || s === "archived") {
+      discarded++;
+    } else {
+      inFlight++;
+    }
+  }
+  return { callable, discarded, inFlight };
+}
+
 /** Campaign is still allowed to spend API requests? */
-function withinBudget(campaign: {
+async function withinBudget(campaign: {
+  id: string;
   api_requests_used: number;
   max_api_requests: number;
-  unique_saved: number;
   target_lead_count: number;
   status: string;
-}): { ok: boolean; reason?: string } {
+}): Promise<{ ok: boolean; reason?: string }> {
   if (campaign.status !== "running") {
     return { ok: false, reason: `campaign is ${campaign.status}` };
   }
   if (campaign.api_requests_used >= campaign.max_api_requests) {
     return { ok: false, reason: "campaign API request cap reached" };
   }
-  if (campaign.unique_saved >= campaign.target_lead_count) {
-    return { ok: false, reason: "target lead count reached" };
+
+  const counts = await campaignLeadCounts(campaign.id);
+  const decision = decideSearching({
+    target: campaign.target_lead_count,
+    ...counts,
+  });
+  if (!decision.keepSearching) {
+    return { ok: false, reason: decision.reason };
   }
   return { ok: true };
 }
@@ -83,20 +124,117 @@ async function finishCampaignIfDone(campaignId: string) {
       "continue_places_pagination",
     ]);
 
-  const targetHit = campaign.unique_saved >= campaign.target_lead_count;
+  const counts = await campaignLeadCounts(campaignId);
+  const decision = decideSearching({
+    target: campaign.target_lead_count,
+    ...counts,
+  });
   const capHit = campaign.api_requests_used >= campaign.max_api_requests;
+  const searchesExhausted = (outstanding ?? 0) === 0;
 
-  if ((outstanding ?? 0) === 0 || targetHit || capHit) {
+  // Leads still being enriched can still turn into callable ones, so the
+  // campaign is not finished until the engine has genuinely stopped finding
+  // work — otherwise it would report "completed" while the packet is empty.
+  if (!decision.keepSearching || capHit || searchesExhausted) {
+    if (searchesExhausted && counts.inFlight > 0 && decision.keepSearching) {
+      // Searching is done but enrichment is not. Leave it running so the
+      // outcome reflects the leads that are still being processed.
+      return;
+    }
+
+    const reason = !decision.keepSearching
+      ? decision.reason
+      : capHit
+        ? "API request cap reached"
+        : `ran out of places to search — found ${counts.callable} callable of ${campaign.target_lead_count} asked for`;
+
     await db
       .from("sourcing_campaigns")
-      .update({ status: "completed", finished_at: new Date().toISOString() })
+      .update({
+        status: "completed",
+        finished_at: new Date().toISOString(),
+        completion_reason: reason,
+        callable_leads: counts.callable,
+      })
       .eq("id", campaignId);
     await logEvent("campaign.completed", "sourcing_campaign", campaignId, {
       unique_saved: campaign.unique_saved,
+      callable: counts.callable,
+      discarded: counts.discarded,
+      target: campaign.target_lead_count,
       api_requests_used: campaign.api_requests_used,
-      reason: targetHit ? "target reached" : capHit ? "cap reached" : "searches exhausted",
+      observed_yield: decision.observedYield,
+      reason,
     });
   }
+}
+
+/**
+ * Restart a finished campaign that turned out short.
+ *
+ * Searching stops on a PROJECTION of how many saved businesses will end up
+ * callable. Enrichment then delivers the real number, and it can be worse than
+ * projected. Rather than leave the operator with 60 leads when they asked for
+ * 100, re-arm the searches that were skipped and carry on.
+ *
+ * Only ever re-arms searches that were skipped because the target looked met.
+ * A campaign stopped by the API cap, by the operator, or because it genuinely
+ * ran out of places to search is left alone.
+ */
+async function topUpCampaignIfShort(campaignId: string | null | undefined) {
+  if (!campaignId) return;
+  const db = supabaseAdmin();
+  const campaign = await getCampaign(campaignId).catch(() => null);
+  if (!campaign || campaign.status !== "completed") return;
+  if (campaign.api_requests_used >= campaign.max_api_requests) return;
+
+  const counts = await campaignLeadCounts(campaignId);
+  // Nothing may still be in flight, or the projection would just repeat the
+  // optimistic guess that got us here.
+  const decision = decideSearching({
+    target: campaign.target_lead_count,
+    ...counts,
+  });
+  if (!decision.keepSearching || counts.inFlight > 0) return;
+
+  const { data: skipped } = await db
+    .from("search_tasks")
+    .select("id")
+    .eq("campaign_id", campaignId)
+    .eq("status", "skipped");
+  if (!skipped || skipped.length === 0) return; // nowhere left to look
+
+  await db
+    .from("sourcing_campaigns")
+    .update({
+      status: "running",
+      finished_at: null,
+      completion_reason: null,
+      callable_leads: counts.callable,
+    })
+    .eq("id", campaignId);
+
+  for (const t of skipped) {
+    await db
+      .from("search_tasks")
+      .update({ status: "pending", last_error: null })
+      .eq("id", t.id);
+    await enqueue({
+      type: "execute_places_search",
+      payload: { task_id: t.id, campaign_id: campaignId },
+      idempotencyKey: `execute_places_search:${t.id}:topup:${counts.callable}`,
+      campaignId,
+    });
+  }
+
+  await logEvent("campaign.refilled", "sourcing_campaign", campaignId, {
+    callable: counts.callable,
+    target: campaign.target_lead_count,
+    still_needed: decision.stillNeeded,
+    observed_yield: decision.observedYield,
+    searches_rearmed: skipped.length,
+    reason: decision.reason,
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -176,7 +314,7 @@ const executePlacesSearch: Handler = async (job) => {
   if (task.status === "done") return; // already processed
 
   const campaign = await getCampaign(campaignId);
-  const budget = withinBudget(campaign);
+  const budget = await withinBudget(campaign);
   if (!budget.ok) {
     await db
       .from("search_tasks")
@@ -417,7 +555,7 @@ const executePlacesSearch: Handler = async (job) => {
   // Continuation job for the next Places page.
   if (page.nextPageToken) {
     const refreshed = await getCampaign(campaignId);
-    if (withinBudget(refreshed).ok) {
+    if ((await withinBudget(refreshed)).ok) {
       const nextPage = (task.page_number ?? 1) + 1;
       const { data: nextTask } = await db
         .from("search_tasks")
@@ -629,7 +767,7 @@ const enrichLead: Handler = async (job) => {
   const { data: lead } = await db
     .from("leads")
     .select(
-      "id, business_name, industry, normalized_phone, domain, website, city, machine_status, archived_at"
+      "id, business_name, industry, normalized_phone, domain, website, city, machine_status, archived_at, sourcing_campaign_id"
     )
     .eq("id", leadId)
     .single();
@@ -884,6 +1022,10 @@ const enrichLead: Handler = async (job) => {
       duration_ms: Date.now() - startedAt,
       finished_at: new Date().toISOString(),
     });
+    // A discard changes the real yield, which may mean the campaign is short.
+    await topUpCampaignIfShort(
+      job.payload.campaign_id ? String(job.payload.campaign_id) : lead.sourcing_campaign_id
+    );
     return;
   }
 
@@ -941,7 +1083,9 @@ const enrichLead: Handler = async (job) => {
   }
 
   // Hand off to auto-assignment so packets build themselves.
-  const campaignId = job.payload.campaign_id ? String(job.payload.campaign_id) : null;
+  const campaignId = job.payload.campaign_id
+    ? String(job.payload.campaign_id)
+    : lead.sourcing_campaign_id;
   if (campaignId) {
     await enqueue({
       type: "auto_assign_packets",
@@ -952,6 +1096,9 @@ const enrichLead: Handler = async (job) => {
       priority: 300,
       runAfter: new Date(Date.now() + 5000),
     });
+    // Now that this lead's real outcome is known, check whether the campaign
+    // stopped searching too early and needs to go back out.
+    await topUpCampaignIfShort(campaignId);
   }
 };
 

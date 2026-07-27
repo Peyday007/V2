@@ -231,9 +231,15 @@ import { requestBudgetFor } from "../src/lib/budget";
 
 describe("API request budget derived from lead target", () => {
   it("scales with the target so the user never sets it", () => {
-    expect(requestBudgetFor(100)).toBe(17);
-    expect(requestBudgetFor(300)).toBe(50);
-    expect(requestBudgetFor(500)).toBe(84);
+    expect(requestBudgetFor(100)).toBe(34);
+    expect(requestBudgetFor(300)).toBe(100);
+    expect(requestBudgetFor(500)).toBe(167);
+  });
+
+  it("budgets for the businesses that get discarded, not just the ones kept", () => {
+    // The target is CALLABLE leads. Roughly half of what Google returns is
+    // thrown out, so the budget has to cover finding about twice as many.
+    expect(requestBudgetFor(100)).toBeGreaterThan(100 / 6);
   });
 
   it("has a floor so tiny campaigns still run", () => {
