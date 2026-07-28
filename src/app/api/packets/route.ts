@@ -87,7 +87,11 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { campaign_id, sourcing_campaign_id, caller_id, size } = await req.json();
+  const body = await req.json();
+  const { campaign_id, sourcing_campaign_id, caller_id, size } = body;
+  // Trial packets must NOT be weighted toward a caller's strengths, or two
+  // candidates would be judged on different difficulty.
+  const unbiased = body.unbiased === true;
   if (!caller_id || !size || size < 1) {
     return NextResponse.json({ error: "Pick a caller and a packet size" }, { status: 400 });
   }
@@ -152,7 +156,7 @@ export async function POST(req: NextRequest) {
    * It biases the order; it never filters. A caller with a specialism still
    * gets a full packet.
    */
-  const strengths = await industryStrengthsFor(db, caller_id);
+  const strengths = unbiased ? [] : await industryStrengthsFor(db, caller_id);
   const leads = strengths.length
     ? [
         ...eligible.filter((l) => l.industry && strengths.includes(l.industry)),
@@ -191,7 +195,10 @@ export async function POST(req: NextRequest) {
     .eq("id", caller_id)
     .single();
 
-  const packetName = `${caller?.name || "Caller"} — ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" })} (${leads.length} leads)`;
+  const when = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const packetName = unbiased
+    ? `TRIAL — ${caller?.name || "Caller"} — ${when} (${leads.length} leads)`
+    : `${caller?.name || "Caller"} — ${when} (${leads.length} leads)`;
 
   const { data: packet, error: pErr } = await db
     .from("packets")

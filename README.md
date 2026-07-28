@@ -61,6 +61,7 @@ has not been done yet.
 9d. Repeat with `supabase/migrations/0013_call_analytics.sql` (new query, paste, Run).
 9e. Repeat with `supabase/migrations/0014_dnc_enforcement.sql` (new query, paste, Run).
 9f. Repeat with `supabase/migrations/0015_callable_target.sql` (new query, paste, Run).
+9g. Repeat with `supabase/migrations/0016_caller_trials.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -187,6 +188,33 @@ rests on.
 The system will tell you to coach, to promote, or to sit in on someone's calls.
 It will not tell you to fire anyone — it cannot know whether a gap is fixable,
 and it says so.
+
+### Tryouts
+
+Give a candidate a standard packet (100 leads by default) and see how they do.
+The leads are deliberately **not** weighted toward their strengths, so two
+candidates face the same difficulty, and the bar is **frozen when the trial
+starts** — if the team improves meanwhile, the candidate is still judged
+against the team they actually joined.
+
+The scorecard is honest about what a hundred calls can and cannot settle:
+
+| Measure | Can a 100-call tryout settle it? |
+|---|---|
+| Effort — calls per day worked | Yes, on day one. It's a plain count. |
+| Getting through — dials that reach a person | Yes, ~100 dials is plenty. |
+| Opening — answered calls that reach the owner | Yes, ~70 answered calls. |
+| Capture — how often they write down what they learned | Yes. |
+| **Closing — owner conversations that become meetings** | **Usually not.** A tryout this size yields maybe 15 conversations. |
+
+Anything it cannot settle is listed under *"This tryout could not settle:"*
+rather than folded into a confident-looking average.
+
+**Cut is recommended only when two independent measures fail** — effort *and*
+opening. One weak area gets "extend the trial", because deciding on a single
+signal is a coin toss on whatever the trial could not measure. Cutting revokes
+their sign-in; nothing is deleted, and every call they made and everything they
+learned about those businesses stays.
 
 **Packets follow the profile.** Where a caller is measurably better in a trade,
 new packets for them are weighted toward it. This only kicks in once the edge
