@@ -10,7 +10,7 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 - **Appointments** (`/admin/appointments`) — mark each booked appointment held / no-show / cancelled, which is the only way show-rate can ever be measured
 - **Packets** (`/admin/campaigns`) — a caller's list of leads to work. Send one out, move it to a different caller, top it up with more leads, take the un-dialed ones back so someone else can have them, or delete it if nobody has started. Everything is reversible: returned leads go straight back into the ready pool, and a packet with calls logged against it can be closed but never deleted, so history stays intact. Also holds the "What to Attack Today" AI prioritizer.
 - **Import** (`/admin/import`) — upload any lead CSV, map its columns, and import with normalization (phone/domain/name/state) and duplicate linking (same phone, domain, or place ID links to the existing lead — nothing deleted, no duplicate calling)
-- **Callers** (`/admin/callers`) — add callers (auto-generated PIN), revoke instantly
+- **Callers** (`/admin/callers`) — add callers (auto-generated PIN), revoke instantly, and see a **profile for each one**: whether they get through, get past the gatekeeper, and close, each scored separately against the rest of the team, plus which trades they are actually better at and what to do about it
 
 - **Do Not Call** (`/admin/suppressions`) — the suppression list, and a box to add a number by hand for a request that didn't come in on a call
 
@@ -161,6 +161,48 @@ node scripts/enrich-leads.mjs "Metro Detroit Roofing" 5
 2. Admin opens **Campaigns**, generates a packet (e.g. 25 leads) assigned to a caller. A lead can only ever be in one packet — no duplicate calling.
 3. Caller opens `/dial`, enters their PIN, and works the packet one lead at a time.
 4. Admin watches **Metrics** and asks **What to Attack Today** on the Campaigns page.
+
+## Caller profiles
+
+"Is this caller any good?" is several questions, and one conversion rate hides
+all of them. Someone who never gets past a receptionist and someone who reaches
+owners constantly but never books a meeting have identical
+appointments-per-dial and need opposite coaching. So the profile scores the job
+as the skills it consists of:
+
+| Skill | What it measures |
+|---|---|
+| Getting through | how often a dial reaches a live person at all |
+| Opening | once someone picks up, how often they get to the owner |
+| Closing | once they have the owner, how often they book a meeting |
+| Capture | how often they write down what they learned, for everyone else |
+
+Each is compared against the rest of the team over the same calls and
+significance-tested. **Praise needs p < 0.05; criticism needs p < 0.01** — a
+deliberately harder bar, because acting on criticism costs somebody their job.
+Below 20 calls nobody is judged at all, and each skill needs 15 of its own
+denominator before it is scored. Every recommendation carries the numbers it
+rests on.
+
+The system will tell you to coach, to promote, or to sit in on someone's calls.
+It will not tell you to fire anyone — it cannot know whether a gap is fixable,
+and it says so.
+
+**Packets follow the profile.** Where a caller is measurably better in a trade,
+new packets for them are weighted toward it. This only kicks in once the edge
+clears the significance test; routing on noise just moves luck around. It
+biases the order and never filters, so a specialist still gets a full packet.
+
+## Callbacks
+
+A booked callback used to drop out of the packet the moment its outcome was
+logged, leaving you to put the lead back by hand. Callbacks are now their own
+queue, served **ahead** of packet work — the caller promised a time, and that
+promise outranks the list. The dialer shows a banner so they know to open by
+referring back to it, and the callback closes itself once the call is logged.
+
+A callback booked by someone who has since been deactivated can be picked up by
+anyone, so a promise is never silently dropped.
 
 ## Do not call
 

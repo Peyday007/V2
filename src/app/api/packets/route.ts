@@ -2,6 +2,49 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { logEvent } from "@/lib/events";
 import { buildSuppressionIndex, partitionEligible } from "@/lib/suppression";
+import { buildCallerProfile } from "@/lib/callerProfile";
+import type { CallFact } from "@/lib/analytics";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+/**
+ * Industries where this caller beats the rest of the team by more than chance.
+ * Empty until the evidence is there, which is the normal state early on.
+ */
+async function industryStrengthsFor(
+  db: SupabaseClient,
+  callerId: string
+): Promise<string[]> {
+  const { data, error } = await db
+    .from("calls")
+    .select(
+      "caller_id, outcome, reached_dm, created_at, lead_industry, spoke_with_role, duration_seconds, attempt_number, dialed_hour, dialed_dow, lead_state, owner_known_before"
+    )
+    .not("lead_industry", "is", null)
+    .limit(20000);
+  // Routing is an optimisation; never let it break packet creation.
+  if (error || !data) return [];
+
+  const toFact = (c: (typeof data)[number]): CallFact => ({
+    outcome: c.outcome,
+    reached_dm: !!c.reached_dm,
+    caller_name: String(c.caller_id),
+    lead_industry: c.lead_industry ?? null,
+    lead_state: c.lead_state ?? null,
+    dialed_hour: c.dialed_hour ?? null,
+    dialed_dow: c.dialed_dow ?? null,
+    attempt_number: c.attempt_number ?? null,
+    duration_seconds: c.duration_seconds ?? null,
+    owner_known_before: c.owner_known_before ?? null,
+    created_at: c.created_at,
+    spoke_with_role: c.spoke_with_role ?? null,
+  });
+
+  const mine = data.filter((c) => c.caller_id === callerId).map(toFact);
+  const others = data.filter((c) => c.caller_id !== callerId).map(toFact);
+  if (mine.length === 0) return [];
+
+  return buildCallerProfile({ callerName: callerId, mine, others }).routeToIndustries;
+}
 
 export async function GET(req: NextRequest) {
   const campaignId = req.nextUrl.searchParams.get("campaign_id");
@@ -58,7 +101,7 @@ export async function POST(req: NextRequest) {
   // lead when no campaign is specified.
   let query = db
     .from("leads")
-    .select("id, phone, normalized_phone, do_not_call")
+    .select("id, phone, normalized_phone, do_not_call, industry")
     .eq("status", "new")
     .eq("do_not_call", false)
     .eq("machine_status", "ready_for_calling")
@@ -99,7 +142,23 @@ export async function POST(req: NextRequest) {
 
   const index = buildSuppressionIndex(suppressions || []);
   const { eligible, blocked } = partitionEligible(candidates || [], index);
-  const leads = eligible.slice(0, size);
+
+  /* --------------------------- play to their strengths ---------------------------
+   * If this caller is MEASURABLY better in certain industries, put those leads
+   * at the front of their packet. Only kicks in once the edge has cleared a
+   * significance test against the rest of the team — otherwise the order is
+   * untouched, because routing on noise just moves luck around.
+   *
+   * It biases the order; it never filters. A caller with a specialism still
+   * gets a full packet.
+   */
+  const strengths = await industryStrengthsFor(db, caller_id);
+  const leads = strengths.length
+    ? [
+        ...eligible.filter((l) => l.industry && strengths.includes(l.industry)),
+        ...eligible.filter((l) => !l.industry || !strengths.includes(l.industry)),
+      ].slice(0, size)
+    : eligible.slice(0, size);
 
   if (blocked.length > 0) {
     // Self-heal: flag them so the cheap column filter catches them next time.

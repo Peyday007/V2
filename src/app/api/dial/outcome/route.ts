@@ -513,6 +513,19 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  /* ---------------- close out the callback that brought us here ----------------
+   * Any pending callback for this lead is now honoured — the caller has just
+   * dialed it. Without this it would keep resurfacing forever. A brand new
+   * callback booked on THIS call was inserted above with its own row, so it
+   * survives: only callbacks older than this call are closed.
+   */
+  await db
+    .from("callbacks")
+    .update({ status: "done" })
+    .eq("lead_id", lead_id)
+    .eq("status", "pending")
+    .lt("created_at", call.created_at);
+
   /* ---------------- packet progress ---------------- */
   if (packet_id) {
     await db

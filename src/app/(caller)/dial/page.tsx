@@ -76,6 +76,9 @@ type NextResp = {
     reason: string | null;
     requested_by_name: string | null;
   } | null;
+  /** Set when this lead was served because a callback came due. */
+  dueCallback?: { scheduled_for: string | null; reason: string | null } | null;
+  callbacksWaiting?: number;
   error?: string;
 };
 
@@ -324,6 +327,11 @@ export default function DialPage() {
       <div style={{ display: "flex", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontWeight: 700 }}>{data.caller}</span>
         <span className="tag-dim">{data.remaining} left</span>
+        {!!data.callbacksWaiting && data.callbacksWaiting > 0 && (
+          <span className="tag" title="Callbacks that have come due. These are served first.">
+            {data.callbacksWaiting} callback{data.callbacksWaiting === 1 ? "" : "s"} due
+          </span>
+        )}
         <span className="tag-dim">{data.doneToday ?? 0} done today</span>
         <span className="tag-dim">attempt #{(lead.attempt_count ?? 0) + 1}</span>
         <span className="tag-dim" title="Time on this lead. Saved automatically with the outcome.">
@@ -348,6 +356,35 @@ export default function DialPage() {
           Sign out
         </button>
       </div>
+
+      {data.dueCallback && (
+        <div
+          className="card"
+          style={{
+            marginBottom: 14,
+            borderColor: "var(--amber)",
+            background: "var(--amber-soft)",
+          }}
+        >
+          <div style={{ fontWeight: 700, color: "var(--amber)" }}>
+            ⏰ This is a callback you promised
+          </div>
+          <div style={{ fontSize: "0.85rem", marginTop: 4, lineHeight: 1.5 }}>
+            Booked for{" "}
+            {data.dueCallback.scheduled_for
+              ? new Date(data.dueCallback.scheduled_for).toLocaleString(undefined, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })
+              : "earlier"}
+            {data.dueCallback.reason ? ` — ${data.dueCallback.reason}` : ""}. They are
+            expecting you, so open by referring back to it.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
         {/* -------------------- LEFT -------------------- */}

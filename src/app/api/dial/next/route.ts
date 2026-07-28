@@ -20,26 +20,85 @@ export async function GET() {
     return NextResponse.json({ error: "Access revoked" }, { status: 401 });
   }
 
+  /* ------------------------------ due callbacks ------------------------------
+   * A booked callback used to fall out of the packet the moment its outcome
+   * was logged, leaving the admin to put the lead back by hand. Callbacks are
+   * now their own queue, served AHEAD of packet work: the caller promised a
+   * time, so that promise outranks the list.
+   */
+  const nowIso = new Date().toISOString();
+  const { data: dueCallbacks } = await db
+    .from("callbacks")
+    .select("id, lead_id, caller_id, scheduled_for, reason, requested_by_name, callers(active)")
+    .eq("status", "pending")
+    .lte("scheduled_for", nowIso)
+    .order("scheduled_for")
+    .limit(50);
+
+  // Yours first. A callback booked by someone who has since been deactivated
+  // would otherwise never be honoured, so anyone may pick those up.
+  const mine = (dueCallbacks || []).filter((c) => c.caller_id === callerId);
+  const orphaned = (dueCallbacks || []).filter((c) => {
+    if (c.caller_id === callerId) return false;
+    const owner = Array.isArray(c.callers) ? c.callers[0] : c.callers;
+    return owner ? !owner.active : true;
+  });
+  const callbackQueue = [...mine, ...orphaned];
+
   const { data: packets } = await db
     .from("packets")
     .select("id, name")
     .eq("caller_id", callerId)
     .eq("status", "open")
     .order("created_at");
-  if (!packets || packets.length === 0) {
-    return NextResponse.json({ caller: caller.name, lead: null, remaining: 0 });
+  const packetIds = (packets || []).map((p) => p.id);
+  let pending: { packet_id: string; lead_id: string; position: number }[] = [];
+  if (packetIds.length > 0) {
+    const { data } = await db
+      .from("packet_leads")
+      .select("packet_id, lead_id, position")
+      .in("packet_id", packetIds)
+      .eq("status", "pending")
+      .order("position")
+      .limit(200);
+    pending = data || [];
   }
 
-  const packetIds = packets.map((p) => p.id);
-  const { data: pending } = await db
-    .from("packet_leads")
-    .select("packet_id, lead_id, position")
-    .in("packet_id", packetIds)
-    .eq("status", "pending")
-    .order("position")
-    .limit(200);
+  /** One thing to dial: either a promised callback or the next packet lead. */
+  type Candidate = {
+    lead_id: string;
+    packet_id: string | null;
+    callback_id: string | null;
+    scheduled_for: string | null;
+    reason: string | null;
+  };
 
-  if (!pending || pending.length === 0) {
+  const seenLeads = new Set<string>();
+  const candidates: Candidate[] = [];
+  for (const cb of callbackQueue) {
+    if (seenLeads.has(cb.lead_id)) continue;
+    seenLeads.add(cb.lead_id);
+    candidates.push({
+      lead_id: cb.lead_id,
+      packet_id: null,
+      callback_id: cb.id,
+      scheduled_for: cb.scheduled_for,
+      reason: cb.reason ?? null,
+    });
+  }
+  for (const p of pending) {
+    if (seenLeads.has(p.lead_id)) continue; // already queued as a callback
+    seenLeads.add(p.lead_id);
+    candidates.push({
+      lead_id: p.lead_id,
+      packet_id: p.packet_id,
+      callback_id: null,
+      scheduled_for: null,
+      reason: null,
+    });
+  }
+
+  if (candidates.length === 0) {
     return NextResponse.json({ caller: caller.name, lead: null, remaining: 0 });
   }
 
@@ -50,7 +109,7 @@ export async function GET() {
    * suppressed business is never dialed even if it is already sitting in an
    * open packet.
    */
-  const scanIds = pending.slice(0, 50).map((p) => p.lead_id);
+  const scanIds = candidates.slice(0, 50).map((p) => p.lead_id);
   const [{ data: scanLeads }, { data: suppressions, error: supErr }] = await Promise.all([
     db.from("leads").select("id, phone, normalized_phone, do_not_call").in("id", scanIds),
     db.from("suppressions").select("lead_id, normalized_phone"),
@@ -64,7 +123,7 @@ export async function GET() {
       {
         caller: caller.name,
         lead: null,
-        remaining: pending.length,
+        remaining: candidates.length,
         error:
           "The do-not-call list could not be read, so no lead was served. " +
           "Tell your admin to run supabase/migrations/0014_dnc_enforcement.sql.",
@@ -76,9 +135,9 @@ export async function GET() {
   const index = buildSuppressionIndex(suppressions || []);
   const leadById = new Map((scanLeads || []).map((l) => [l.id, l]));
 
-  let next: (typeof pending)[number] | null = null;
+  let next: Candidate | null = null;
   const skipped: string[] = [];
-  for (const candidate of pending) {
+  for (const candidate of candidates) {
     const row = leadById.get(candidate.lead_id);
     if (!row) continue; // outside the scan window; leave it for the next call
     if (checkSuppressed(row, index).suppressed) {
@@ -92,6 +151,8 @@ export async function GET() {
   if (skipped.length > 0) {
     // Close them out of the packet and flag them, so this work is done once.
     await db.from("packet_leads").update({ status: "done" }).in("lead_id", skipped);
+    // A suppressed lead's callback must die with it, or it comes straight back.
+    await db.from("callbacks").update({ status: "cancelled" }).in("lead_id", skipped);
     await db.from("leads").update({ do_not_call: true }).in("id", skipped);
     await logEvent("lead.suppressed", "lead", null, {
       lead_ids: skipped,
@@ -204,6 +265,12 @@ Notes: ${lead.notes || "none"}`,
     approach,
     aiTip,
     packetId: next.packet_id,
-    remaining: pending.length - skipped.length,
+    // The dialer shows this so a caller knows they are honouring a promise,
+    // not cold-calling someone who already said "call me Thursday".
+    dueCallback: next.callback_id
+      ? { scheduled_for: next.scheduled_for, reason: next.reason }
+      : null,
+    callbacksWaiting: candidates.filter((c) => c.callback_id).length,
+    remaining: candidates.length - skipped.length,
   });
 }

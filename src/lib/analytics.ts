@@ -301,6 +301,8 @@ export type CallFact = {
   duration_seconds: number | null;
   owner_known_before: boolean | null;
   created_at: string;
+  /** owner | gatekeeper | employee | unknown — who actually picked up. */
+  spoke_with_role?: string | null;
 };
 
 export type DimensionReport = {
