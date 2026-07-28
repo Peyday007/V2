@@ -62,6 +62,7 @@ has not been done yet.
 9e. Repeat with `supabase/migrations/0014_dnc_enforcement.sql` (new query, paste, Run).
 9f. Repeat with `supabase/migrations/0015_callable_target.sql` (new query, paste, Run).
 9g. Repeat with `supabase/migrations/0016_caller_trials.sql` (new query, paste, Run).
+9h. Repeat with `supabase/migrations/0017_contacted_backfill.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -231,6 +232,24 @@ referring back to it, and the callback closes itself once the call is logged.
 
 A callback booked by someone who has since been deactivated can be picked up by
 anyone, so a promise is never silently dropped.
+
+## When is a lead free to hand out?
+
+One rule, in `src/lib/leadEligibility.ts`, used by every screen and every query.
+A lead can go into a packet only when it is **all** of: finished processing,
+held by nobody, not on the do-not-call list, reachable by phone, and not
+binned.
+
+That rule used to be written out by hand in three places and they drifted — the
+dashboards counted anything the engine had finished with, while the packet
+queries also demanded the other four. So a page could say "47 ready to call"
+while Add answered "none are available". The predicate and the SQL filter now
+come from the same module, and a test asserts they check the same columns.
+
+When nothing is free, the app says **where the leads went** — "None of your 142
+leads are free to hand out: 103 already with a caller, 27 already called, 12
+discarded" — rather than a bare "none available", and the Add button is
+disabled instead of failing when pressed.
 
 ## Do not call
 

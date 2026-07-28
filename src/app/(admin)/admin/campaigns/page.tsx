@@ -24,6 +24,7 @@ export default function PacketsAdmin() {
   const [callers, setCallers] = useState<Caller[]>([]);
   const [packets, setPackets] = useState<Packet[] | null>(null);
   const [ready, setReady] = useState(0);
+  const [whyNone, setWhyNone] = useState<string | null>(null);
   const [newCaller, setNewCaller] = useState("");
   const [newSize, setNewSize] = useState("50");
   const [msg, setMsg] = useState("");
@@ -47,6 +48,7 @@ export default function PacketsAdmin() {
     if (pipeRes.ok) {
       const pipe = await pipeRes.json();
       setReady(pipe.counts?.readyToCall ?? 0);
+      setWhyNone(pipe.noneAvailableExplanation ?? null);
     }
   }, []);
 
@@ -241,11 +243,12 @@ export default function PacketsAdmin() {
       <div className="card" style={{ marginBottom: 26, borderColor: "var(--amber-dim)" }}>
         <h3 style={{ marginBottom: 6, color: "var(--amber)" }}>Send out a packet</h3>
         <p className="faint" style={{ marginBottom: 12 }}>
-          <strong>{ready}</strong> lead{ready === 1 ? "" : "s"} ready to send.
-          {ready === 0 && (
+          <strong>{ready}</strong> lead{ready === 1 ? "" : "s"} free to hand out.
+          {ready === 0 && whyNone && (
             <>
               {" "}
-              Generate more on the <Link href="/admin/sourcing">Leads</Link> tab.
+              {whyNone.replace(/Generate more on the Leads tab\.$/, "")}
+              <Link href="/admin/sourcing">Generate more on the Leads tab.</Link>
             </>
           )}
         </p>
@@ -303,6 +306,7 @@ export default function PacketsAdmin() {
               p={p}
               callers={callers}
               busy={busy === p.id}
+              ready={ready}
               onReassign={reassign}
               onAdd={addLeads}
               onReturn={returnLeads}
@@ -324,6 +328,7 @@ export default function PacketsAdmin() {
                 p={p}
                 callers={callers}
                 busy={busy === p.id}
+                ready={ready}
                 onReassign={reassign}
                 onAdd={addLeads}
                 onReturn={returnLeads}
@@ -364,6 +369,7 @@ function PacketRow({
   p,
   callers,
   busy,
+  ready,
   onReassign,
   onAdd,
   onReturn,
@@ -373,6 +379,8 @@ function PacketRow({
   p: Packet;
   callers: Caller[];
   busy: boolean;
+  /** Leads free to hand out right now, so the row can say so up front. */
+  ready: number;
   onReassign: (p: Packet, callerId: string) => void;
   onAdd: (p: Packet, size: number) => void;
   onReturn: (p: Packet) => void;
@@ -507,11 +515,13 @@ function PacketRow({
             style={{ maxWidth: 80 }}
             min={1}
           />
-          <span className="faint">more ready leads to this packet</span>
+          <span className="faint">
+            more leads to this packet {ready > 0 ? `(${ready} free)` : "(none free)"}
+          </span>
           <button
             className="btn"
             style={{ padding: "5px 14px", fontSize: "0.72rem" }}
-            disabled={busy}
+            disabled={busy || ready === 0}
             onClick={() => {
               onAdd(p, Number(addSize));
               setShowAdd(false);
@@ -519,6 +529,11 @@ function PacketRow({
           >
             {busy ? "Adding…" : "Add"}
           </button>
+          {ready === 0 && (
+            <span className="faint">
+              Nothing free to add — every lead is already out, called or binned.
+            </span>
+          )}
         </div>
       )}
     </div>

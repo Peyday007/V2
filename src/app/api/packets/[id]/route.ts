@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { recordEvent, eventChain } from "@/lib/events";
 import { buildSuppressionIndex, partitionEligible } from "@/lib/suppression";
+import {
+  applyAvailableFilter,
+  summarizeAvailability,
+  explainNoneAvailable,
+  AVAILABILITY_COLUMNS,
+} from "@/lib/leadEligibility";
 
 export const dynamic = "force-dynamic";
 
@@ -129,14 +135,9 @@ export async function POST(
       );
     }
 
-    const { data: candidates, error: leadErr } = await db
-      .from("leads")
-      .select("id, phone, normalized_phone, do_not_call")
-      .eq("status", "new")
-      .eq("do_not_call", false)
-      .eq("machine_status", "ready_for_calling")
-      .eq("phone_invalid", false)
-      .is("archived_at", null)
+    const { data: candidates, error: leadErr } = await applyAvailableFilter(
+      db.from("leads").select("id, phone, normalized_phone, do_not_call")
+    )
       .order("created_at")
       .limit(size * 3 + 50);
     if (leadErr) return NextResponse.json({ error: leadErr.message }, { status: 500 });
@@ -151,8 +152,13 @@ export async function POST(
     }
     const picked = eligible.slice(0, size);
     if (picked.length === 0) {
+      const { data: everything } = await db
+        .from("leads")
+        .select(AVAILABILITY_COLUMNS)
+        .limit(20000);
+      const availability = summarizeAvailability(everything || []);
       return NextResponse.json(
-        { error: "No leads are ready to add. Generate more on the Leads tab." },
+        { error: explainNoneAvailable(availability), availability },
         { status: 400 }
       );
     }

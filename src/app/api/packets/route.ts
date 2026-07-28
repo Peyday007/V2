@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { logEvent } from "@/lib/events";
 import { buildSuppressionIndex, partitionEligible } from "@/lib/suppression";
+import {
+  applyAvailableFilter,
+  summarizeAvailability,
+  explainNoneAvailable,
+  AVAILABILITY_COLUMNS,
+} from "@/lib/leadEligibility";
 import { buildCallerProfile } from "@/lib/callerProfile";
 import type { CallFact } from "@/lib/analytics";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -103,14 +109,9 @@ export async function POST(req: NextRequest) {
   // Leads from the sourcing engine carry sourcing_campaign_id; older/imported
   // leads carry campaign_id. Support both, and allow pulling from every ready
   // lead when no campaign is specified.
-  let query = db
-    .from("leads")
-    .select("id, phone, normalized_phone, do_not_call, industry")
-    .eq("status", "new")
-    .eq("do_not_call", false)
-    .eq("machine_status", "ready_for_calling")
-    .eq("phone_invalid", false)
-    .is("archived_at", null);
+  let query = applyAvailableFilter(
+    db.from("leads").select("id, phone, normalized_phone, do_not_call, industry")
+  );
 
   if (sourcing_campaign_id) {
     query = query.eq("sourcing_campaign_id", sourcing_campaign_id);
@@ -178,12 +179,20 @@ export async function POST(req: NextRequest) {
   }
 
   if (!leads || leads.length === 0) {
+    // Say where the leads actually went, rather than a bare "none available"
+    // while the dashboard is showing a number.
+    const { data: everything } = await db
+      .from("leads")
+      .select(AVAILABILITY_COLUMNS)
+      .limit(20000);
+    const availability = summarizeAvailability(everything || []);
     return NextResponse.json(
       {
         error:
           blocked.length > 0
-            ? `No callable leads are left — ${blocked.length} were excluded because their phone number is on the do-not-call list. Generate more leads on the Sourcing tab.`
-            : "No leads are ready for calling. Generate leads on the Sourcing tab, then press 'Release leads to calling' there.",
+            ? `No callable leads are left — ${blocked.length} were excluded because their phone number is on the do-not-call list. ${explainNoneAvailable(availability)}`
+            : explainNoneAvailable(availability),
+        availability,
       },
       { status: 400 }
     );

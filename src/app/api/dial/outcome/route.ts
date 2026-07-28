@@ -220,6 +220,10 @@ export async function POST(req: NextRequest) {
     attempt_count: (lead.attempt_count ?? 0) + 1,
     last_attempted_at: new Date().toISOString(),
     status: "called",
+    // The engine's own view has to move too. Without this a dialed lead stayed
+    // at assigned_to_packet forever, so "Called" read zero on every dashboard
+    // and "With your callers" counted people who had already been rung.
+    machine_status: "contacted",
   };
 
   // From the Update Lead Intelligence panel

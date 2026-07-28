@@ -41,11 +41,21 @@ const RESEARCHING: MachineStatus[] = [
   "role_only_found",
 ];
 
-export function summarizeCounts(byStatus: Record<string, number>): PipelineCounts {
+export function summarizeCounts(
+  byStatus: Record<string, number>,
+  opts?: {
+    /**
+     * The real number of leads a packet could take right now. Pass it from
+     * leadEligibility — machine_status alone overcounts, because a lead can be
+     * ready_for_calling and still be suppressed, unreachable or already held.
+     */
+    readyToCall?: number;
+  }
+): PipelineCounts {
   const n = (k: string) => byStatus[k] || 0;
   const beingResearched = RESEARCHING.reduce((sum, k) => sum + n(k), 0);
   const counts = {
-    readyToCall: n("ready_for_calling"),
+    readyToCall: opts?.readyToCall ?? n("ready_for_calling"),
     beingResearched,
     withCallers: n("assigned_to_packet"),
     called: n("contacted"),

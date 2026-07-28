@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { placesKeyConfigured } from "@/lib/places";
 import { summarizeCounts, nextAction, plainDiscardReason } from "@/lib/pipelineState";
+import {
+  AVAILABILITY_COLUMNS,
+  summarizeAvailability,
+  explainNoneAvailable,
+} from "@/lib/leadEligibility";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +20,9 @@ export async function GET() {
   const db = supabase();
 
   const [leads, callers, packets, discards] = await Promise.all([
-    db.from("leads").select("machine_status").is("archived_at", null),
+    // Every column the availability rule needs — counting on machine_status
+    // alone is what made this number disagree with the Add button.
+    db.from("leads").select(AVAILABILITY_COLUMNS).is("archived_at", null),
     db.from("callers").select("id").eq("active", true),
     db.from("packets").select("id").eq("status", "open"),
     db
@@ -35,7 +42,10 @@ export async function GET() {
     const k = String(l.machine_status);
     byStatus[k] = (byStatus[k] || 0) + 1;
   }
-  const counts = summarizeCounts(byStatus);
+  // "Ready to call" must mean exactly what the packet queries mean by it, or
+  // the dashboard promises leads the Add button cannot deliver.
+  const availability = summarizeAvailability(leads.data || []);
+  const counts = summarizeCounts(byStatus, { readyToCall: availability.available });
 
   // How many leads are actually still to be dialed, across every open packet.
   let pendingInPackets = 0;
@@ -82,6 +92,11 @@ export async function GET() {
     discardReasons: Object.entries(reasons)
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count),
+    // Where every lead that ISN'T available has gone, so a zero is explainable
+    // on the page rather than only after pressing a button.
+    availability,
+    noneAvailableExplanation:
+      availability.available === 0 ? explainNoneAvailable(availability) : null,
     next: nextAction(input),
   });
 }
