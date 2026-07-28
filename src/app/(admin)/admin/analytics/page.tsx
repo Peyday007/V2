@@ -32,6 +32,24 @@ type Payload = AnalyticsReport & {
 
 const pct = (v: number) => `${(v * 100).toFixed(v < 0.1 && v > 0 ? 1 : 0)}%`;
 
+type BriefingData = {
+  headline: string;
+  subhead: string;
+  sections: {
+    key: string;
+    title: string;
+    emptyText: string;
+    lines: { text: string; tone: "fact" | "good" | "warn" | "action"; detail?: string }[];
+  }[];
+};
+
+const TONE_COLOR: Record<"fact" | "good" | "warn" | "action", string> = {
+  fact: "var(--text)",
+  good: "var(--amber)",
+  warn: "var(--red)",
+  action: "var(--amber)",
+};
+
 const CONFIDENCE_COLOR: Record<Confidence, string> = {
   insufficient: "var(--text-dim)",
   directional: "var(--amber)",
@@ -103,6 +121,9 @@ export default function AnalyticsPage() {
           </button>
         ))}
       </div>
+      <Briefing />
+
+      <h2 style={{ marginBottom: 6 }}>The numbers</h2>
       <p className="faint" style={{ marginBottom: 24 }}>
         Every rate below carries the range it could really be, and every
         comparison carries a significance test. A number without enough calls
@@ -310,6 +331,88 @@ export default function AnalyticsPage() {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * The read-out. Everything the data supports saying, in sentences, above the
+ * tables — because "no finding clears the significance bar" is not the same as
+ * "nothing is known", and the second is what you want each morning.
+ */
+function Briefing() {
+  const [b, setB] = useState<BriefingData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/briefing")
+      .then(async (r) => {
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || "Could not build the briefing.");
+        return j;
+      })
+      .then(setB)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  if (error) {
+    return (
+      <div className="card" style={{ borderColor: "var(--red)", color: "var(--red)", marginBottom: 30 }}>
+        {error}
+      </div>
+    );
+  }
+  if (!b) return <p className="muted" style={{ marginBottom: 30 }}>Reading the data…</p>;
+
+  return (
+    <div style={{ marginBottom: 36 }}>
+      <div className="card" style={{ borderColor: "var(--amber-dim)", marginBottom: 16 }}>
+        <div style={{ fontSize: "1.25rem", fontWeight: 700, color: "var(--amber)" }}>
+          {b.headline}
+        </div>
+        <div className="faint" style={{ marginTop: 4 }}>{b.subhead}</div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+          gap: 14,
+        }}
+      >
+        {b.sections.map((s) => (
+          <div key={s.key} className="card">
+            <h3 style={{ marginBottom: 10 }}>{s.title}</h3>
+            {s.lines.length === 0 ? (
+              <p className="faint" style={{ lineHeight: 1.55 }}>{s.emptyText}</p>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {s.lines.map((line, i) => (
+                  <div key={i}>
+                    <div
+                      style={{
+                        fontSize: "0.88rem",
+                        lineHeight: 1.5,
+                        color: TONE_COLOR[line.tone],
+                        fontWeight: line.tone === "warn" || line.tone === "good" ? 600 : 400,
+                      }}
+                    >
+                      {line.tone === "warn" && "⚠ "}
+                      {line.tone === "action" && "→ "}
+                      {line.text}
+                    </div>
+                    {line.detail && (
+                      <div className="faint" style={{ marginTop: 2, lineHeight: 1.5 }}>
+                        {line.detail}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

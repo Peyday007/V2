@@ -6,7 +6,7 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 - **Board** (`/`) — the Sales board shows your **leads** as cards moving through New Lead → Contact Attempted → Qualified → Discovery Booked → Discovery Completed → Closed Won/Lost. Call outcomes logged in the dialer advance the card automatically. The Delivery board tracks won deals through onboarding.
 - **Dial** (`/dial`) — caller signs in with a 6-digit PIN, works one lead at a time: sees who to ask for (recommended calling approach), known decision-maker contacts, previous call history, logs outcomes with one click, and saves anything learned on the call (names, extensions, callback times, transfer instructions) so it's never rediscovered
 - **Metrics** (`/metrics`) — DM-conversations-per-100-dials and related rates
-- **Analytics** (`/admin/analytics`) — what the call data actually supports, with confidence intervals and significance tests on every number
+- **Analytics** (`/admin/analytics`) — opens with a written read-out: what happened, what needs a decision today, what the calls taught you, observations so far, and which questions are close to answerable. Below it, the numbers, with confidence intervals and significance tests on every one
 - **Appointments** (`/admin/appointments`) — mark each booked appointment held / no-show / cancelled, which is the only way show-rate can ever be measured
 - **Packets** (`/admin/campaigns`) — a caller's list of leads to work. Send one out, move it to a different caller, top it up with more leads, take the un-dialed ones back so someone else can have them, or delete it if nobody has started. Everything is reversible: returned leads go straight back into the ready pool, and a packet with calls logged against it can be closed but never deleted, so history stays intact. Also holds the "What to Attack Today" AI prioritizer.
 - **Import** (`/admin/import`) — upload any lead CSV, map its columns, and import with normalization (phone/domain/name/state) and duplicate linking (same phone, domain, or place ID links to the existing lead — nothing deleted, no duplicate calling)
@@ -214,6 +214,18 @@ The **Analytics** tab answers operational questions from real calls only:
 when to dial, which trades to buy more leads in, how many attempts are worth
 making, who is converting, which objections end calls, and whether enrichment
 pays for itself.
+
+The page opens with a **briefing** — sentences, not tables. "No finding clears
+the significance bar" is not the same as "nothing is known", and the second is
+what you want each morning, so the briefing reports what *is* known: activity
+per caller, callbacks overdue, appointments nobody has marked held or no-show,
+packets running dry, a bad-number rate high enough to blame the lead source,
+every owner name and best-call-time the team has captured, which objections
+keep coming up, and raw observations with their counts. Observations are always
+labelled as observations and carry the numbers behind them, so they can never
+be read as proof.
+
+Below the briefing, the numbers.
 
 **Nothing is asserted that the data cannot support.** Every rate carries a
 Wilson confidence interval ("could really be 12%–48%"), every comparison

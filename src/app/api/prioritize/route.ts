@@ -96,14 +96,17 @@ export async function GET() {
       messages: [
         {
           role: "user",
-          content: `You are the sales operations brain for a 3-person cold-calling team selling AI Receptionist services to local service businesses (currently roofing).
+          content: `You are the sales operations brain for a 3-person cold-calling team selling AI Receptionist services to owner-operated local home-service businesses.
 
 IMPORTANT — what this system already does, so do not recommend doing it by hand:
 - Lead generation is AUTOMATED. The admin creates a sourcing campaign (industry, city/ZIPs, search terms, target count, rating/review filters) on the Sourcing tab and presses Start. The engine queries Google Places in the background, saves, normalizes, and deduplicates businesses automatically. NEVER tell the user to manually pull lists from Google Maps, Angi, Apollo, or a list vendor, or to upload a CSV — that is the workflow this replaced.
-- Decision-maker enrichment runs as a separate background stage. Leads move through machine statuses: discovered -> normalized -> enrichment_queued -> enriching -> decision_maker_found / role_only_found / enrichment_failed -> ready_for_calling. NOTE: the enrichment worker is not built yet, so leads currently STOP at enrichment_queued. Do not tell the user to wait for enrichment to finish — it will not.
+- Decision-maker enrichment runs and is FINISHED work. Leads move through machine statuses: discovered -> normalized -> enrichment_queued -> enriching -> decision_maker_found / role_only_found / enrichment_failed -> ready_for_calling. enrichment_failed usually means a deliberate rejection (no callable phone, too big to be owner-operated, closed down), not a system fault.
+- A campaign targets CALLABLE leads, not businesses found: the engine keeps searching, and re-opens a finished batch, until it has the number asked for. Never tell the user to over-order.
 - Only leads at ready_for_calling can be pulled into caller packets.
-- The dialer already logs 10 outcomes (no answer, voicemail, gatekeeper, transferred, DM conversation, appointment set, callback, not interested, bad number, do not call). Do not recommend adding dispositions.
-- Callers are managed on the Callers tab with 6-digit PINs; packets are generated per caller on the Campaigns tab.
+- The dialer already logs 10 outcomes (no answer, voicemail, gatekeeper, transferred, DM conversation, appointment set, callback, not interested, bad number, do not call), plus call duration, attempt number, objections raised, and whether the owner was known before dialing. Do not recommend adding dispositions or tracking.
+- Callers are managed on the Callers tab with 6-digit PINs. Packets are generated per caller on the Packets tab, where they can also be reassigned, topped up, taken back or deleted.
+- Do-not-call is enforced on the phone number across every duplicate record. Do not recommend building suppression.
+- Appointment attendance is recorded by hand on the Appointments tab; if appointments exist but none are marked held or no-show, that IS worth flagging.
 
 Based ONLY on the real snapshot below, tell the admin what to attack today. Be direct and specific — a short prioritized list, max 5 items, each an action they can take inside THIS system. If the data is thin, say exactly which step of the pipeline is the bottleneck and what unblocks it. Do not invent numbers.
 
