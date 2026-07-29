@@ -806,6 +806,17 @@ function LeadModal({
         </div>
         {lead && (
           <div style={{ marginTop: 16 }}>
+            <a
+              href={`/admin/leads/${lead.id}`}
+              className="btn"
+              style={{ display: "inline-flex", marginBottom: 14 }}
+            >
+              Open the full record →
+            </a>
+            <p className="faint" style={{ margin: "0 0 14px" }}>
+              Every conversation, what they told us, what we pitched, what is
+              booked, and what to do next.
+            </p>
             <EventHistory
               filter={{ lead_id: lead.id }}
               limit={30}

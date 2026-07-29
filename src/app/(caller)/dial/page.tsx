@@ -68,6 +68,18 @@ type NextResp = {
   history?: HistoryRow[];
   approach?: { route: string; text: string } | null;
   aiTip?: string | null;
+  dossier?: {
+    status: string;
+    people: string[];
+    theirSituation: string[];
+    statedProblems: string[];
+    pitched: string[];
+    resistance: string[];
+    promises: string[];
+    commitments: string[];
+    gaps: string[];
+    hasSubstance: boolean;
+  } | null;
   packetId?: string;
   remaining: number;
   doneToday?: number;
@@ -458,6 +470,52 @@ export default function DialPage() {
               <p style={{ whiteSpace: "pre-wrap", fontSize: "0.88rem", lineHeight: 1.6 }}>
                 {data.aiTip}
               </p>
+            </div>
+          )}
+
+          {data.dossier?.hasSubstance && (
+            <div className="card" style={{ borderColor: "var(--amber-dim)" }}>
+              <h3 style={{ marginBottom: 6, color: "var(--amber)" }}>
+                Where you stand with them
+              </h3>
+              <p style={{ fontSize: "0.92rem", lineHeight: 1.5, marginBottom: 10 }}>
+                {data.dossier.status}
+              </p>
+              {(
+                [
+                  ["They told us", data.dossier.theirSituation],
+                  ["Their problem", data.dossier.statedProblems],
+                  ["We pitched", data.dossier.pitched],
+                  ["Pushback so far", data.dossier.resistance],
+                  ["We promised", data.dossier.promises],
+                  ["Booked", data.dossier.commitments],
+                ] as [string, string[]][]
+              )
+                .filter(([, v]) => v.length > 0)
+                .map(([title, lines]) => (
+                  <div key={title} style={{ marginBottom: 8 }}>
+                    <div className="faint" style={{ fontWeight: 700 }}>
+                      {title}
+                    </div>
+                    {lines.map((l, i) => (
+                      <div key={i} style={{ fontSize: "0.84rem", lineHeight: 1.5 }}>
+                        · {l}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              {data.dossier.gaps.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: "0.8rem", color: "var(--amber)" }}>
+                    Find out on this call
+                  </div>
+                  {data.dossier.gaps.map((g, i) => (
+                    <div key={i} className="faint" style={{ lineHeight: 1.5 }}>
+                      · {g}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

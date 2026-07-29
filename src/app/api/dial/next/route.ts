@@ -4,6 +4,7 @@ import { getCallerId } from "@/lib/callerSession";
 import { anthropic, APPROACH_MODEL } from "@/lib/anthropic";
 import { recommendApproach } from "@/lib/approach";
 import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
+import { buildDossier, type CallRow } from "@/lib/relationship";
 import { logEvent } from "@/lib/events";
 
 export async function GET() {
@@ -248,6 +249,40 @@ Notes: ${lead.notes || "none"}`,
     .order("scheduled_for")
     .limit(1);
 
+  /* --------------------------- the relationship ----------------------------
+   * The caller gets the FACTS assembled from the record — who we've spoken to,
+   * what they told us, what we promised. Free and instant. The written
+   * strategic read costs an API call and lives on the admin lead page.
+   */
+  const [{ data: allCalls }, { data: leadCallbacks }, { data: leadAppts }, { data: leadObjections }] =
+    await Promise.all([
+      db
+        .from("calls")
+        .select("outcome, reached_dm, notes, details, next_step, spoke_with_role, attempt_number, created_at")
+        .eq("lead_id", next.lead_id)
+        .order("created_at", { ascending: false })
+        .limit(100),
+      db
+        .from("callbacks")
+        .select("scheduled_for, status, reason, requested_by_name")
+        .eq("lead_id", next.lead_id),
+      db.from("appointments").select("*").eq("lead_id", next.lead_id),
+      db
+        .from("call_objections")
+        .select("objection_key, objection_label")
+        .eq("lead_id", next.lead_id),
+    ]);
+
+  const dossier = lead
+    ? buildDossier({
+        lead,
+        calls: (allCalls || []) as CallRow[],
+        appointments: leadAppts || [],
+        callbacks: leadCallbacks || [],
+        objections: leadObjections || [],
+      })
+    : null;
+
   const { count: doneToday } = await db
     .from("calls")
     .select("*", { count: "exact", head: true })
@@ -264,6 +299,7 @@ Notes: ${lead.notes || "none"}`,
     history: history || [],
     approach,
     aiTip,
+    dossier,
     packetId: next.packet_id,
     // The dialer shows this so a caller knows they are honouring a promise,
     // not cold-calling someone who already said "call me Thursday".

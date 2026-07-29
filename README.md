@@ -164,6 +164,36 @@ node scripts/enrich-leads.mjs "Metro Detroit Roofing" 5
 3. Caller opens `/dial`, enters their PIN, and works the packet one lead at a time.
 4. Admin watches **Metrics** and asks **What to Attack Today** on the Campaigns page.
 
+## Client relationship
+
+Open any lead from the board (**Open the full record**) for `/admin/leads/<id>`:
+every conversation with its structured detail, everything learned about the
+business, contacts, what's in the diary, and the full event history.
+
+At the top is the **client relationship** — assembled from the record, not
+inferred:
+
+- where this stands, in one line
+- who we've actually spoken to
+- how they run calls today, and what they said their problem is
+- what we pitched, and the pushback we heard
+- what we promised, and what's booked
+- **what we still don't know** — which drives the questions to ask next
+
+Below that, **the read**: a written analysis covering where it stands, whether
+what we pitched matches what they actually told us their problem is, numbered
+next moves with timeframes, and what would most likely kill the deal.
+
+The read is fed the assembled record **and nothing else**, and is instructed
+never to invent a conversation, a name, a price or a product that isn't in it.
+If we haven't learned enough to judge fit, it says so instead of guessing. When
+`ANTHROPIC_API_KEY` isn't set, or too little has happened yet, the facts above
+are still complete — the panel does not depend on the AI.
+
+Callers see the same relationship facts in the dialer, above the call history,
+so they know where they stand before dialing. The written read stays on the
+admin page, since it costs an API call per lead.
+
 ## Caller profiles
 
 "Is this caller any good?" is several questions, and one conversion rate hides
