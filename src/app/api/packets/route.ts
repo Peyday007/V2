@@ -9,6 +9,7 @@ import {
   AVAILABILITY_COLUMNS,
 } from "@/lib/leadEligibility";
 import { buildCallerProfile } from "@/lib/callerProfile";
+import { windowCoverage } from "@/lib/dialOrder";
 import type { CallFact } from "@/lib/analytics";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -78,7 +79,29 @@ export async function GET(req: NextRequest) {
       .from("calls")
       .select("*", { count: "exact", head: true })
       .eq("packet_id", p.id);
+
+    // How much of what is left is actually callable at this moment — so an
+    // all-west-coast packet is visible before a caller wastes their morning.
+    const { data: remainingRows } = await db
+      .from("packet_leads")
+      .select("lead_id, leads(state, timezone)")
+      .eq("packet_id", p.id)
+      .eq("status", "pending")
+      .limit(500);
+    const coverage = windowCoverage(
+      (remainingRows || []).map((r) => {
+        const lead = Array.isArray(r.leads) ? r.leads[0] : r.leads;
+        return {
+          leadId: String(r.lead_id),
+          packetId: p.id,
+          state: lead?.state ?? null,
+          timezone: lead?.timezone ?? null,
+        };
+      })
+    );
+
     result.push({
+      coverage,
       ...p,
       total: total || 0,
       done: done || 0,

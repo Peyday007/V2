@@ -18,6 +18,11 @@ type Packet = {
   callsMade: number;
   canDelete: boolean;
   callers: { id: string; name: string; active: boolean } | null;
+  coverage?: {
+    buckets: { status: string; label: string; count: number }[];
+    callableNow: number;
+    total: number;
+  };
 };
 
 export default function PacketsAdmin() {
@@ -421,6 +426,21 @@ function PacketRow({
             {p.done} of {p.total} worked · <strong>{p.remaining} still to dial</strong>
             {p.callsMade > 0 && ` · ${p.callsMade} calls logged`}
           </div>
+          {p.coverage && p.coverage.total > 0 && (
+            <div
+              className="faint"
+              style={{
+                marginTop: 4,
+                color:
+                  p.coverage.callableNow === 0 ? "var(--red)" : "var(--text-dim)",
+              }}
+              title={p.coverage.buckets.map((b) => `${b.count} ${b.label}`).join(" · ")}
+            >
+              {p.coverage.callableNow === 0
+                ? "None of these are in business hours right now"
+                : `${p.coverage.callableNow} of ${p.coverage.total} in business hours right now`}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>

@@ -91,6 +91,18 @@ type NextResp = {
   /** Set when this lead was served because a callback came due. */
   dueCallback?: { scheduled_for: string | null; reason: string | null } | null;
   callbacksWaiting?: number;
+  whyThisOne?: {
+    reasons: string[];
+    windowStatus: "prime" | "workable" | "early_or_late" | "closed" | "unknown";
+    windowLabel: string;
+    localHour: number | null;
+    timezone: string | null;
+  } | null;
+  coverage?: {
+    buckets: { status: string; label: string; count: number }[];
+    callableNow: number;
+    total: number;
+  } | null;
   error?: string;
 };
 
@@ -448,6 +460,41 @@ export default function DialPage() {
               </a>
             </div>
           </div>
+
+          {data.whyThisOne && (
+            <div
+              className="card"
+              style={{
+                borderColor:
+                  data.whyThisOne.windowStatus === "prime"
+                    ? "var(--amber-dim)"
+                    : data.whyThisOne.windowStatus === "early_or_late" ||
+                        data.whyThisOne.windowStatus === "closed"
+                      ? "var(--red)"
+                      : "var(--border)",
+              }}
+            >
+              <h3 style={{ marginBottom: 6, color: "var(--text-dim)" }}>Why this one now</h3>
+              {data.whyThisOne.reasons.map((r, i) => (
+                <div key={i} style={{ fontSize: "0.86rem", lineHeight: 1.5 }}>
+                  · {r}
+                </div>
+              ))}
+              {(data.whyThisOne.windowStatus === "early_or_late" ||
+                data.whyThisOne.windowStatus === "closed") && (
+                <p style={{ color: "var(--red)", fontSize: "0.85rem", marginTop: 8, lineHeight: 1.5 }}>
+                  Nothing in your list is in a good window right now — this is the
+                  best of what is left. Skipping it is reasonable.
+                </p>
+              )}
+              {data.coverage && data.coverage.total > 1 && (
+                <p className="faint" style={{ marginTop: 8 }}>
+                  {data.coverage.callableNow} of {data.coverage.total} leads left are
+                  in business hours right now.
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="card" style={{ borderColor: "var(--amber-dim)" }}>
             <h3 style={{ color: "var(--amber)", marginBottom: 6 }}>Who to ask for</h3>

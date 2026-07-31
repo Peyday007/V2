@@ -5,6 +5,7 @@ import { anthropic, APPROACH_MODEL } from "@/lib/anthropic";
 import { recommendApproach } from "@/lib/approach";
 import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
 import { buildDossier, type CallRow } from "@/lib/relationship";
+import { orderCandidates, windowCoverage, WINDOW_LABEL } from "@/lib/dialOrder";
 import { logEvent } from "@/lib/events";
 
 export async function GET() {
@@ -110,9 +111,16 @@ export async function GET() {
    * suppressed business is never dialed even if it is already sitting in an
    * open packet.
    */
-  const scanIds = candidates.slice(0, 50).map((p) => p.lead_id);
+  // Wider scan than we will serve: ordering is decided across the whole
+  // window, not just the next few in list order.
+  const scanIds = candidates.slice(0, 150).map((p) => p.lead_id);
   const [{ data: scanLeads }, { data: suppressions, error: supErr }] = await Promise.all([
-    db.from("leads").select("id, phone, normalized_phone, do_not_call").in("id", scanIds),
+    db
+      .from("leads")
+      .select(
+        "id, phone, normalized_phone, do_not_call, state, timezone, industry, best_call_day, best_call_time, next_attempt_at, attempt_count"
+      )
+      .in("id", scanIds),
     db.from("suppressions").select("lead_id, normalized_phone"),
   ]);
 
@@ -136,8 +144,14 @@ export async function GET() {
   const index = buildSuppressionIndex(suppressions || []);
   const leadById = new Map((scanLeads || []).map((l) => [l.id, l]));
 
-  let next: Candidate | null = null;
+  /* ------------------------- adaptive ordering -------------------------
+   * The packet is not worked in the order it was built. Every remaining lead
+   * is scored against the business's OWN clock at the moment of serving, so a
+   * caller starting at 9am in Michigan is not handed California plumbers at
+   * 6am their time.
+   */
   const skipped: string[] = [];
+  const callable: Candidate[] = [];
   for (const candidate of candidates) {
     const row = leadById.get(candidate.lead_id);
     if (!row) continue; // outside the scan window; leave it for the next call
@@ -145,9 +159,35 @@ export async function GET() {
       skipped.push(candidate.lead_id);
       continue;
     }
-    next = candidate;
-    break;
+    callable.push(candidate);
   }
+
+  const ordered = orderCandidates(
+    callable.map((c, i) => {
+      const row = leadById.get(c.lead_id);
+      return {
+        leadId: c.lead_id,
+        packetId: c.packet_id,
+        callbackId: c.callback_id,
+        callbackDue: c.scheduled_for,
+        state: row?.state ?? null,
+        timezone: row?.timezone ?? null,
+        industry: row?.industry ?? null,
+        bestCallDay: row?.best_call_day ?? null,
+        bestCallTime: row?.best_call_time ?? null,
+        nextAttemptAt: row?.next_attempt_at ?? null,
+        attemptCount: row?.attempt_count ?? 0,
+        position: i,
+      };
+    })
+  );
+
+  const best = ordered[0] ?? null;
+  const next: Candidate | null = best
+    ? callable.find((c) => c.lead_id === best.candidate.leadId) ?? null
+    : null;
+
+  const coverage = windowCoverage(ordered.map((o) => o.candidate));
 
   if (skipped.length > 0) {
     // Close them out of the packet and flag them, so this work is done once.
@@ -300,6 +340,18 @@ Notes: ${lead.notes || "none"}`,
     approach,
     aiTip,
     dossier,
+    // Why this lead, now — and what the rest of the packet looks like at this
+    // hour, so a caller understands the order instead of fighting it.
+    whyThisOne: best
+      ? {
+          reasons: best.reasons,
+          windowStatus: best.windowStatus,
+          windowLabel: WINDOW_LABEL[best.windowStatus],
+          localHour: best.localHour,
+          timezone: best.timezone,
+        }
+      : null,
+    coverage,
     packetId: next.packet_id,
     // The dialer shows this so a caller knows they are honouring a promise,
     // not cold-calling someone who already said "call me Thursday".

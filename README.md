@@ -194,6 +194,37 @@ Callers see the same relationship facts in the dialer, above the call history,
 so they know where they stand before dialing. The written read stays on the
 admin page, since it costs an API call per lead.
 
+## Adaptive packets
+
+A packet is **not** worked in the order it was built. Every remaining lead is
+scored at the moment one is served, against the **business's own clock** — so a
+caller starting at 9am in Michigan is never handed California plumbers at 6am
+their time, burning an attempt each and making good leads look bad.
+
+What moves a lead up or down:
+
+- **Their local hour.** 8–11 and 1–4 is prime, lunch and late afternoon are
+  workable, 7–8am and 5–7pm are fringe, everything else is closed. A closed
+  business sits at the bottom no matter what else is true of it.
+- **A promised callback** outranks everything — except a closed business,
+  because nothing justifies a 4am call.
+- **What they told us.** "Call before 9am" or "Tuesdays" is read and matched
+  against the hour it is there now.
+- **The retry schedule** from the last outcome.
+- **What the team has learned** about when a trade answers, once the data
+  supports it — never before.
+- **Attempt fatigue.** Fresh leads first among equals; a lead on its eighth
+  attempt waits.
+
+Callers see **Why this one now** with the reasons in plain words, so the order
+is legible rather than mysterious. When nothing is in a good window they are
+told so and that skipping is reasonable, instead of being quietly handed a bad
+call.
+
+Admins see the same thing per packet on the Packets tab — *"3 of 47 in business
+hours right now"*, or a red *"None of these are in business hours right now"*
+before a caller wastes their morning.
+
 ## Time
 
 The **Time** tab rebuilds each caller's working day from the work itself.
