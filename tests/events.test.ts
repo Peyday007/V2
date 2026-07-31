@@ -257,13 +257,26 @@ describe("the event vocabulary covers the workflows that exist", () => {
     }
   });
 
-  it("does not invent types for features that do not exist yet", () => {
+  it("covers the call-intelligence workflows now that they exist", () => {
     for (const t of [
-      "script.changed",
+      "followup.created",
+      "followup.overdue",
+      "analysis.confirmed",
+      "proposal.approved",
       "experiment.started",
-      "recommendation.generated",
+      "coaching.version_rolled_back",
+    ]) {
+      expect(isKnownEventType(t), t).toBe(true);
+    }
+  });
+
+  it("still does not invent types for features that do not exist yet", () => {
+    // Sales and revenue are not modelled, so nothing may claim to record one.
+    for (const t of [
       "sale.created",
-      "objection.detected",
+      "revenue.collected",
+      "refund.issued",
+      "recommendation.generated",
     ]) {
       expect(isKnownEventType(t), t).toBe(false);
     }

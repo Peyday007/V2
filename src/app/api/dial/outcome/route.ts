@@ -6,6 +6,7 @@ import { missingRequired, DM_REACHED_OUTCOMES, OUTCOME_FORM_MAP } from "@/lib/ou
 import { nextAttemptAt, localHourParts, timezoneForState } from "@/lib/callWindows";
 import { coerceStage, nextStageAfterOutcome } from "@/lib/stages";
 import { normalizePhone } from "@/lib/normalize";
+import { processCompletedCall } from "@/lib/callIntelligence";
 
 type Values = Record<string, string>;
 
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
   const db = supabase();
   const { data: lead } = await db
     .from("leads")
-    .select("id, attempt_count, pipeline_stage, normalized_phone, owner_reached, owner_name, owner_title, gatekeeper_name, best_call_day, best_call_time, direct_number, extension, answering_setup, existing_provider, other_decision_maker, industry, city, state, rating, review_count, timezone, enrichment_confidence")
+    .select("id, business_name, attempt_count, pipeline_stage, normalized_phone, owner_reached, owner_name, owner_title, gatekeeper_name, best_call_day, best_call_time, direct_number, extension, answering_setup, existing_provider, other_decision_maker, industry, city, state, rating, review_count, timezone, enrichment_confidence")
     .eq("id", lead_id)
     .single();
   if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
@@ -554,8 +555,47 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  /* ---------------- call intelligence ----------------
+   * Analyse what just happened and, when the call warrants it, open a
+   * follow-up with a draft already written. Runs inline because the ten-minute
+   * target only works if the draft is waiting when the caller looks.
+   *
+   * Everything in here is individually guarded: the caller's outcome is
+   * already saved, and nothing below may undo that.
+   */
+  let intelligence: Awaited<ReturnType<typeof processCompletedCall>> | null = null;
+  try {
+    const { data: callerRow } = await db
+      .from("callers")
+      .select("name")
+      .eq("id", callerId)
+      .maybeSingle();
+
+    intelligence = await processCompletedCall({
+      callId: call.id,
+      leadId: lead_id,
+      callerId,
+      callerName: callerRow?.name ?? null,
+      businessName: String(lead.business_name ?? "this business"),
+      contactName: values.dm_name || intel.owner_name || lead.owner_name || null,
+      outcome,
+      reachedDm,
+      spokeWithRole,
+      notes: notes || values.note || null,
+      details: { ...values, industry: lead.industry ?? "" },
+      durationSeconds,
+      callStage: typeof body.call_stage === "string" ? body.call_stage : null,
+    });
+  } catch (e) {
+    console.error("[dial/outcome] call intelligence failed:", e);
+  }
+
   return NextResponse.json({
     ok: true,
     next_attempt: retry ? { at: retry.at.toISOString(), window: retry.window } : null,
+    followup: intelligence?.followupId
+      ? { id: intelligence.followupId, dueAt: intelligence.followupDueAt }
+      : null,
+    warnings: intelligence?.warnings ?? [],
   });
 }

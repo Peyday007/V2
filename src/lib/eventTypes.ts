@@ -55,6 +55,22 @@ export const EVENT_TYPES = [
   "note.added",
   "prompt.changed",
 
+  // call intelligence
+  "followup.created",
+  "followup.updated",
+  "followup.overdue",
+  "analysis.confirmed",
+  "recording.started",
+  "recording.blocked",
+  "consent.captured",
+  "proposal.created",
+  "proposal.approved",
+  "proposal.rejected",
+  "experiment.started",
+  "experiment.concluded",
+  "coaching.version_deployed",
+  "coaching.version_rolled_back",
+
   // callers
   "caller.created",
   "caller.activated",
@@ -82,6 +98,12 @@ export const ENTITY_TYPES = [
   "objection",
   "contact",
   "prompt",
+  "followup",
+  "analysis",
+  "recording",
+  "proposal",
+  "experiment",
+  "coaching",
 ] as const;
 
 export type EntityType = (typeof ENTITY_TYPES)[number];
@@ -115,6 +137,13 @@ export function primaryEntityFor(type: string): EntityType | null {
     appointment: "appointment",
     objection: "objection",
     prompt: "prompt",
+    followup: "followup",
+    analysis: "analysis",
+    recording: "recording",
+    consent: "recording",
+    proposal: "proposal",
+    experiment: "experiment",
+    coaching: "coaching",
     packet: "packet",
     caller: "caller",
     campaign: "campaign",

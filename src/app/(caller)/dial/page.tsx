@@ -5,6 +5,8 @@ import { OUTCOME_FORMS } from "@/lib/outcomeForms";
 import { whoToAskFor, callObjective, callScript, OBJECTIONS } from "@/lib/callGuidance";
 import { timezoneForState, looksOpen } from "@/lib/callWindows";
 import OutcomeModal from "@/components/OutcomeModal";
+import LiveAssistant from "@/components/LiveAssistant";
+import type { CallStage } from "@/lib/callStages";
 
 type Lead = {
   id: string;
@@ -119,6 +121,7 @@ export default function DialPage() {
   const [openObjection, setOpenObjection] = useState<string | null>(null);
   const [scriptStep, setScriptStep] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [stage, setStage] = useState<CallStage>("dialing");
   const [skipping, setSkipping] = useState(false);
   const [skipReason, setSkipReason] = useState("");
 
@@ -148,6 +151,7 @@ export default function DialPage() {
     setScriptStep(0);
     setOpenObjection(null);
     setRaised([]);
+    setStage("dialing");
     setSkipping(false);
     setSkipReason("");
     setStartedAt(new Date().toISOString());
@@ -204,6 +208,7 @@ export default function DialPage() {
         notes: values.note || "",
         started_at: startedAt,
         objections: raised,
+        call_stage: stage,
       }),
     });
     if (!res.ok) {
@@ -646,6 +651,37 @@ export default function DialPage() {
 
         {/* -------------------- RIGHT -------------------- */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14, position: "sticky", top: 16 }}>
+          <LiveAssistant
+            ctx={{
+              stage,
+              businessName: lead.business_name,
+              ownerName: lead.owner_name,
+              ownerReachedBefore: !!lead.owner_reached,
+              gatekeeperName: lead.gatekeeper_name,
+              answeringSetup: lead.answering_setup || intel.answering_setup || null,
+              existingProvider: lead.existing_provider || intel.existing_provider || null,
+              objectionKey: raised[raised.length - 1]?.key ?? null,
+              contactConfirmed: !!(intel.email || intel.direct_number),
+              meetingTimeAgreed: false,
+            }}
+            onStageChange={setStage}
+            onFeedback={(suggestionId, action, rating) => {
+              // Recorded so the learning engine can tell which advice callers
+              // actually use, rather than assuming it lands.
+              fetch("/api/suggestions/feedback", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  lead_id: lead.id,
+                  suggestion_id: suggestionId,
+                  call_stage: stage,
+                  action,
+                  rating,
+                }),
+              }).catch(() => {});
+            }}
+          />
+
           <div className="card">
             <h3 style={{ marginBottom: 10 }}>Log outcome</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
