@@ -1,0 +1,170 @@
+// Recording consent.
+//
+// Recording a call without the consent the law requires is a criminal offence
+// in several states, not a policy breach. So this module decides, per call,
+// whether recording is permitted — and the default answer when anything is
+// unknown is NO.
+//
+// Pure functions with no I/O, because this is the rule that most needs to be
+// readable and testable.
+
+/**
+ * States requiring ALL parties to consent. Recording a business in one of
+ * these without an announcement they accept is unlawful.
+ *
+ * Sources differ on a few borderline states; where they differ this list takes
+ * the stricter reading, because the cost of being wrong is asymmetric.
+ */
+export const ALL_PARTY_CONSENT_STATES = [
+  "CA", "CT", "DE", "FL", "IL", "MD", "MA", "MI", "MT",
+  "NV", "NH", "OR", "PA", "WA",
+] as const;
+
+export type ConsentPolicy = "all_party" | "one_party" | "per_state" | "disabled";
+
+export type ConsentDecision = {
+  /** May recording start at all? */
+  allowed: boolean;
+  /** Must the announcement be played and accepted first? */
+  announcementRequired: boolean;
+  /** Must the prospect actively agree, not merely be told? */
+  affirmativeConsentRequired: boolean;
+  /** What to store on the recording row. */
+  status: "pending" | "not_required" | "blocked";
+  /** Why, in words a non-lawyer can act on. */
+  reason: string;
+  policyApplied: ConsentPolicy;
+};
+
+export function isAllPartyState(state: string | null | undefined): boolean {
+  if (!state) return false;
+  return (ALL_PARTY_CONSENT_STATES as readonly string[]).includes(
+    state.trim().toUpperCase()
+  );
+}
+
+export type ConsentInput = {
+  policy: ConsentPolicy;
+  recordingEnabled: boolean;
+  /** The business's state. Unknown is treated as strictly as all-party. */
+  leadState?: string | null;
+};
+
+export function decideConsent(input: ConsentInput): ConsentDecision {
+  const { policy, recordingEnabled, leadState } = input;
+
+  if (!recordingEnabled || policy === "disabled") {
+    return {
+      allowed: false,
+      announcementRequired: false,
+      affirmativeConsentRequired: false,
+      status: "blocked",
+      reason: "Recording is switched off for this deployment.",
+      policyApplied: policy,
+    };
+  }
+
+  if (policy === "all_party") {
+    return {
+      allowed: true,
+      announcementRequired: true,
+      affirmativeConsentRequired: true,
+      status: "pending",
+      reason:
+        "Every call is announced and needs the prospect's agreement before recording starts.",
+      policyApplied: policy,
+    };
+  }
+
+  if (policy === "one_party") {
+    // Even under a one-party policy, an all-party state overrides it. The
+    // policy is a business preference; the state's law is not.
+    if (isAllPartyState(leadState)) {
+      return {
+        allowed: true,
+        announcementRequired: true,
+        affirmativeConsentRequired: true,
+        status: "pending",
+        reason: `${leadState} requires everyone on the call to consent, which overrides the one-party setting.`,
+        policyApplied: policy,
+      };
+    }
+    if (!leadState) {
+      return {
+        allowed: false,
+        announcementRequired: true,
+        affirmativeConsentRequired: true,
+        status: "blocked",
+        reason:
+          "No state on file for this business, so the law that applies is unknown. Recording is blocked rather than guessed.",
+        policyApplied: policy,
+      };
+    }
+    return {
+      allowed: true,
+      announcementRequired: false,
+      affirmativeConsentRequired: false,
+      status: "not_required",
+      reason: `${leadState} allows one-party consent, and the caller is a party to the call.`,
+      policyApplied: policy,
+    };
+  }
+
+  // per_state: same as one_party but announces where required, rather than
+  // blocking when the state is unknown... except it still blocks, because an
+  // unknown state cannot be assessed either way.
+  if (!leadState) {
+    return {
+      allowed: false,
+      announcementRequired: true,
+      affirmativeConsentRequired: true,
+      status: "blocked",
+      reason:
+        "No state on file for this business, so the law that applies is unknown. Recording is blocked rather than guessed.",
+      policyApplied: policy,
+    };
+  }
+  if (isAllPartyState(leadState)) {
+    return {
+      allowed: true,
+      announcementRequired: true,
+      affirmativeConsentRequired: true,
+      status: "pending",
+      reason: `${leadState} requires everyone on the call to consent.`,
+      policyApplied: policy,
+    };
+  }
+  return {
+    allowed: true,
+    announcementRequired: false,
+    affirmativeConsentRequired: false,
+    status: "not_required",
+    reason: `${leadState} allows one-party consent.`,
+    policyApplied: policy,
+  };
+}
+
+/** May a recording actually begin, given what consent was captured? */
+export function mayStartRecording(
+  decision: ConsentDecision,
+  capturedConsent: "granted" | "refused" | "pending" | "not_required" | null
+): { start: boolean; reason: string } {
+  if (!decision.allowed) return { start: false, reason: decision.reason };
+  if (capturedConsent === "refused") {
+    return { start: false, reason: "The prospect refused to be recorded." };
+  }
+  if (decision.affirmativeConsentRequired && capturedConsent !== "granted") {
+    return {
+      start: false,
+      reason: "Waiting for the prospect to agree to being recorded.",
+    };
+  }
+  return { start: true, reason: decision.reason };
+}
+
+/** How long a recording may be kept, from the settings. */
+export function retentionExpiry(createdAt: Date, retentionDays: number): Date {
+  const d = new Date(createdAt);
+  d.setDate(d.getDate() + Math.max(1, retentionDays));
+  return d;
+}
