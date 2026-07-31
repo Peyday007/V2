@@ -194,6 +194,37 @@ Callers see the same relationship facts in the dialer, above the call history,
 so they know where they stand before dialing. The written read stays on the
 admin page, since it costs an API call per lead.
 
+## Time
+
+The **Time** tab rebuilds each caller's working day from the work itself.
+Nobody clocks in. Every call outcome carries a **server** timestamp the caller
+cannot edit, so hours are derived rather than reported — which is harder to
+inflate than a self-reported timesheet.
+
+A stretch of work ends when there is no logged outcome for 20 minutes, so
+breaks are excluded from active time instead of being billed as work. Per
+caller and per day you get: active hours, first call to last, total gap time
+and how many stints it was split into, calls, calls per **active** hour, and
+measured phone time.
+
+Reconcile the active hours against what you are invoiced elsewhere.
+
+**Flags are questions, not proof.** The app sees logged work; it cannot see
+whether someone was at their desk between two calls, or whether a number was
+really dialed rather than an outcome clicked. So each flag states the evidence
+*and* the innocent explanation:
+
+| Flag | What it asks |
+|---|---|
+| Outcomes too fast | Several saved under 25 seconds apart — were these separate calls? |
+| Long span, little activity | Under 40% of the day had any logged work — what was happening in the gaps? |
+| One outcome dominates | Nearly everything logged the same way, well above the team rate — is the dialing going as it should? Check the lead source before the person. |
+| Short days | Most days under an hour of activity — are these full days being billed? |
+| Nothing timed | Most calls have no duration recorded. |
+
+A lopsided outcome mix is compared **against the team**, so when everyone is
+having a bad week nobody gets singled out for it.
+
 ## Caller profiles
 
 "Is this caller any good?" is several questions, and one conversion rate hides
