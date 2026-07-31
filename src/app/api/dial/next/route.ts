@@ -6,6 +6,7 @@ import { recommendApproach } from "@/lib/approach";
 import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
 import { buildDossier, type CallRow } from "@/lib/relationship";
 import { orderCandidates, windowCoverage, WINDOW_LABEL } from "@/lib/dialOrder";
+import { buildPrompt } from "@/lib/promptStore";
 import { logEvent } from "@/lib/events";
 
 export async function GET() {
@@ -250,28 +251,25 @@ export async function GET() {
   const ai = anthropic();
   if (ai && lead) {
     try {
+      const content = await buildPrompt("call_tip", {
+        business_name: lead.business_name,
+        industry: lead.industry || "unknown",
+        city: lead.city || "unknown",
+        state: lead.state || "",
+        rating: lead.rating ?? "unknown",
+        review_count: lead.review_count ?? 0,
+        website: lead.website || "none found",
+        contacts:
+          (contacts || [])
+            .map((c) => `${c.full_name || "?"} (${c.title || c.role_category})`)
+            .join(", ") || "none",
+        approach: approach?.text || "n/a",
+        notes: lead.notes || "none",
+      });
       const msg = await ai.messages.create({
         model: APPROACH_MODEL,
         max_tokens: 200,
-        messages: [
-          {
-            role: "user",
-            content: `You are coaching a cold caller selling an AI Receptionist service to local service businesses. Based only on this lead's real data, give a 2-3 sentence practical tip for this specific call. No fluff, no invented facts.
-
-Business: ${lead.business_name}
-Industry: ${lead.industry || "unknown"}
-City: ${lead.city || "unknown"}, ${lead.state || ""}
-Google rating: ${lead.rating ?? "unknown"} (${lead.review_count ?? 0} reviews)
-Website: ${lead.website || "none found"}
-Known contacts: ${
-              (contacts || [])
-                .map((c) => `${c.full_name || "?"} (${c.title || c.role_category})`)
-                .join(", ") || "none"
-            }
-Recommended approach: ${approach?.text || "n/a"}
-Notes: ${lead.notes || "none"}`,
-          },
-        ],
+        messages: [{ role: "user", content }],
       });
       const block = msg.content[0];
       aiTip = block.type === "text" ? block.text : null;

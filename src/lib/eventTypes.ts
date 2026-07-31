@@ -53,6 +53,7 @@ export const EVENT_TYPES = [
   "appointment.attendance_recorded",
   "objection.raised",
   "note.added",
+  "prompt.changed",
 
   // callers
   "caller.created",
@@ -80,6 +81,7 @@ export const ENTITY_TYPES = [
   "appointment",
   "objection",
   "contact",
+  "prompt",
 ] as const;
 
 export type EntityType = (typeof ENTITY_TYPES)[number];
@@ -112,6 +114,7 @@ export function primaryEntityFor(type: string): EntityType | null {
     callback: "callback",
     appointment: "appointment",
     objection: "objection",
+    prompt: "prompt",
     packet: "packet",
     caller: "caller",
     campaign: "campaign",

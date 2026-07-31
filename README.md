@@ -63,6 +63,7 @@ has not been done yet.
 9f. Repeat with `supabase/migrations/0015_callable_target.sql` (new query, paste, Run).
 9g. Repeat with `supabase/migrations/0016_caller_trials.sql` (new query, paste, Run).
 9h. Repeat with `supabase/migrations/0017_contacted_backfill.sql` (new query, paste, Run).
+9i. Repeat with `supabase/migrations/0018_prompts.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -193,6 +194,30 @@ are still complete — the panel does not depend on the AI.
 Callers see the same relationship facts in the dialer, above the call history,
 so they know where they stand before dialing. The written read stays on the
 admin page, since it costs an API call per lead.
+
+## Prompts
+
+The **Prompts** tab holds the exact wording sent to the AI, editable without a
+deploy. Three of them: the call tip in the dialer, the client relationship read,
+and What to attack today.
+
+Each shows the variables it can use — write `{{business_name}}` and the real
+value is substituted when it runs. Click a variable to insert it. **Preview with
+example data** shows exactly what the model would receive.
+
+Nothing here can be broken permanently:
+
+- The wording each prompt shipped with is always one button away.
+- A misspelled variable is caught **before** saving, because
+  `{{busines_name}}` would otherwise be sent to the model literally.
+- If a saved prompt ever fails to make sense at runtime, the app quietly uses
+  the original rather than sending something broken. A prompt edit cannot take
+  a feature offline.
+- Every previous wording is kept in the History tab, so any edit can be read
+  back and restored by hand.
+
+Dropping a variable is allowed — it only warns, since deliberately simplifying
+a prompt is a legitimate edit.
 
 ## Adaptive packets
 
