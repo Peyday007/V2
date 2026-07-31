@@ -12,6 +12,14 @@
 // A trial that quietly averaged those together would produce a confident
 // verdict resting mostly on the one number too thin to trust. So each part is
 // scored separately and every unanswerable part says so.
+//
+// The parts above are all scored against the EXISTING TEAM, frozen at the
+// moment the trial began. That is the right comparison for "would they fit in
+// here" and the wrong one for "are they any good" — a new team's numbers may
+// simply be low, in which case matching them is not a reason to hire. So the
+// dial-level rates are also scored against the absolute targets from
+// ./benchmarks, and a candidate who beats the team while missing the bar gets
+// "extend", not "add".
 
 import {
   twoProportionZ,
@@ -21,6 +29,19 @@ import {
   type Interval,
 } from "./analytics";
 import { talkedToSomeone, MIN_FOR_SKILL, P_POSITIVE, P_NEGATIVE } from "./callerProfile";
+import { assess, type Assessment, type MetricKey, type Target } from "./benchmarks";
+
+/**
+ * Which absolute bars a trial is big enough to speak to.
+ *
+ * Appointment rate is deliberately absent. At a 2% target, a hundred dials
+ * expects two bookings — missing the bar there is indistinguishable from bad
+ * luck, and it must never contribute to a hiring decision.
+ */
+const ABSOLUTE_TRIAL_METRICS: MetricKey[] = ["connect_rate", "owner_reach_rate"];
+
+/** Below this many dials, no absolute bar is applied to a trial at all. */
+export const MIN_DIALS_FOR_ABSOLUTE = 80;
 
 /** Team performance frozen when the trial began, as counts. */
 export type Benchmark = {
@@ -71,6 +92,8 @@ export type TrialScore = {
   daysActive: number;
   callsPerActiveDay: number;
   parts: TrialPart[];
+  /** Dial-level rates against the absolute bar. Empty when no target is set. */
+  absolute: Assessment[];
   recommendation: TrialRecommendation;
   headline: string;
 };
@@ -130,6 +153,8 @@ export type TrialInput = {
   benchmark: Benchmark;
   /** Calls on which the candidate recorded something durable. */
   intelCaptureCount?: number;
+  /** Absolute bars, from /admin/targets. Empty means no bar is asserted. */
+  targets?: Target[];
 };
 
 export function scoreTrial(input: TrialInput): TrialScore {
@@ -227,6 +252,26 @@ export function scoreTrial(input: TrialInput): TrialScore {
     Math.round((calls.length / Math.max(1, targetCalls)) * 100)
   );
 
+  /* --------------------------- against the bar --------------------------- */
+  const targetBy = new Map((input.targets || []).map((t) => [t.metric, t]));
+  const absolute: Assessment[] =
+    calls.length < MIN_DIALS_FOR_ABSOLUTE
+      ? []
+      : ABSOLUTE_TRIAL_METRICS.map((metric) => {
+          const successes =
+            metric === "connect_rate" ? talked.length : owners.length;
+          const teamSuccesses =
+            metric === "connect_rate" ? benchmark.talked : benchmark.ownerConversations;
+          return assess({
+            metric,
+            value: successes / calls.length,
+            observations: calls.length,
+            teamValue: benchmark.dials > 0 ? teamSuccesses / benchmark.dials : null,
+            teamObservations: benchmark.dials,
+            target: targetBy.get(metric) ?? null,
+          });
+        });
+
   return {
     callsMade: calls.length,
     targetCalls,
@@ -234,21 +279,44 @@ export function scoreTrial(input: TrialInput): TrialScore {
     daysActive: days,
     callsPerActiveDay: Math.round(perDay * 10) / 10,
     parts,
-    recommendation: recommendOnTrial(calls.length, targetCalls, parts),
-    headline: headlineFor(calls.length, targetCalls, parts),
+    absolute,
+    recommendation: recommendOnTrial(calls.length, targetCalls, parts, absolute),
+    headline: headlineFor(calls.length, targetCalls, parts, absolute),
   };
 }
 
-function headlineFor(made: number, target: number, parts: TrialPart[]): string {
+/** Bars this trial is genuinely big enough to have missed. */
+function missedBars(absolute: Assessment[]): Assessment[] {
+  return absolute.filter((a) => a.vsTarget === "below");
+}
+
+function headlineFor(
+  made: number,
+  target: number,
+  parts: TrialPart[],
+  absolute: Assessment[]
+): string {
   if (made < target) return `${made} of ${target} calls done`;
   const above = parts.filter((p) => p.verdict === "above").map((p) => p.label.toLowerCase());
   const below = parts.filter((p) => p.verdict === "below").map((p) => p.label.toLowerCase());
+  const missed = missedBars(absolute);
+
+  let text: string;
   if (above.length && below.length) {
-    return `Trial complete — ahead on ${above.join(", ")}, behind on ${below.join(", ")}`;
+    text = `Trial complete — ahead on ${above.join(", ")}, behind on ${below.join(", ")}`;
+  } else if (above.length) {
+    text = `Trial complete — ahead on ${above.join(", ")}`;
+  } else if (below.length) {
+    text = `Trial complete — behind on ${below.join(", ")}`;
+  } else {
+    text = "Trial complete — matched the team";
   }
-  if (above.length) return `Trial complete — ahead on ${above.join(", ")}`;
-  if (below.length) return `Trial complete — behind on ${below.join(", ")}`;
-  return "Trial complete — matched the team";
+
+  // Matching or beating the team never gets the last word when a bar is missed.
+  if (missed.length) {
+    text += `, but under target on ${missed.map((a) => a.label.toLowerCase()).join(", ")}`;
+  }
+  return text;
 }
 
 /** Everything the trial genuinely could not answer, said plainly. */
@@ -261,10 +329,39 @@ function unresolvedFrom(parts: TrialPart[]): string[] {
 function recommendOnTrial(
   made: number,
   target: number,
-  parts: TrialPart[]
+  parts: TrialPart[],
+  absolute: Assessment[]
 ): TrialRecommendation {
   const get = (k: TrialPartKey) => parts.find((p) => p.key === k);
   const unresolved = unresolvedFrom(parts);
+  const missed = missedBars(absolute);
+  const missedText = missed.map((a) => a.label.toLowerCase()).join(" and ");
+
+  const noBarSet = absolute.every((a) => a.target === null);
+  if (noBarSet && made >= target) {
+    unresolved.push(
+      "Whether any of this is good in absolute terms: every score above is relative to your existing team. Set targets on the Targets page and this trial will say whether the bar was cleared."
+    );
+  }
+
+  /**
+   * Turn an "add" into an "extend" when the candidate beat a team that is
+   * itself under the bar. Hiring on that basis is how a weak team stays weak.
+   */
+  const holdForTargets = (evidence: string): TrialRecommendation | null => {
+    if (missed.length === 0) return null;
+    return {
+      key: "extend",
+      action: "Extend the trial before adding them",
+      evidence:
+        `${evidence} But they are under your target on ${missedText} — ` +
+        missed.map((a) => a.verdict).join(" ") +
+        ` Beating the current team is not the same as being good enough, and the ` +
+        `team is under that bar too. Another block of calls will show whether this ` +
+        `is the candidate or the list.`,
+      unresolved,
+    };
+  };
 
   if (made < target) {
     return {
@@ -301,15 +398,18 @@ function recommendOnTrial(
   }
 
   if (goodOpening && !badEffort) {
-    return {
-      key: "add",
-      action: "Add them to the team",
-      evidence:
-        `Reached an owner on ${pctText(opening?.rate ?? 0)} of answered calls against a team ` +
-        `${pctText(opening?.benchmarkRate ?? 0)} (p = ${opening?.pValue?.toFixed(3)}), at ` +
-        `${effort?.rate?.toFixed(1)} calls a day.`,
-      unresolved,
-    };
+    const evidence =
+      `Reached an owner on ${pctText(opening?.rate ?? 0)} of answered calls against a team ` +
+      `${pctText(opening?.benchmarkRate ?? 0)} (p = ${opening?.pValue?.toFixed(3)}), at ` +
+      `${effort?.rate?.toFixed(1)} calls a day.`;
+    return (
+      holdForTargets(evidence) ?? {
+        key: "add",
+        action: "Add them to the team",
+        evidence,
+        unresolved,
+      }
+    );
   }
 
   if (badOpening || badEffort || badCapture) {
@@ -331,14 +431,17 @@ function recommendOnTrial(
     };
   }
 
-  return {
-    key: "add",
-    action: "Add them to the team",
-    evidence:
-      `Nothing separates them from the team by more than chance across ${made} calls, ` +
-      `and ${connecting?.trials ?? made} dials is enough to say that with some confidence.`,
-    unresolved,
-  };
+  const evenEvidence =
+    `Nothing separates them from the team by more than chance across ${made} calls, ` +
+    `and ${connecting?.trials ?? made} dials is enough to say that with some confidence.`;
+  return (
+    holdForTargets(evenEvidence) ?? {
+      key: "add",
+      action: "Add them to the team",
+      evidence: evenEvidence,
+      unresolved,
+    }
+  );
 }
 
 /** Team baseline at the moment a trial starts, from the calls made so far. */

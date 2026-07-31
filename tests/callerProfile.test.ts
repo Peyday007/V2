@@ -330,3 +330,122 @@ describe("capture rate", () => {
     expect(p.recommendations.some((r) => r.key === "poor_capture")).toBe(false);
   });
 });
+
+/**
+ * The complaint this answers: "it'll say these stats are good because everyone
+ * else's stats aren't, but those stats aren't good from an industry standard."
+ */
+describe("beating a weak team is not reported as good", () => {
+  const bar = (metric: string, value: number) => ({
+    metric: metric as never,
+    target: value,
+    source: "set_by_operator",
+    minimumSample: 30,
+  });
+
+  it("leads with the missed bar even when far ahead of the team", () => {
+    const p = buildCallerProfile({
+      callerName: "Best of a weak group",
+      // 300 dials, 90 answered, 30 owners → 10% owner-reached per dial.
+      mine: mix(300, 90, 30),
+      others: mix(600, 120, 24),
+      targets: [bar("owner_reach_rate", 0.3)],
+    });
+    const owner = p.absolute.find((a) => a.metric === "owner_reach_rate")!;
+    expect(owner.vsTeam).toBe("above");
+    expect(owner.vsTarget).toBe("below");
+    expect(p.headline).toContain("under target on owner-reached rate");
+    expect(p.recommendations.some((r) => r.key === "below_target")).toBe(true);
+  });
+
+  it("says the team is under the bar too rather than blaming the caller", () => {
+    const p = buildCallerProfile({
+      callerName: "Ahead",
+      mine: mix(300, 90, 30),
+      others: mix(600, 120, 24),
+      targets: [bar("owner_reach_rate", 0.3)],
+    });
+    const rec = p.recommendations.find((r) => r.key === "below_target")!;
+    expect(rec.evidence).toContain("the team is under the bar too");
+    expect(rec.severity).toBe("info");
+  });
+
+  it("raises the severity when they are behind the team as well", () => {
+    const p = buildCallerProfile({
+      callerName: "Behind",
+      mine: mix(300, 60, 12),
+      others: mix(600, 300, 150),
+      targets: [bar("owner_reach_rate", 0.3)],
+    });
+    const rec = p.recommendations.find((r) => r.key === "below_target")!;
+    expect(rec.severity).toBe("attention");
+    expect(rec.evidence).toContain("behind the rest of the team");
+  });
+
+  it("does not flag a missed bar when the bar is met", () => {
+    const p = buildCallerProfile({
+      callerName: "Genuinely good",
+      mine: mix(300, 200, 120),
+      others: mix(600, 300, 150),
+      targets: [bar("owner_reach_rate", 0.3)],
+    });
+    expect(p.recommendations.some((r) => r.key === "below_target")).toBe(false);
+    expect(p.headline).not.toContain("under target");
+  });
+
+  it("warns that nothing here is absolute when no target is set at all", () => {
+    const p = buildCallerProfile({
+      callerName: "Average",
+      mine: mix(200, 150, 75, 15),
+      others: mix(400, 300, 150, 30),
+    });
+    expect(p.recommendations.some((r) => r.key === "no_targets_set")).toBe(true);
+    expect(p.headline).toContain("no targets set");
+    expect(p.absolute.every((a) => a.vsTarget === "unknown")).toBe(true);
+  });
+
+  it("uses per-dial denominators for the bar, not the coaching denominators", () => {
+    // 200 dials, 100 answered, 50 owners. Opening (owners per ANSWERED) is 50%,
+    // owner-reach (owners per DIAL) is 25%. A 30% bar must be read against 25%.
+    const p = buildCallerProfile({
+      callerName: "Denominators",
+      mine: mix(200, 100, 50),
+      others: mix(400, 200, 100),
+      targets: [bar("owner_reach_rate", 0.3)],
+    });
+    const owner = p.absolute.find((a) => a.metric === "owner_reach_rate")!;
+    expect(owner.value).toBeCloseTo(0.25, 5);
+    expect(owner.vsTarget).toBe("below");
+  });
+
+  it("passes targets through to every caller in the team view", () => {
+    const calls = [
+      ...mix(200, 60, 20).map((x) => ({ ...x, caller_name: "A" })),
+      ...mix(200, 60, 20).map((x) => ({ ...x, caller_name: "B" })),
+    ];
+    const profiles = buildAllProfiles(calls, { targets: [bar("owner_reach_rate", 0.3)] });
+    expect(profiles.length).toBe(2);
+    for (const p of profiles) {
+      expect(p.absolute.find((a) => a.metric === "owner_reach_rate")!.vsTarget).toBe("below");
+      expect(p.recommendations.some((r) => r.key === "no_targets_set")).toBe(false);
+    }
+  });
+
+  it("carries the borrowed caveat into the recommendation", () => {
+    const p = buildCallerProfile({
+      callerName: "Borrowed bar",
+      mine: mix(300, 90, 30),
+      others: mix(600, 120, 24),
+      targets: [
+        {
+          metric: "owner_reach_rate" as never,
+          target: 0.3,
+          source: "starting benchmark — general cold calling, not your data",
+          minimumSample: 30,
+        },
+      ],
+    });
+    const rec = p.recommendations.find((r) => r.key === "below_target")!;
+    expect(rec.evidence).toContain("borrowed starting figure");
+  });
+});

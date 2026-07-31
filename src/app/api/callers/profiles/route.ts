@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { buildAllProfiles } from "@/lib/callerProfile";
+import { loadTargets } from "@/lib/targetsStore";
+import { missingTargets } from "@/lib/benchmarks";
 import type { CallFact, ObjectionFact } from "@/lib/analytics";
 
 export const dynamic = "force-dynamic";
@@ -76,10 +78,19 @@ export async function GET() {
     intelCaptureByCaller[name] = (intelCaptureByCaller[name] || 0) + 1;
   }
 
+  // Absolute bars, so "ahead of the team" cannot be reported as success on its
+  // own. Missing targets are not invented — the profile says so instead.
+  const targets = await loadTargets();
+
   const profiles = buildAllProfiles(facts, {
     intelCaptureByCaller,
     objectionsByCaller,
+    targets,
   });
 
-  return NextResponse.json({ profiles });
+  return NextResponse.json({
+    profiles,
+    targetsSet: targets.length,
+    targetsMissing: missingTargets(targets).map((m) => m.label),
+  });
 }

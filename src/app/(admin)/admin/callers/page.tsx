@@ -136,6 +136,22 @@ type TrialPart = {
   note?: string;
 };
 
+/** One dial-level rate scored against an absolute bar, not against the team. */
+type AbsoluteRead = {
+  metric: string;
+  label: string;
+  value: number;
+  observations: number;
+  vsTeam: string;
+  vsTarget: string;
+  target: number | null;
+  targetIsBorrowed: boolean;
+  targetCaveat?: string;
+  verdict: string;
+  warning?: string;
+  alarm?: string;
+};
+
 type Trial = {
   id: string;
   caller_id: string;
@@ -154,6 +170,7 @@ type Trial = {
     callsPerActiveDay: number;
     headline: string;
     parts: TrialPart[];
+    absolute: AbsoluteRead[];
     recommendation: {
       key: string;
       action: string;
@@ -473,6 +490,8 @@ function TrialCard({
         </tbody>
       </table>
 
+      <AgainstTheBar rows={s.absolute} />
+
       <div style={{ marginTop: 14 }}>
         <div style={{ fontWeight: 700, color: REC_COLOR[s.recommendation.key] }}>
           {s.recommendation.action}
@@ -530,6 +549,71 @@ const VERDICT_COLOR: Record<string, string> = {
   not_enough_data: "var(--text-dim)",
 };
 
+const TARGET_COLOR: Record<string, string> = {
+  above: "var(--amber)",
+  on_par: "var(--amber)",
+  below: "var(--red)",
+  unknown: "var(--text-dim)",
+};
+
+/**
+ * The absolute read.
+ *
+ * Everything else on this page compares a caller to the rest of the team. That
+ * answers "who is stronger" and not "is this any good" — with a small team the
+ * average is noisy and may simply be low, so the best of the group reads as
+ * strong. This block is the only one that can say the bar was missed.
+ */
+function AgainstTheBar({ rows }: { rows: AbsoluteRead[] }) {
+  if (!rows || rows.length === 0) return null;
+  const anyTarget = rows.some((r) => r.target !== null);
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <h3 style={{ marginBottom: 6 }}>Against the bar</h3>
+      {!anyTarget ? (
+        <p className="faint" style={{ lineHeight: 1.55 }}>
+          No targets are set, so none of the numbers above can be called good or
+          bad — only better or worse than each other.{" "}
+          <a href="/admin/targets">Set targets</a> and this section will say
+          whether the bar was cleared. Starting figures are offered there if you
+          have none of your own.
+        </p>
+      ) : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {rows.map((r) => (
+            <div key={r.metric}>
+              <div
+                style={{
+                  fontSize: "0.88rem",
+                  fontWeight: 600,
+                  color: TARGET_COLOR[r.vsTarget] || "var(--text)",
+                }}
+              >
+                {r.alarm ? "⚠ " : ""}
+                {r.label}: {r.verdict}
+              </div>
+              {r.warning && (
+                <div style={{ color: "var(--red)", fontSize: "0.82rem", lineHeight: 1.5 }}>
+                  {r.warning}
+                </div>
+              )}
+              {r.alarm && (
+                <div style={{ color: "var(--red)", fontSize: "0.82rem", lineHeight: 1.5 }}>
+                  {r.alarm}
+                </div>
+              )}
+              {r.targetIsBorrowed && r.targetCaveat && (
+                <div className="faint" style={{ lineHeight: 1.5 }}>{r.targetCaveat}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type Skill = {
   key: string;
   label: string;
@@ -562,6 +646,7 @@ type Profile = {
     teamRate: number | null;
     verdict: string;
   }[];
+  absolute: AbsoluteRead[];
   recommendations: { key: string; action: string; evidence: string; severity: string }[];
   routeToIndustries: string[];
 };
@@ -575,6 +660,8 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
  */
 function Profiles() {
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
+  const [targetsSet, setTargetsSet] = useState(0);
+  const [targetsMissing, setTargetsMissing] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -582,6 +669,8 @@ function Profiles() {
       .then(async (r) => {
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || "Could not build profiles.");
+        setTargetsSet(j.targetsSet ?? 0);
+        setTargetsMissing(j.targetsMissing ?? []);
         return j.profiles as Profile[];
       })
       .then(setProfiles)
@@ -591,12 +680,36 @@ function Profiles() {
   return (
     <div style={{ marginTop: 40 }}>
       <h2 style={{ marginBottom: 6 }}>How each caller is doing</h2>
-      <p className="faint" style={{ marginBottom: 18, lineHeight: 1.6 }}>
-        Every comparison is against the rest of the team over the same calls, and
-        every one is significance-tested. Praise needs p &lt; 0.05; criticism needs
+      <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
+        The skill scores compare each caller against the rest of the team over the
+        same calls, significance-tested. Praise needs p &lt; 0.05; criticism needs
         p &lt; 0.01 — a harder bar, because acting on it costs someone their job.
         Where the calls do not support a judgement, it says so instead of guessing.
       </p>
+      <p className="faint" style={{ marginBottom: 18, lineHeight: 1.6 }}>
+        <strong>Against the bar</strong> on each card is the separate question:
+        not who is stronger, but whether anyone is good enough. That one needs
+        targets — and where a caller beats the team while missing the target, the
+        card says the team is under the bar too rather than calling them strong.
+      </p>
+
+      {profiles && profiles.length > 0 && targetsSet === 0 && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber-dim)" }}>
+          <strong>No targets are set.</strong>
+          <p className="faint" style={{ marginTop: 4, lineHeight: 1.55 }}>
+            Everything below is relative to your own team, so &ldquo;ahead of the
+            team&rdquo; here does not mean good — with a small team the average is
+            noisy and may simply be low. <a href="/admin/targets">Set targets</a>{" "}
+            to get an absolute read; starting figures are offered there.
+          </p>
+        </div>
+      )}
+      {targetsSet > 0 && targetsMissing.length > 0 && (
+        <p className="faint" style={{ marginBottom: 16 }}>
+          Still no target for {targetsMissing.join(", ").toLowerCase()} — those stay
+          team-relative only. <a href="/admin/targets">Targets</a>
+        </p>
+      )}
 
       {error && (
         <div className="card" style={{ borderColor: "var(--red)", color: "var(--red)" }}>
@@ -688,6 +801,8 @@ function Profiles() {
                 </div>
               </div>
             )}
+
+            <AgainstTheBar rows={p.absolute} />
 
             {/* recommendations */}
             <div style={{ marginTop: 14 }}>

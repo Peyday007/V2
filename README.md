@@ -64,6 +64,8 @@ has not been done yet.
 9g. Repeat with `supabase/migrations/0016_caller_trials.sql` (new query, paste, Run).
 9h. Repeat with `supabase/migrations/0017_contacted_backfill.sql` (new query, paste, Run).
 9i. Repeat with `supabase/migrations/0018_prompts.sql` (new query, paste, Run).
+9j. Repeat with `supabase/migrations/0019_call_intelligence.sql` (new query, paste, Run).
+9k. Repeat with `supabase/migrations/0020_performance_targets.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -306,6 +308,44 @@ rests on.
 The system will tell you to coach, to promote, or to sit in on someone's calls.
 It will not tell you to fire anyone — it cannot know whether a gap is fixable,
 and it says so.
+
+## Targets
+
+Everything above compares a caller to **the rest of your team**. That answers
+"who is stronger" and not "is this any good". With a handful of callers the team
+average is noisy and may simply be low, so the best of a weak group reads as
+strong — and the team's own habits quietly become the standard everyone is
+judged against.
+
+`/admin/targets` fixes that with an absolute bar for each metric. Once a metric
+has one:
+
+- The caller profile gains an **Against the bar** block, and where someone beats
+  the team while missing the target the card says *the team is under the bar
+  too* rather than calling them strong.
+- The **headline** on a profile leads with the missed target, however far ahead
+  of the team they are.
+- A **tryout** that would have said "add them" says "extend the trial" instead
+  when the candidate only beat a team that is itself under the bar. Hiring on
+  that basis is how a weak team stays weak.
+- The Analytics briefing gains an **Against your targets** section.
+
+Where no target is set, every one of those says so rather than assuming one.
+
+**Starting figures.** If you have no numbers of your own, the Targets page
+offers a set borrowed from published cold-calling ranges — connect ~25%,
+owner-reached ~12%, appointments ~2% of dials, 50 calls a day, follow-up within
+10 minutes. Each shows the range it came from and why. These are **not measured
+on this business**: most published cold-call benchmarks come from software teams
+calling office workers, while this team rings owner-operated trades where the
+owner often answers their own phone — connect and owner-reach should run higher
+here. So a borrowed bar is labelled borrowed everywhere it appears, and once a
+metric has ~500 calls behind it the app asks you to replace it with your own.
+
+Two things never move: a target you set yourself is never overwritten by a
+borrowed one, and a trial never rules on appointment rate — at a 2% bar, a
+hundred dials expects two bookings, and missing that is indistinguishable from
+bad luck.
 
 ### Tryouts
 

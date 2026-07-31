@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { buildBriefing, type CallbackFact, type AppointmentFact } from "@/lib/briefing";
+import { loadTargets } from "@/lib/targetsStore";
 import type { CallFact, ObjectionFact } from "@/lib/analytics";
 
 export const dynamic = "force-dynamic";
@@ -127,6 +128,10 @@ export async function GET() {
     .eq("do_not_call", false)
     .is("archived_at", null);
 
+  // The only absolute reading on the page. Empty when no bar is set, which the
+  // briefing reports rather than papering over.
+  const targets = await loadTargets();
+
   const briefing = buildBriefing({
     calls: facts,
     objections: (objRes.data || []) as ObjectionFact[],
@@ -135,6 +140,7 @@ export async function GET() {
     learned,
     readyToCall: readyToCall ?? 0,
     pendingInPackets,
+    targets,
   });
 
   return NextResponse.json(briefing);

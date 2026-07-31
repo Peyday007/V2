@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { recordEvent } from "@/lib/events";
 import { benchmarkFrom, scoreTrial, type Benchmark } from "@/lib/trial";
+import { loadTargets } from "@/lib/targetsStore";
 import type { CallFact } from "@/lib/analytics";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -85,6 +86,10 @@ export async function GET() {
     .eq("event_type", "lead.intelligence_updated")
     .limit(20000);
 
+  // Absolute bars, so a candidate who merely beats a weak team is not hired on
+  // that basis alone.
+  const targets = await loadTargets();
+
   const scored = (trials || []).map((t) => {
     // Only calls this candidate made AFTER the trial began count toward it.
     const startedAt = new Date(t.started_at).getTime();
@@ -112,6 +117,7 @@ export async function GET() {
         callsPerDay: benchmark.callsPerDay ?? null,
       },
       intelCaptureCount: captureCount,
+      targets,
     });
 
     return { ...t, score };

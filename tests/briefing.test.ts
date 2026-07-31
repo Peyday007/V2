@@ -6,6 +6,7 @@ import {
   learnedSection,
   observationsSection,
   horizonSection,
+  targetsSection,
   callsSince,
   MIN_FOR_OBSERVATION,
   type BriefingInput,
@@ -343,5 +344,72 @@ describe("horizon tells you how far off an answer is", () => {
       call({ dialed_hour: i % 12 + 7, lead_industry: `trade${i % 5}`, caller_name: `c${i % 3}` })
     );
     expect(horizonSection(calls).lines.length).toBeLessThanOrEqual(8);
+  });
+});
+
+/**
+ * The gap this closes: the whole briefing was counts and team-relative reads.
+ * Neither can answer "is any of this good".
+ */
+describe("against your targets", () => {
+  const bar = (metric: string, value: number, source = "set_by_operator") => ({
+    metric: metric as never,
+    target: value,
+    source,
+    minimumSample: 30,
+  });
+
+  it("says plainly that nothing can be judged when no target is set", () => {
+    const s = targetsSection([call(), call(), won()], []);
+    const line = s.lines.find((l) => /No targets are set/.test(l.text));
+    expect(line).toBeTruthy();
+    expect(line!.tone).toBe("action");
+    expect(line!.detail).toContain("who is stronger, not whether anyone is good enough");
+  });
+
+  it("reports a miss as a warning", () => {
+    const calls = [...Array(90)].map((_, i) => (i < 9 ? won() : call()));
+    const s = targetsSection(calls, [bar("owner_reach_rate", 0.3)]);
+    const line = s.lines.find((l) => /Owner-reached rate/.test(l.text))!;
+    expect(line.text).toContain("below your target");
+    expect(line.tone).toBe("warn");
+  });
+
+  it("reports a clean pass as good", () => {
+    const calls = [...Array(90)].map((_, i) => (i < 45 ? won() : call()));
+    const s = targetsSection(calls, [bar("owner_reach_rate", 0.3)]);
+    const line = s.lines.find((l) => /Owner-reached rate/.test(l.text))!;
+    expect(line.tone).toBe("good");
+  });
+
+  it("flags a borrowed bar as borrowed", () => {
+    const calls = [...Array(90)].map((_, i) => (i < 9 ? won() : call()));
+    const s = targetsSection(calls, [
+      bar("owner_reach_rate", 0.3, "starting benchmark — general cold calling, not your data"),
+    ]);
+    expect(s.lines.some((l) => /borrowed starting figures/.test(l.text))).toBe(true);
+  });
+
+  it("does not claim a borrowed caveat on a target you set", () => {
+    const calls = [...Array(90)].map((_, i) => (i < 9 ? won() : call()));
+    const s = targetsSection(calls, [bar("owner_reach_rate", 0.3)]);
+    expect(s.lines.some((l) => /borrowed/.test(l.text))).toBe(false);
+  });
+
+  it("names how many metrics still have no bar", () => {
+    const calls = [...Array(90)].map(() => call());
+    const s = targetsSection(calls, [bar("owner_reach_rate", 0.3)]);
+    expect(s.lines.some((l) => /still have no target/.test(l.text))).toBe(true);
+  });
+
+  it("says nothing at all before the first call", () => {
+    const s = targetsSection([], [bar("owner_reach_rate", 0.3)]);
+    expect(s.lines).toEqual([]);
+    expect(s.emptyText).toContain("No calls logged yet");
+  });
+
+  it("appears in the assembled briefing", () => {
+    const b = buildBriefing(input({ calls: [call(), won()] }));
+    expect(b.sections.map((s) => s.key)).toContain("targets");
   });
 });

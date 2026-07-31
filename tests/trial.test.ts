@@ -232,3 +232,96 @@ describe("benchmarkFrom freezes the bar", () => {
     }
   });
 });
+
+/**
+ * A trial decides whether someone gets hired. Team-relative alone is the wrong
+ * basis for that when the team itself may be under the bar.
+ */
+describe("hiring is not decided on beating a weak team", () => {
+  const bar = (metric: string, value: number) => ({
+    metric: metric as never,
+    target: value,
+    source: "set_by_operator",
+    minimumSample: 30,
+  });
+
+  /** A team that is genuinely poor: 10% owner-reached per dial. */
+  const WEAK_TEAM: Benchmark = {
+    dials: 800,
+    talked: 320,
+    ownerConversations: 80,
+    appointments: 8,
+    callsPerDay: 20,
+  };
+
+  it("holds the hire when the candidate beats the team but misses the bar", () => {
+    const score = scoreTrial({
+      // 100 dials, 60 answered, 30 owners → 30% per dial, well ahead of 10%.
+      calls: trialCalls(100, 60, 30),
+      targetCalls: 100,
+      benchmark: WEAK_TEAM,
+      targets: [bar("owner_reach_rate", 0.5)],
+    });
+    expect(score.recommendation.key).toBe("extend");
+    expect(score.recommendation.evidence).toContain("under your target");
+    expect(score.recommendation.evidence).toContain(
+      "Beating the current team is not the same as being good enough"
+    );
+    expect(score.headline).toContain("under target on owner-reached rate");
+  });
+
+  it("still hires when the bar is actually cleared", () => {
+    const score = scoreTrial({
+      calls: trialCalls(100, 60, 30),
+      targetCalls: 100,
+      benchmark: WEAK_TEAM,
+      targets: [bar("owner_reach_rate", 0.2)],
+    });
+    expect(score.recommendation.key).toBe("add");
+    expect(score.headline).not.toContain("under target");
+  });
+
+  it("never lets a hundred dials rule on appointment rate", () => {
+    const score = scoreTrial({
+      // Zero appointments — but at a 2% bar, 100 dials expects two.
+      calls: trialCalls(100, 60, 30),
+      targetCalls: 100,
+      benchmark: WEAK_TEAM,
+      targets: [bar("owner_reach_rate", 0.2), bar("appointment_rate", 0.02)],
+    });
+    expect(score.absolute.map((a) => a.metric)).not.toContain("appointment_rate");
+    expect(score.recommendation.key).toBe("add");
+  });
+
+  it("applies no bar at all to a trial too small to speak to one", () => {
+    const score = scoreTrial({
+      calls: trialCalls(40, 20, 4),
+      targetCalls: 40,
+      benchmark: WEAK_TEAM,
+      targets: [bar("owner_reach_rate", 0.5)],
+    });
+    expect(score.absolute).toEqual([]);
+  });
+
+  it("says outright that a finished trial had no absolute bar to clear", () => {
+    const score = scoreTrial({
+      calls: trialCalls(100, 60, 30),
+      targetCalls: 100,
+      benchmark: WEAK_TEAM,
+    });
+    expect(
+      score.recommendation.unresolved.some((u) => /Set targets on the Targets page/.test(u))
+    ).toBe(true);
+  });
+
+  it("does not soften a cut — a missed bar never rescues a failing candidate", () => {
+    const score = scoreTrial({
+      // Low effort and poor opening against a strong team.
+      calls: trialCalls(100, 60, 4, 0, 20),
+      targetCalls: 100,
+      benchmark: { dials: 800, talked: 600, ownerConversations: 300, appointments: 60, callsPerDay: 40 },
+      targets: [bar("owner_reach_rate", 0.5)],
+    });
+    expect(score.recommendation.key).toBe("cut");
+  });
+});

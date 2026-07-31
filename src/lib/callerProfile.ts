@@ -12,10 +12,16 @@
 //   Closing  — once they have the owner, do they book the meeting?
 //   Capture  — do they write down what they learned, for everyone else?
 //
-// Every comparison is against the rest of the team over the same period, and
-// every one carries a significance test. A recommendation that could get
+// Every skill comparison is against the rest of the team over the same period,
+// and every one carries a significance test. A recommendation that could get
 // somebody fired must never come from noise, so the bar for a negative
 // judgement is deliberately higher than for a positive one.
+//
+// But team-relative is only half the answer. A small team's average is a poor
+// standard: the best of a weak group still reads as strong. So the profile also
+// scores the dial-level rates against the absolute targets from
+// ./benchmarks — and when someone is ahead of the team but under the bar, that
+// is what the headline says.
 
 import {
   type CallFact,
@@ -28,6 +34,7 @@ import {
   type Confidence,
   type Interval,
 } from "./analytics";
+import { assess, type Assessment, type MetricKey, type Target } from "./benchmarks";
 
 /* -------------------------------------------------------------------------- */
 /* thresholds                                                                 */
@@ -137,6 +144,26 @@ function tally(calls: CallFact[]) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* absolute scoring                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The skills above use denominators that make coaching sense (owners per
+ * ANSWERED call). The targets in ./benchmarks are defined per DIAL, because
+ * that is how published figures are quoted. Mixing the two would compare a
+ * caller against a bar that means something else, so the dial-level rates are
+ * computed separately here.
+ */
+const DIAL_METRICS: MetricKey[] = ["connect_rate", "owner_reach_rate", "appointment_rate"];
+
+function dialRate(calls: CallFact[], metric: MetricKey): { successes: number; trials: number } {
+  const trials = calls.length;
+  if (metric === "connect_rate") return { successes: calls.filter(talkedToSomeone).length, trials };
+  if (metric === "owner_reach_rate") return { successes: calls.filter(reachedOwnerOn).length, trials };
+  return { successes: calls.filter(booked).length, trials };
+}
+
+/* -------------------------------------------------------------------------- */
 /* industry affinity                                                          */
 /* -------------------------------------------------------------------------- */
 
@@ -195,7 +222,9 @@ export type RecommendationKey =
   | "route_industry"
   | "model_for_team"
   | "needs_review"
-  | "poor_capture";
+  | "poor_capture"
+  | "below_target"
+  | "no_targets_set";
 
 export type Recommendation = {
   key: RecommendationKey;
@@ -224,6 +253,8 @@ export type CallerProfile = {
   objectionsSurvived: number;
   skills: Skill[];
   industries: IndustryFit[];
+  /** Dial-level rates against the absolute bar, not against the team. */
+  absolute: Assessment[];
   recommendations: Recommendation[];
   /** Industries to bias this caller's next packet toward. Empty when unproven. */
   routeToIndustries: string[];
@@ -248,6 +279,10 @@ export type ProfileInput = {
   objections?: ObjectionFact[];
   /** Team median calls per active day, for the volume check. */
   teamCallsPerDay?: number | null;
+  /** Total caller-days behind that team average, so it is not read off noise. */
+  teamCallerDays?: number;
+  /** Absolute bars, from /admin/targets. Empty means no bar is asserted. */
+  targets?: Target[];
 };
 
 export function buildCallerProfile(input: ProfileInput): CallerProfile {
@@ -298,11 +333,37 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
       ? input.intelCaptureCount / mine.length
       : null;
 
+  const targetBy = new Map((input.targets || []).map((t) => [t.metric, t]));
+  const absolute: Assessment[] = DIAL_METRICS.map((metric) => {
+    const m = dialRate(mine, metric);
+    const o = dialRate(others, metric);
+    return assess({
+      metric,
+      value: m.trials > 0 ? m.successes / m.trials : 0,
+      observations: m.trials,
+      teamValue: o.trials > 0 ? o.successes / o.trials : null,
+      teamObservations: o.trials,
+      target: targetBy.get(metric) ?? null,
+    });
+  });
+  absolute.push(
+    assess({
+      metric: "calls_per_day",
+      value: perDay,
+      observations: days,
+      teamValue: input.teamCallsPerDay ?? null,
+      teamObservations: input.teamCallerDays ?? 0,
+      target: targetBy.get("calls_per_day") ?? null,
+    })
+  );
+
   const recommendations = recommend({
     callerName,
     mine,
     skills,
     industries,
+    absolute,
+    hasTargets: targetBy.size > 0,
     perDay,
     teamCallsPerDay: input.teamCallsPerDay ?? null,
     intelCaptureRate,
@@ -314,6 +375,12 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
 
   const strong = skills.filter((s) => s.verdict === "strong").map((s) => s.label.toLowerCase());
   const weak = skills.filter((s) => s.verdict === "weak").map((s) => s.label.toLowerCase());
+  const missed = absolute.filter((a) => a.vsTarget === "below");
+
+  // A relative position never gets the last word. If a bar is set and missed,
+  // that is the headline, however far ahead of the team they are.
+  const missedText = missed.map((a) => a.label.toLowerCase()).join(", ");
+
   let headline: string;
   if (mine.length < MIN_CALLS_FOR_PROFILE) {
     headline = `${mine.length} calls so far — too few to judge anything`;
@@ -323,8 +390,17 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
     headline = `Strong at ${strong.join(" and ")}`;
   } else if (weak.length) {
     headline = `Struggling with ${weak.join(" and ")}`;
+  } else if (targetBy.size === 0) {
+    headline =
+      "Performing in line with the rest of the team — no targets set, so that says nothing about whether it is good enough";
+  } else if (missed.length === 0) {
+    headline = "In line with the rest of the team, and clearing every target set";
   } else {
-    headline = "Performing in line with the rest of the team";
+    headline = "In line with the rest of the team";
+  }
+
+  if (missed.length > 0 && mine.length >= MIN_CALLS_FOR_PROFILE) {
+    headline += ` — under target on ${missedText}`;
   }
 
   return {
@@ -342,6 +418,7 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
     objectionsSurvived,
     skills,
     industries,
+    absolute,
     recommendations,
     routeToIndustries,
     headline,
@@ -353,6 +430,8 @@ function recommend(ctx: {
   mine: CallFact[];
   skills: Skill[];
   industries: IndustryFit[];
+  absolute: Assessment[];
+  hasTargets: boolean;
   perDay: number;
   teamCallsPerDay: number | null;
   intelCaptureRate: number | null;
@@ -379,6 +458,35 @@ function recommend(ctx: {
       action: "Ask about call volume before anything else",
       evidence: `${ctx.perDay.toFixed(1)} calls per working day against a team average of ${ctx.teamCallsPerDay.toFixed(1)}. Rates cannot be compared fairly until the volume is comparable.`,
       severity: "attention",
+    });
+  }
+
+  // Absolute first. Beating the team is not an achievement if the bar is missed.
+  for (const a of ctx.absolute.filter((x) => x.vsTarget === "below")) {
+    const relative =
+      a.vsTeam === "above"
+        ? " They are ahead of the rest of the team on this, which means the team is under the bar too."
+        : a.vsTeam === "below"
+          ? " They are also behind the rest of the team on this."
+          : "";
+    out.push({
+      key: "below_target",
+      action: `Under target on ${a.label.toLowerCase()}`,
+      evidence:
+        `${a.verdict}${relative}` +
+        (a.targetCaveat ? ` (${a.targetCaveat})` : "") +
+        ` Based on ${a.observations} calls.`,
+      severity: a.vsTeam === "below" ? "attention" : "info",
+    });
+  }
+
+  if (!ctx.hasTargets) {
+    out.push({
+      key: "no_targets_set",
+      action: "Set targets before reading anything here as good or bad",
+      evidence:
+        `All ${ctx.skills.length} skill scores and every rate on this profile are measured against the rest of your team. With a small team that average is noisy and may simply be low, so "ahead of the team" does not mean "good enough". Targets are set on the Targets page.`,
+      severity: "info",
     });
   }
 
@@ -458,7 +566,9 @@ function recommend(ctx: {
     out.push({
       key: "not_enough_data",
       action: "No change needed",
-      evidence: `Nothing separates them from the rest of the team by more than chance across ${ctx.mine.length} calls.`,
+      evidence:
+        `Nothing separates them from the rest of the team by more than chance across ${ctx.mine.length} calls` +
+        (ctx.hasTargets ? ", and they are clearing every target set." : "."),
       severity: "info",
     });
   }
@@ -475,15 +585,18 @@ export function buildAllProfiles(
   opts?: {
     intelCaptureByCaller?: Record<string, number>;
     objectionsByCaller?: Record<string, ObjectionFact[]>;
+    targets?: Target[];
   }
 ): CallerProfile[] {
   const names = [...new Set(calls.map((c) => c.caller_name).filter((n): n is string => !!n))];
 
   // Team baseline for volume: median calls per active day across callers.
+  let teamCallerDays = 0;
   const perDay = names
     .map((n) => {
       const mine = calls.filter((c) => c.caller_name === n);
       const d = daysActiveIn(mine);
+      teamCallerDays += d;
       return d > 0 ? mine.length / d : 0;
     })
     .filter((v) => v > 0)
@@ -499,6 +612,8 @@ export function buildAllProfiles(
         intelCaptureCount: opts?.intelCaptureByCaller?.[name],
         objections: opts?.objectionsByCaller?.[name],
         teamCallsPerDay,
+        teamCallerDays,
+        targets: opts?.targets,
       })
     )
     .sort((a, b) => b.calls - a.calls);

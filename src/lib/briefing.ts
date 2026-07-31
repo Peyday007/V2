@@ -23,6 +23,13 @@ import {
   HOUR_BUCKETS,
   MIN_DIRECTIONAL,
 } from "./analytics";
+import {
+  assess,
+  METRICS,
+  isBorrowed,
+  type MetricKey,
+  type Target,
+} from "./benchmarks";
 
 export type Tone = "fact" | "good" | "warn" | "action";
 
@@ -73,6 +80,8 @@ export type BriefingInput = {
   learned: LearnedFact;
   readyToCall: number;
   pendingInPackets: number;
+  /** Absolute bars, from /admin/targets. Empty means no bar is asserted. */
+  targets?: Target[];
   now?: Date;
 };
 
@@ -466,6 +475,104 @@ export function horizonSection(calls: CallFact[]): BriefingSection {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 6. against the bar                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything above this point is either a plain count or a comparison between
+ * your own callers. Neither can answer "is this any good" — with a small team
+ * the average is both noisy and possibly low, so the best of the group reads as
+ * strong. This section is the only one that answers it, and only where a target
+ * has actually been set.
+ */
+export function targetsSection(
+  calls: CallFact[],
+  targets: Target[] = []
+): BriefingSection {
+  const lines: BriefingLine[] = [];
+
+  if (calls.length === 0) {
+    return {
+      key: "targets",
+      title: "Against your targets",
+      emptyText: "No calls logged yet.",
+      lines,
+    };
+  }
+
+  const byMetric = new Map(targets.map((t) => [t.metric, t]));
+  const rate: Record<string, number> = {
+    connect_rate: calls.filter(connected).length / calls.length,
+    owner_reach_rate: calls.filter(reachedOwner).length / calls.length,
+    appointment_rate: calls.filter(bookedAppointment).length / calls.length,
+  };
+
+  const scored: MetricKey[] = ["connect_rate", "owner_reach_rate", "appointment_rate"];
+  let borrowedSeen = false;
+
+  for (const metric of scored) {
+    const target = byMetric.get(metric) ?? null;
+    const a = assess({
+      metric,
+      value: rate[metric],
+      observations: calls.length,
+      target,
+    });
+    if (isBorrowed(target)) borrowedSeen = true;
+
+    lines.push({
+      text: `${a.label}: ${a.verdict}`,
+      tone: a.alarm
+        ? "warn"
+        : a.vsTarget === "below"
+          ? "warn"
+          : a.vsTarget === "unknown"
+            ? "fact"
+            : "good",
+      detail:
+        a.alarm ??
+        a.targetCaveat ??
+        `Across ${plural(calls.length, "call")}.`,
+    });
+  }
+
+  if (targets.length === 0) {
+    lines.push({
+      text: "No targets are set, so nothing above can be called good or bad",
+      tone: "action",
+      detail:
+        "Every other number in this platform compares your callers to each other. " +
+        "That says who is stronger, not whether anyone is good enough. Set targets on " +
+        "the Targets page — starting figures are offered there if you have none of your own.",
+    });
+  } else if (targets.length < METRICS.length) {
+    lines.push({
+      text: `${METRICS.length - targets.length} metrics still have no target`,
+      tone: "fact",
+      detail: "Those are reported team-relative only until a bar is set for them.",
+    });
+  }
+
+  if (borrowedSeen) {
+    lines.push({
+      text: "Some of these bars are borrowed starting figures, not your numbers",
+      tone: "fact",
+      detail:
+        "They came from published cold-calling ranges, mostly measured on teams calling " +
+        "office workers rather than owner-operated trades. Replace them once you have " +
+        "enough of your own calls to know better.",
+    });
+  }
+
+  return {
+    key: "targets",
+    title: "Against your targets",
+    emptyText: "No calls logged yet.",
+    lines,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 
 export type Briefing = {
   headline: string;
@@ -504,6 +611,7 @@ export function buildBriefing(input: BriefingInput): Briefing {
     subhead,
     sections: [
       activitySection(calls, now),
+      targetsSection(calls, input.targets || []),
       attentionSection(input),
       learnedSection(input),
       observationsSection(calls),

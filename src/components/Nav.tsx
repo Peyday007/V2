@@ -13,6 +13,7 @@ const links = [
   { href: "/admin/followups", label: "Follow-ups" },
   { href: "/admin/appointments", label: "Appointments" },
   { href: "/admin/callers", label: "Callers" },
+  { href: "/admin/targets", label: "Targets" },
   { href: "/admin/timesheet", label: "Time" },
   { href: "/admin/campaigns", label: "Packets" },
   { href: "/admin/import", label: "Import" },
