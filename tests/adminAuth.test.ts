@@ -163,3 +163,40 @@ describe("session tokens", () => {
     expect(await verifyAdminToken(token, PASSWORD)).toBe(true);
   });
 });
+
+/**
+ * Recording is split across two auth regimes on purpose: callers sign in with
+ * a PIN, admins with the passphrase. Getting this wrong either locks callers
+ * out of recording or opens recordings to anyone who finds the URL.
+ */
+describe("recording endpoints sit on the right side of the passphrase", () => {
+  it("lets a PIN-signed caller reach the capture endpoints", () => {
+    for (const p of [
+      "/api/dial/recording",
+      "/api/dial/recording/abc-123",
+      "/api/dial/recording/abc-123/part",
+      "/api/dial/recording/abc-123/finalize",
+      "/api/dial/recording/abc-123/consent",
+    ]) {
+      expect(isProtectedPath(p), p).toBe(false);
+    }
+  });
+
+  it("keeps playback, transcripts and settings behind the passphrase", () => {
+    for (const p of [
+      "/api/recordings",
+      "/api/recordings/abc-123",
+      "/api/recordings/abc-123/transcribe",
+      "/api/recording-settings",
+      "/admin/recording",
+    ]) {
+      expect(isProtectedPath(p), p).toBe(true);
+    }
+  });
+
+  it("does not open a lookalike path by prefix", () => {
+    // The open prefix is "/api/dial/", so nothing outside it may sneak through.
+    expect(isProtectedPath("/api/dialogue-recording")).toBe(true);
+    expect(isProtectedPath("/api/recordings-export")).toBe(true);
+  });
+});

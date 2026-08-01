@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import CallRecorder from "@/components/CallRecorder";
 import { OUTCOME_FORMS } from "@/lib/outcomeForms";
 import { whoToAskFor, callObjective, callScript, OBJECTIONS } from "@/lib/callGuidance";
 import { timezoneForState, looksOpen } from "@/lib/callWindows";
@@ -124,6 +125,9 @@ export default function DialPage() {
   const [stage, setStage] = useState<CallStage>("dialing");
   const [skipping, setSkipping] = useState(false);
   const [skipReason, setSkipReason] = useState("");
+  // Set when a room recording finishes. The calls row does not exist until the
+  // outcome is saved, so the recording is linked to the call at that moment.
+  const [recordingId, setRecordingId] = useState<string | null>(null);
 
   // Measured, not asked for. The caller never types a duration; the clock
   // starts when the lead appears and stops when the outcome is saved.
@@ -134,6 +138,8 @@ export default function DialPage() {
   const [raised, setRaised] = useState<
     { key: string; label: string; rebuttal_shown: boolean }[]
   >([]);
+
+  const onRecordingChange = useCallback((id: string | null) => setRecordingId(id), []);
 
   useEffect(() => {
     if (state !== "ready") return;
@@ -209,6 +215,7 @@ export default function DialPage() {
         started_at: startedAt,
         objections: raised,
         call_stage: stage,
+        recording_id: recordingId,
       }),
     });
     if (!res.ok) {
@@ -465,6 +472,8 @@ export default function DialPage() {
               </a>
             </div>
           </div>
+
+          <CallRecorder leadId={lead.id} onRecordingChange={onRecordingChange} />
 
           {data.whyThisOne && (
             <div

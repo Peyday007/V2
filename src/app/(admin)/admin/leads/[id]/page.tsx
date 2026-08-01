@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { use } from "react";
 import Link from "next/link";
 import EventHistory from "@/components/EventHistory";
+import RecordingPlayer from "@/components/RecordingPlayer";
 import { STAGE_LABELS } from "@/lib/stages";
 
 type Rel<T> = T | T[] | null;
@@ -270,6 +271,8 @@ export default function LeadPage({ params }: { params: Promise<{ id: string }> }
           ))}
         </div>
       )}
+
+      <RecordingPlayer leadId={id} />
 
       <EventHistory filter={{ lead_id: id }} limit={60} title="Full history" />
     </div>

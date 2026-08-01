@@ -7,6 +7,7 @@ import { nextAttemptAt, localHourParts, timezoneForState } from "@/lib/callWindo
 import { coerceStage, nextStageAfterOutcome } from "@/lib/stages";
 import { normalizePhone } from "@/lib/normalize";
 import { processCompletedCall } from "@/lib/callIntelligence";
+import { linkRecordingToCall } from "@/lib/recordingStore";
 
 type Values = Record<string, string>;
 
@@ -553,6 +554,17 @@ export async function POST(req: NextRequest) {
         newValue: { status: "completed" },
       });
     }
+  }
+
+  /* ---------------- room recording ----------------
+   * A recording starts before this call row exists — the caller presses record
+   * while dialling, and the calls row is only created here. So the join is made
+   * now, in both directions. Failure is swallowed inside linkRecordingToCall:
+   * an unlinked recording is still findable on the lead, and is nowhere near
+   * worth losing a saved outcome over.
+   */
+  if (typeof body.recording_id === "string" && body.recording_id) {
+    await linkRecordingToCall(body.recording_id, call.id, lead_id);
   }
 
   /* ---------------- call intelligence ----------------

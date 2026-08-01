@@ -19,6 +19,7 @@ const links = [
   { href: "/admin/import", label: "Import" },
   { href: "/admin/suppressions", label: "Do Not Call" },
   { href: "/admin/prompts", label: "Prompts" },
+  { href: "/admin/recording", label: "Recording" },
   { href: "/admin/history", label: "History" },
 ];
 

@@ -66,6 +66,7 @@ has not been done yet.
 9i. Repeat with `supabase/migrations/0018_prompts.sql` (new query, paste, Run).
 9j. Repeat with `supabase/migrations/0019_call_intelligence.sql` (new query, paste, Run).
 9k. Repeat with `supabase/migrations/0020_performance_targets.sql` (new query, paste, Run).
+9l. Repeat with `supabase/migrations/0021_browser_recordings.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -378,6 +379,94 @@ learned about those businesses stays.
 new packets for them are weighted toward it. This only kicks in once the edge
 clears the significance test; routing on noise just moves luck around. It
 biases the order and never filters, so a specialist still gets a full packet.
+
+## Recording calls
+
+Callers keep dialling from their own phones. Recording works by putting the
+handset on **speaker** and capturing the room through the laptop microphone —
+no phone system, no per-minute call cost, no change to how anyone dials.
+
+Turn it on at **Admin → Recording**. It ships off.
+
+### What the caller sees
+
+A recorder appears under the business name on the call screen:
+
+1. **Setup instructions** — phone on speaker, headphones off. Headphones break
+   this completely: the prospect's voice goes into the caller's ear and never
+   reaches the microphone, so you get half a conversation and nobody notices
+   until playback.
+2. **A microphone check** before the first call. Three seconds of listening,
+   and it refuses to start on a level too faint for the prospect's side to
+   survive. Checking afterwards is how you discover a week of silence.
+3. **The consent notice**, where one is required, with *They agreed* / *They
+   said no* buttons.
+4. **A running timer** and a live status line.
+
+### What it does about things going wrong
+
+| What happens | What the app does |
+|---|---|
+| Microphone blocked | Says which browser control to use, and the outcome form carries on working |
+| Prospect refuses | Stops **and deletes** the audio — not a flag, a deletion |
+| Page refreshed mid-call | Keeps everything already uploaded, says the last few seconds were lost |
+| Connection drops | Retries each chunk with a backoff, then reports the gap |
+| Upload fails | Says so; the outcome form is untouched |
+
+Audio uploads in ~20-second chunks *during* the call, which is what makes a
+refresh survivable. The chunks are stitched back into one file server-side,
+in sorted order — get that order wrong and you have a file no player will
+open, so the ordering is enforced on the server and covered by a test.
+
+### Consent
+
+Recording a call without the consent the law requires is a criminal offence in
+some states, not a policy breach. Fourteen need everyone on the call to agree:
+CA, CT, DE, FL, IL, MD, MA, MI, MT, NV, NH, OR, PA, WA.
+
+The default policy announces on **every** call, everywhere. That is the safest
+setting and it costs a sentence at the top of each call; `per_state` only
+announces where the law requires it. Under any policy:
+
+- A lead with **no state on file is never recorded** — the law that applies is
+  unknown, and it is not guessed.
+- An all-party state **overrides** a one-party setting. A business preference
+  does not outrank a state's law.
+- A refusal deletes the audio and leaves a `compliance_events` row saying it
+  was deleted and why.
+
+### Playback
+
+On a lead's page, under **Recordings**. Playback links are signed and expire in
+15 minutes; the storage bucket is private, so a recording is never reachable by
+guessing a filename. Every play is written to `compliance_events`.
+
+Deleted recordings still appear as a row saying they were deleted and why —
+disappearing rows are how a compliance question becomes unanswerable later.
+
+### Transcripts
+
+**Needs a provider you pay for.** Anthropic has no speech-to-text, so this uses
+Deepgram or OpenAI Whisper. Set `TRANSCRIPTION_PROVIDER` to `deepgram` or
+`openai`, add `DEEPGRAM_API_KEY` or `OPENAI_API_KEY`, redeploy, then switch it
+on at Admin → Recording. Both charge per minute of audio.
+
+Recording and playback work fine without it. Where no provider is set, the app
+says so rather than silently producing nothing.
+
+**Speaker labels are mostly left blank, on purpose.** One microphone hears your
+caller directly and the prospect through a phone speaker across a desk. Telling
+them apart from that is guesswork, so a label is only kept where the
+transcriber was confident. A transcript that confidently puts the prospect's
+words in your caller's mouth is worse than one that admits it does not know.
+
+### What this is not
+
+It is not in-platform telephony. There is no dialling from the browser, no
+call control, no live transcription and no real-time coaching. Those need a
+provider like Twilio, and the adapter interface for one is already in
+`src/lib/telephony.ts` — everything downstream reads from the `recordings` and
+`transcript_segments` tables, so adding a provider changes nothing else.
 
 ## Callbacks
 
