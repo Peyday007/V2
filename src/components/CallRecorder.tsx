@@ -62,6 +62,11 @@ export default function CallRecorder({
   /** The finished recording's id, so the outcome save can link it to the call. */
   onRecordingChange: (recordingId: string | null) => void;
 }) {
+  // Compact by design: this sits in the call header as a pill and opens into
+  // the full controls only when the caller asks. It used to be a permanent
+  // card whose most common state was the words "Recording off" — a whole
+  // block of screen spent saying nothing was happening.
+  const [expanded, setExpanded] = useState(false);
   const [config, setConfig] = useState<Config | null>(null);
   const [state, setState] = useState<RecorderState>("idle");
   const [level, setLevel] = useState<LevelVerdict | null>(null);
@@ -455,15 +460,13 @@ export default function CallRecorder({
   if (!config) return null;
 
   if (!config.enabled || !config.decision.allowed) {
-    // Say why rather than hiding the feature: an admin looking at a caller's
-    // screen should be able to see what is stopping it.
+    // A pill, not a card. The reason still reaches anyone who wants it — an
+    // admin looking over a caller's shoulder can hover — but "off" is the
+    // normal state and does not deserve a block of the call screen.
     return (
-      <div className="card" style={{ marginTop: 12 }}>
-        <div style={{ fontWeight: 700, fontSize: "0.85rem" }}>Recording off</div>
-        <p className="faint" style={{ marginTop: 3, lineHeight: 1.5 }}>
-          {config.decision.reason}
-        </p>
-      </div>
+      <span className="tag-dim" title={config.decision.reason}>
+        not recording
+      </span>
     );
   }
 
@@ -476,26 +479,69 @@ export default function CallRecorder({
   const status = statusFor({ state, seconds, partsUploaded, partsPending, lastError: error });
   const live = state === "recording";
 
+  // While live, or while something needs the caller's attention, the panel
+  // opens itself — a recording that silently failed is worse than a card.
+  const demandsAttention = live || state === "finishing" || !!error || gate.needsConsentFirst;
+  const open = expanded || demandsAttention;
+
   return (
-    <div
-      className="card"
-      style={{ marginTop: 12, borderColor: live ? "var(--red)" : "var(--border)" }}
-    >
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="tag-dim"
+        style={{
+          border: `1px solid ${live ? "var(--red)" : "var(--border-strong)"}`,
+          color: live ? "var(--red)" : TONE_COLOR[status.tone],
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+        title={status.detail}
+      >
         {live && (
           <span
             aria-hidden
             style={{
-              width: 10,
-              height: 10,
+              width: 7,
+              height: 7,
               borderRadius: "50%",
               background: "var(--red)",
               animation: "pulse 1.2s ease-in-out infinite",
             }}
           />
         )}
+        {status.label}
+      </button>
+
+      {open && (
+        <div
+          className="card"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            left: 0,
+            zIndex: 40,
+            width: 380,
+            maxWidth: "90vw",
+            borderColor: live ? "var(--red)" : "var(--amber-dim)",
+            textAlign: "left",
+            whiteSpace: "normal",
+          }}
+        >
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <strong style={{ color: TONE_COLOR[status.tone] }}>{status.label}</strong>
         {config.leadState && <span className="tag-dim">{config.leadState}</span>}
+        <div style={{ flex: 1 }} />
+        {!demandsAttention && (
+          <button
+            className="btn-ghost"
+            style={{ padding: "2px 8px", fontSize: "0.66rem" }}
+            onClick={() => setExpanded(false)}
+          >
+            Close
+          </button>
+        )}
       </div>
       {status.detail && (
         <p className="faint" style={{ marginTop: 3, lineHeight: 1.5 }}>
@@ -504,7 +550,7 @@ export default function CallRecorder({
       )}
 
       {/* how to set the room up */}
-      {showSetup && !live && (
+      {showSetup && !live && !level?.ok && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontWeight: 700, fontSize: "0.82rem" }}>Before you dial</div>
           <ol style={{ margin: "4px 0 0 18px", padding: 0 }}>
@@ -609,6 +655,9 @@ export default function CallRecorder({
         </p>
       )}
 
+        </div>
+      )}
+
       <style jsx>{`
         @keyframes pulse {
           0%,
@@ -620,6 +669,6 @@ export default function CallRecorder({
           }
         }
       `}</style>
-    </div>
+    </span>
   );
 }

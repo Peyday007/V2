@@ -244,14 +244,44 @@ What moves a lead up or down:
 - **Attempt fatigue.** Fresh leads first among equals; a lead on its eighth
   attempt waits.
 
-Callers see **Why this one now** with the reasons in plain words, so the order
-is legible rather than mysterious. When nothing is in a good window they are
-told so and that skipping is reasonable, instead of being quietly handed a bad
-call.
+None of this reaches the caller. The ordering is real work and it happens on
+every request, but a caller cannot act on it — they get the lead they get — and
+it was taking up the top of the call screen. It is an admin concern, so it is
+shown to admins.
 
-Admins see the same thing per packet on the Packets tab — *"3 of 47 in business
+Admins see it per packet on the Packets tab — *"3 of 47 in business
 hours right now"*, or a red *"None of these are in business hours right now"*
 before a caller wastes their morning.
+
+## The call screen
+
+`/dial` answers three questions and refuses the rest:
+
+| | |
+|---|---|
+| **Who am I calling?** | one header line: name, number, where, their local time, which attempt this is |
+| **What do I say next?** | one line at a time, with *Next line* and *Objection help* |
+| **What happened?** | six outcomes pinned to the bottom of the screen |
+
+Everything else — research, previous calls, AI notes, what earlier callers
+learned — is behind **Lead details**. It is real and occasionally decisive, so
+it is one click away, not gone.
+
+**The caller is asked one question: who picked up.** Nobody yet, reception, or
+the owner. It is the only question that changes both what to say next and what
+gets saved, so it is the only one worth interrupting a conversation for. The
+call stage — thirteen of them — is worked out from that plus whether an
+objection came up (`inferStage` in `src/lib/dialerFocus.ts`). Where the outcome
+form settles who was on the phone, the form wins; the chip only fills a gap the
+outcome could not.
+
+The six outcomes on screen cover almost every call. **Gatekeeper only, bad
+number, decision-maker conversation and do not call** sit behind *More* — not
+because they matter less, but because a rare button beside a common one is how
+the wrong one gets pressed.
+
+Lead intelligence is asked for **after** the outcome is chosen, inside the same
+dialog. Fifteen empty boxes during a live call was never going to get filled.
 
 ## Time
 

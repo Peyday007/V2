@@ -1,13 +1,41 @@
 "use client";
 
+// The call screen.
+//
+// It answers three questions and refuses the rest:
+//
+//   Who am I calling?    the header
+//   What do I say next?  the guided call
+//   What happened?       the outcome bar, always on screen
+//
+// Everything else — research, history, AI notes, what the last caller learned
+// — is real and occasionally useful, so it lives one click away in Lead
+// details rather than competing with the conversation.
+//
+// What was deliberately removed: "Why this one now" and its business-hours
+// counts (the packet already decided, and the caller cannot act on it), the
+// thirteen call-stage buttons (inferred now — see inferStage), the assistant's
+// used/dismissed/star controls (grading software mid-call), and the permanent
+// "Recording off" card (a pill in the header).
+
 import { useCallback, useEffect, useState } from "react";
 import CallRecorder from "@/components/CallRecorder";
-import { OUTCOME_FORMS } from "@/lib/outcomeForms";
-import { whoToAskFor, callObjective, callScript, OBJECTIONS } from "@/lib/callGuidance";
+import { OUTCOME_FORM_MAP } from "@/lib/outcomeForms";
+import { OBJECTIONS } from "@/lib/callGuidance";
 import { timezoneForState, looksOpen } from "@/lib/callWindows";
+import {
+  PRIMARY_OUTCOMES,
+  MORE_OUTCOMES,
+  SPEAKING_WITH_LABEL,
+  attemptSummary,
+  guidedCall,
+  inferStage,
+  likelyOutcome,
+  spokeWithRoleFor,
+  type SpeakingWith,
+} from "@/lib/dialerFocus";
 import OutcomeModal from "@/components/OutcomeModal";
 import LiveAssistant from "@/components/LiveAssistant";
-import type { CallStage } from "@/lib/callStages";
 
 type Lead = {
   id: string;
@@ -59,30 +87,26 @@ type HistoryRow = {
   callers: { name: string } | null;
 };
 
+type Dossier = {
+  status: string;
+  people: string[];
+  theirSituation: string[];
+  statedProblems: string[];
+  pitched: string[];
+  resistance: string[];
+  promises: string[];
+  commitments: string[];
+  gaps: string[];
+  hasSubstance: boolean;
+};
+
 type NextResp = {
   caller: string;
   lead: Lead | null;
   contacts?: Contact[];
-  discovery?: {
-    best_callback_time: string | null;
-    transfer_instructions: string | null;
-    gatekeeper_name: string | null;
-  } | null;
   history?: HistoryRow[];
-  approach?: { route: string; text: string } | null;
   aiTip?: string | null;
-  dossier?: {
-    status: string;
-    people: string[];
-    theirSituation: string[];
-    statedProblems: string[];
-    pitched: string[];
-    resistance: string[];
-    promises: string[];
-    commitments: string[];
-    gaps: string[];
-    hasSubstance: boolean;
-  } | null;
+  dossier?: Dossier | null;
   packetId?: string;
   remaining: number;
   doneToday?: number;
@@ -94,18 +118,6 @@ type NextResp = {
   /** Set when this lead was served because a callback came due. */
   dueCallback?: { scheduled_for: string | null; reason: string | null } | null;
   callbacksWaiting?: number;
-  whyThisOne?: {
-    reasons: string[];
-    windowStatus: "prime" | "workable" | "early_or_late" | "closed" | "unknown";
-    windowLabel: string;
-    localHour: number | null;
-    timezone: string | null;
-  } | null;
-  coverage?: {
-    buckets: { status: string; label: string; count: number }[];
-    callableNow: number;
-    total: number;
-  } | null;
   error?: string;
 };
 
@@ -117,12 +129,13 @@ export default function DialPage() {
   const [logging, setLogging] = useState(false);
   const [pendingOutcome, setPendingOutcome] = useState<string | null>(null);
   const [intel, setIntel] = useState<Record<string, string>>({});
-  const [showIntel, setShowIntel] = useState(false);
   const [showObjections, setShowObjections] = useState(false);
   const [openObjection, setOpenObjection] = useState<string | null>(null);
-  const [scriptStep, setScriptStep] = useState(0);
+  const [showMore, setShowMore] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [lineIndex, setLineIndex] = useState(0);
+  const [speakingWith, setSpeakingWith] = useState<SpeakingWith>("nobody");
   const [copied, setCopied] = useState(false);
-  const [stage, setStage] = useState<CallStage>("dialing");
   const [skipping, setSkipping] = useState(false);
   const [skipReason, setSkipReason] = useState("");
   // Set when a room recording finishes. The calls row does not exist until the
@@ -154,10 +167,13 @@ export default function DialPage() {
     setState("loading");
     setIntel({});
     setPendingOutcome(null);
-    setScriptStep(0);
+    setLineIndex(0);
+    setSpeakingWith("nobody");
     setOpenObjection(null);
+    setShowObjections(false);
+    setShowMore(false);
+    setShowDetails(false);
     setRaised([]);
-    setStage("dialing");
     setSkipping(false);
     setSkipReason("");
     setStartedAt(new Date().toISOString());
@@ -197,7 +213,8 @@ export default function DialPage() {
   async function logOutcome(
     outcome: string,
     values: Record<string, string>,
-    confirmed: boolean
+    confirmed: boolean,
+    intelValues: Record<string, string>
   ) {
     if (!data?.lead) return;
     setLogging(true);
@@ -209,12 +226,15 @@ export default function DialPage() {
         packet_id: data.packetId,
         outcome,
         values,
-        intel,
+        intel: intelValues,
         confirmed,
         notes: values.note || "",
         started_at: startedAt,
         objections: raised,
+        // Worked out from who picked up and what came up, rather than asked
+        // for. See inferStage.
         call_stage: stage,
+        spoke_with_role: spokeWithRoleFor(speakingWith),
         recording_id: recordingId,
       }),
     });
@@ -279,9 +299,7 @@ export default function DialPage() {
             marginBottom: 12,
           }}
         />
-        {loginError && (
-          <p style={{ color: "var(--red)", marginBottom: 12 }}>{loginError}</p>
-        )}
+        {loginError && <p style={{ color: "var(--red)", marginBottom: 12 }}>{loginError}</p>}
         <button
           className="btn"
           onClick={login}
@@ -307,8 +325,8 @@ export default function DialPage() {
       <div style={{ maxWidth: 480, margin: "80px auto", textAlign: "center" }}>
         <h1 style={{ marginBottom: 12 }}>All done 🎉</h1>
         <p className="muted" style={{ marginBottom: 20 }}>
-          No leads left in your packet, {data.caller}. Check with your admin for a
-          new packet.
+          No leads left in your packet, {data.caller}. Check with your admin for a new
+          packet.
         </p>
         <button className="btn-ghost" onClick={logout}>
           Sign out
@@ -334,9 +352,17 @@ export default function DialPage() {
     last_next_step: lead.last_next_step ?? null,
     attempt_count: lead.attempt_count ?? 0,
   };
-  const ask = whoToAskFor(intelLead);
-  const objective = callObjective(intelLead);
-  const script = callScript(intelLead);
+
+  const guide = guidedCall(intelLead, speakingWith);
+  const currentLine = guide.lines[Math.min(lineIndex, guide.lines.length - 1)];
+  const lastObjection = raised[raised.length - 1]?.key ?? null;
+  const stage = inferStage({
+    speakingWith,
+    objectionKey: openObjection || lastObjection,
+    ownerReachedBefore: !!lead.owner_reached,
+    lineIndex,
+  });
+  const suggested = likelyOutcome(speakingWith);
 
   const tz = lead.timezone || timezoneForState(lead.state);
   let localTime: string | null = null;
@@ -351,41 +377,45 @@ export default function DialPage() {
       const h = Number(
         new Date().toLocaleString("en-US", { timeZone: tz, hour: "numeric", hour12: false })
       );
-      const d = new Date().getDay();
-      open = looksOpen(h, d);
+      open = looksOpen(h, new Date().getDay());
     } catch {
       localTime = null;
     }
   }
 
+  const detailCount =
+    (data.aiTip ? 1 : 0) +
+    (data.dossier?.hasSubstance ? 1 : 0) +
+    (history.length > 0 ? 1 : 0) +
+    (contacts.length > 0 ? 1 : 0);
+
   return (
-    <div style={{ maxWidth: 1300, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 14, gap: 12, flexWrap: "wrap" }}>
+    <div style={{ maxWidth: 1180, margin: "0 auto", paddingBottom: 96 }}>
+      {/* ============================ session bar ============================ */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          marginBottom: 12,
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
         <span style={{ fontWeight: 700 }}>{data.caller}</span>
         <span className="tag-dim">{data.remaining} left</span>
+        <span className="tag-dim">{data.doneToday ?? 0} done today</span>
         {!!data.callbacksWaiting && data.callbacksWaiting > 0 && (
           <span className="tag" title="Callbacks that have come due. These are served first.">
             {data.callbacksWaiting} callback{data.callbacksWaiting === 1 ? "" : "s"} due
           </span>
         )}
-        <span className="tag-dim">{data.doneToday ?? 0} done today</span>
-        <span className="tag-dim">attempt #{(lead.attempt_count ?? 0) + 1}</span>
-        <span className="tag-dim" title="Time on this lead. Saved automatically with the outcome.">
+        <span className="tag-dim" title="Time on this lead. Saved automatically.">
           {String(Math.floor(elapsed / 60)).padStart(2, "0")}:
           {String(elapsed % 60).padStart(2, "0")}
         </span>
-        {localTime && (
-          <span className="tag-dim">
-            local {localTime}
-            {open === false ? " · likely closed" : open ? " · open" : ""}
-          </span>
-        )}
+        <CallRecorder leadId={lead.id} onRecordingChange={onRecordingChange} />
         <div style={{ flex: 1 }} />
-        <button
-          className="btn-ghost"
-          onClick={() => setSkipping(true)}
-          style={{ padding: "4px 12px" }}
-        >
+        <button className="btn-ghost" onClick={() => setSkipping(true)} style={{ padding: "4px 12px" }}>
           Skip
         </button>
         <button className="btn-ghost" onClick={logout} style={{ padding: "4px 12px" }}>
@@ -396,16 +426,12 @@ export default function DialPage() {
       {data.dueCallback && (
         <div
           className="card"
-          style={{
-            marginBottom: 14,
-            borderColor: "var(--amber)",
-            background: "var(--amber-soft)",
-          }}
+          style={{ marginBottom: 12, borderColor: "var(--amber)", background: "var(--amber-soft)" }}
         >
           <div style={{ fontWeight: 700, color: "var(--amber)" }}>
-            ⏰ This is a callback you promised
+            ⏰ You promised to call them back
           </div>
-          <div style={{ fontSize: "0.85rem", marginTop: 4, lineHeight: 1.5 }}>
+          <div style={{ fontSize: "0.85rem", marginTop: 3, lineHeight: 1.5 }}>
             Booked for{" "}
             {data.dueCallback.scheduled_for
               ? new Date(data.dueCallback.scheduled_for).toLocaleString(undefined, {
@@ -416,52 +442,59 @@ export default function DialPage() {
                   minute: "2-digit",
                 })
               : "earlier"}
-            {data.dueCallback.reason ? ` — ${data.dueCallback.reason}` : ""}. They are
-            expecting you, so open by referring back to it.
+            {data.dueCallback.reason ? ` — ${data.dueCallback.reason}` : ""}. Open by
+            referring back to it.
           </div>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
-        {/* -------------------- LEFT -------------------- */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16 }}>
-              <div style={{ minWidth: 0 }}>
-                <h1 style={{ marginBottom: 4, textTransform: "none", letterSpacing: 0, fontSize: "1.35rem" }}>
-                  {lead.business_name}
-                </h1>
-                <p className="muted" style={{ fontSize: "0.85rem" }}>
-                  {[lead.address, lead.city, lead.state].filter(Boolean).join(", ")}
-                </p>
-              </div>
-              {lead.phone && (
-                <a href={`tel:${lead.phone}`} style={{ fontSize: "1.7rem", fontWeight: 700, whiteSpace: "nowrap", lineHeight: 1.1 }}>
-                  {lead.phone}
+      {/* ========================== 1. who am I calling ======================= */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          gap: 20,
+          flexWrap: "wrap",
+          paddingBottom: 12,
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <h1
+            style={{
+              marginBottom: 3,
+              textTransform: "none",
+              letterSpacing: 0,
+              fontSize: "1.5rem",
+            }}
+          >
+            {lead.business_name}
+          </h1>
+          <div
+            className="faint"
+            style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}
+          >
+            <Meta>{[lead.city, lead.state].filter(Boolean).join(", ")}</Meta>
+            {localTime && (
+              <Meta color={open === false ? "var(--red)" : undefined}>
+                {localTime} their time{open === false ? ", likely closed" : ""}
+              </Meta>
+            )}
+            <Meta>{attemptSummary(lead.attempt_count ?? 0, !!lead.owner_reached)}</Meta>
+            {lead.industry && <Meta>{lead.industry}</Meta>}
+            {lead.rating != null && (
+              <Meta>
+                ★ {lead.rating} ({lead.review_count})
+              </Meta>
+            )}
+            <span style={{ display: "flex", gap: 10 }}>
+              {lead.website && (
+                <a href={lead.website} target="_blank" rel="noreferrer">
+                  website ↗
                 </a>
               )}
-            </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
-              {lead.industry && <span className="tag-dim">{lead.industry}</span>}
-              {lead.rating != null && (
-                <span className="tag-dim">★ {lead.rating} ({lead.review_count})</span>
-              )}
-              <button
-                className="tag-dim"
-                style={{ border: "none", cursor: "pointer" }}
-                onClick={() => {
-                  if (lead.phone) navigator.clipboard?.writeText(lead.phone);
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                }}
-              >
-                {copied ? "copied ✓" : "copy number"}
-              </button>
-              {lead.website && (
-                <a className="tag-dim" href={lead.website} target="_blank" rel="noreferrer">website ↗</a>
-              )}
               <a
-                className="tag-dim"
                 href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
                   `${lead.business_name} ${lead.address || ""}`
                 )}`}
@@ -470,337 +503,297 @@ export default function DialPage() {
               >
                 maps ↗
               </a>
-            </div>
+            </span>
           </div>
-
-          <CallRecorder leadId={lead.id} onRecordingChange={onRecordingChange} />
-
-          {data.whyThisOne && (
-            <div
-              className="card"
-              style={{
-                borderColor:
-                  data.whyThisOne.windowStatus === "prime"
-                    ? "var(--amber-dim)"
-                    : data.whyThisOne.windowStatus === "early_or_late" ||
-                        data.whyThisOne.windowStatus === "closed"
-                      ? "var(--red)"
-                      : "var(--border)",
-              }}
-            >
-              <h3 style={{ marginBottom: 6, color: "var(--text-dim)" }}>Why this one now</h3>
-              {data.whyThisOne.reasons.map((r, i) => (
-                <div key={i} style={{ fontSize: "0.86rem", lineHeight: 1.5 }}>
-                  · {r}
-                </div>
-              ))}
-              {(data.whyThisOne.windowStatus === "early_or_late" ||
-                data.whyThisOne.windowStatus === "closed") && (
-                <p style={{ color: "var(--red)", fontSize: "0.85rem", marginTop: 8, lineHeight: 1.5 }}>
-                  Nothing in your list is in a good window right now — this is the
-                  best of what is left. Skipping it is reasonable.
-                </p>
-              )}
-              {data.coverage && data.coverage.total > 1 && (
-                <p className="faint" style={{ marginTop: 8 }}>
-                  {data.coverage.callableNow} of {data.coverage.total} leads left are
-                  in business hours right now.
-                </p>
-              )}
-            </div>
-          )}
-
-          <div className="card" style={{ borderColor: "var(--amber-dim)" }}>
-            <h3 style={{ color: "var(--amber)", marginBottom: 6 }}>Who to ask for</h3>
-            <p style={{ fontSize: "1rem", lineHeight: 1.5 }}>{ask.text}</p>
-            {ask.detail.length > 0 && (
-              <div className="faint" style={{ marginTop: 8 }}>
-                {ask.detail.join(" · ")}
-              </div>
-            )}
-          </div>
-
-          <div className="card">
-            <h3 style={{ marginBottom: 6, color: "var(--text-dim)" }}>Call objective</h3>
-            <p style={{ fontSize: "0.9rem", lineHeight: 1.5 }}>{objective}</p>
-          </div>
-
-          {data.aiTip && (
-            <div className="card">
-              <h3 style={{ marginBottom: 8, color: "var(--text-dim)" }}>AI call tip</h3>
-              <p style={{ whiteSpace: "pre-wrap", fontSize: "0.88rem", lineHeight: 1.6 }}>
-                {data.aiTip}
-              </p>
-            </div>
-          )}
-
-          {data.dossier?.hasSubstance && (
-            <div className="card" style={{ borderColor: "var(--amber-dim)" }}>
-              <h3 style={{ marginBottom: 6, color: "var(--amber)" }}>
-                Where you stand with them
-              </h3>
-              <p style={{ fontSize: "0.92rem", lineHeight: 1.5, marginBottom: 10 }}>
-                {data.dossier.status}
-              </p>
-              {(
-                [
-                  ["They told us", data.dossier.theirSituation],
-                  ["Their problem", data.dossier.statedProblems],
-                  ["We pitched", data.dossier.pitched],
-                  ["Pushback so far", data.dossier.resistance],
-                  ["We promised", data.dossier.promises],
-                  ["Booked", data.dossier.commitments],
-                ] as [string, string[]][]
-              )
-                .filter(([, v]) => v.length > 0)
-                .map(([title, lines]) => (
-                  <div key={title} style={{ marginBottom: 8 }}>
-                    <div className="faint" style={{ fontWeight: 700 }}>
-                      {title}
-                    </div>
-                    {lines.map((l, i) => (
-                      <div key={i} style={{ fontSize: "0.84rem", lineHeight: 1.5 }}>
-                        · {l}
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              {data.dossier.gaps.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: "0.8rem", color: "var(--amber)" }}>
-                    Find out on this call
-                  </div>
-                  {data.dossier.gaps.map((g, i) => (
-                    <div key={i} className="faint" style={{ lineHeight: 1.5 }}>
-                      · {g}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {(history.length > 0 || data.pendingCallback) && (
-            <div className="card">
-              <h3 style={{ marginBottom: 8 }}>Previous activity</h3>
-              {data.pendingCallback && (
-                <div style={{ color: "var(--amber)", fontSize: "0.82rem", marginBottom: 8 }}>
-                  Callback booked for{" "}
-                  {new Date(data.pendingCallback.scheduled_for).toLocaleString()}
-                  {data.pendingCallback.reason ? ` — ${data.pendingCallback.reason}` : ""}
-                </div>
-              )}
-              {history.map((h, i) => (
-                <div key={i} style={{ fontSize: "0.8rem", marginBottom: 8, lineHeight: 1.5 }}>
-                  <span className="muted">
-                    {new Date(h.created_at).toLocaleString(undefined, {
-                      month: "short",
-                      day: "numeric",
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  {" — "}
-                  <strong>{h.outcome.replace(/_/g, " ")}</strong>
-                  {h.callers?.name ? ` (${h.callers.name})` : ""}
-                  {h.spoke_with_role && h.spoke_with_role !== "unknown" && (
-                    <span className="faint"> · spoke with {h.spoke_with_role}</span>
-                  )}
-                  {h.next_step && (
-                    <div style={{ color: "var(--amber)" }}>Next step: {h.next_step}</div>
-                  )}
-                  {h.notes && <div className="faint">{h.notes}</div>}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {(lead.owner_name ||
-            lead.answering_setup ||
-            lead.existing_provider ||
-            lead.best_call_time) && (
-            <div className="card">
-              <h3 style={{ marginBottom: 8 }}>Known intelligence</h3>
-              <div style={{ fontSize: "0.82rem", display: "grid", gap: 3 }}>
-                {lead.owner_name && (
-                  <div>
-                    Owner identified: <strong>{lead.owner_name}</strong>
-                    {lead.owner_title ? ` (${lead.owner_title})` : ""}
-                  </div>
-                )}
-                {(lead.best_call_day || lead.best_call_time) && (
-                  <div>
-                    Best time to call:{" "}
-                    <strong>
-                      {[lead.best_call_day, lead.best_call_time].filter(Boolean).join(" ")}
-                    </strong>
-                  </div>
-                )}
-                {lead.answering_setup && <div>Current setup: {lead.answering_setup}</div>}
-                {lead.existing_provider && <div>Existing provider: {lead.existing_provider}</div>}
-                {lead.last_objection && <div>Last objection: {lead.last_objection}</div>}
-              </div>
-            </div>
-          )}
-
-          {contacts.length > 0 && (
-            <div className="card">
-              <h3 style={{ marginBottom: 8 }}>Contacts on file</h3>
-              {contacts.map((c) => (
-                <div key={c.id} className="faint" style={{ marginBottom: 4 }}>
-                  {c.full_name || "(unknown)"}
-                  {c.title ? ` — ${c.title}` : ""}
-                  {c.direct_phone ? ` · ${c.direct_phone}` : ""}
-                  {` [${c.contact_source.replace(/_/g, " ")}]`}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
-        {/* -------------------- RIGHT -------------------- */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, position: "sticky", top: 16 }}>
-          <LiveAssistant
-            ctx={{
-              stage,
-              businessName: lead.business_name,
-              ownerName: lead.owner_name,
-              ownerReachedBefore: !!lead.owner_reached,
-              gatekeeperName: lead.gatekeeper_name,
-              answeringSetup: lead.answering_setup || intel.answering_setup || null,
-              existingProvider: lead.existing_provider || intel.existing_provider || null,
-              objectionKey: raised[raised.length - 1]?.key ?? null,
-              contactConfirmed: !!(intel.email || intel.direct_number),
-              meetingTimeAgreed: false,
-            }}
-            onStageChange={setStage}
-            onFeedback={(suggestionId, action, rating) => {
-              // Recorded so the learning engine can tell which advice callers
-              // actually use, rather than assuming it lands.
-              fetch("/api/suggestions/feedback", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  lead_id: lead.id,
-                  suggestion_id: suggestionId,
-                  call_stage: stage,
-                  action,
-                  rating,
-                }),
-              }).catch(() => {});
-            }}
-          />
+        <div style={{ textAlign: "right" }}>
+          {lead.phone && (
+            <a
+              href={`tel:${lead.phone}`}
+              style={{ fontSize: "1.8rem", fontWeight: 700, whiteSpace: "nowrap", lineHeight: 1.1 }}
+            >
+              {lead.phone}
+            </a>
+          )}
+          <div>
+            <button
+              className="tag-dim"
+              style={{ border: "none", cursor: "pointer", marginTop: 4 }}
+              onClick={() => {
+                if (lead.phone) navigator.clipboard?.writeText(lead.phone);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              {copied ? "copied ✓" : "copy number"}
+            </button>
+          </div>
+        </div>
+      </div>
 
-          <div className="card">
-            <h3 style={{ marginBottom: 10 }}>Log outcome</h3>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              {OUTCOME_FORMS.map((o) => (
-                <button
-                  key={o.value}
-                  className={
-                    o.value === "dm_conversation" || o.value === "appointment_set"
-                      ? "btn"
-                      : o.value === "do_not_call"
-                        ? "btn-danger"
-                        : "btn-ghost"
-                  }
-                  onClick={() => setPendingOutcome(o.value)}
-                  disabled={logging}
-                  style={{ justifyContent: "center", padding: "10px 8px" }}
-                >
-                  {o.label}
-                </button>
-              ))}
-            </div>
+      {/* ======================= 2. what do I say next ======================= */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: showDetails ? "minmax(0, 1.4fr) minmax(0, 1fr)" : "1fr",
+          gap: 18,
+          alignItems: "start",
+          marginTop: 16,
+        }}
+      >
+        <div>
+          {/* who picked up — the one question worth asking, because it changes
+              both the next line and what gets saved */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span className="faint">On the phone:</span>
+            {(["nobody", "gatekeeper", "owner"] as SpeakingWith[]).map((w) => (
+              <button
+                key={w}
+                onClick={() => {
+                  setSpeakingWith(w);
+                  setLineIndex(0);
+                }}
+                style={{
+                  padding: "4px 12px",
+                  borderRadius: 3,
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  border: `1px solid ${
+                    speakingWith === w ? "var(--amber)" : "var(--border-strong)"
+                  }`,
+                  background: speakingWith === w ? "var(--amber-soft)" : "transparent",
+                  color: speakingWith === w ? "var(--amber)" : "var(--text-dim)",
+                }}
+              >
+                {SPEAKING_WITH_LABEL[w]}
+              </button>
+            ))}
           </div>
 
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3>Script</h3>
-              <button className="btn-ghost" style={{ padding: "3px 10px" }} onClick={() => setScriptStep((n) => (n + 1) % script.length)}>
+          <p
+            style={{
+              marginTop: 12,
+              fontSize: "0.95rem",
+              lineHeight: 1.5,
+              color: "var(--amber)",
+              fontWeight: 600,
+            }}
+          >
+            {guide.goal}
+          </p>
+          {guide.notes.length > 0 && (
+            <p className="faint" style={{ marginTop: 3 }}>
+              {guide.notes.join(" · ")}
+            </p>
+          )}
+
+          {/* the line to say, one at a time */}
+          <div
+            style={{
+              marginTop: 12,
+              padding: "20px 22px",
+              border: "1px solid var(--amber-dim)",
+              borderRadius: 4,
+              background: "var(--bg-inset)",
+            }}
+          >
+            <div className="faint" style={{ marginBottom: 7 }}>
+              {currentLine.heading} · {Math.min(lineIndex + 1, guide.lines.length)} of{" "}
+              {guide.lines.length}
+            </div>
+            <p style={{ fontSize: "1.3rem", lineHeight: 1.5, maxWidth: "62ch" }}>
+              {currentLine.line}
+            </p>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+              <button
+                className="btn"
+                onClick={() => setLineIndex((n) => (n + 1) % guide.lines.length)}
+              >
                 Next line
               </button>
-            </div>
-            <div style={{ marginTop: 10 }}>
-              <div className="faint" style={{ marginBottom: 4 }}>
-                {script[scriptStep].heading}
-              </div>
-              <p style={{ fontSize: "0.92rem", lineHeight: 1.5 }}>{script[scriptStep].line}</p>
+              <button
+                className={showObjections ? "btn" : "btn-ghost"}
+                onClick={() => setShowObjections(!showObjections)}
+              >
+                Objection help
+                {raised.length > 0 ? ` · ${raised.length}` : ""}
+              </button>
+              <div style={{ flex: 1 }} />
+              <button
+                className="btn-ghost"
+                onClick={() => setShowDetails(!showDetails)}
+                title="Research, previous calls, notes and what earlier callers learned"
+              >
+                {showDetails ? "Hide" : "Lead"} details
+                {!showDetails && detailCount > 0 ? ` · ${detailCount}` : ""}
+              </button>
             </div>
           </div>
 
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3>
-                Objections
-                {raised.length > 0 && (
-                  <span className="faint" style={{ marginLeft: 8, textTransform: "none" }}>
-                    {raised.length} logged
-                  </span>
-                )}
-              </h3>
-              <button className="btn-ghost" style={{ padding: "3px 10px" }} onClick={() => setShowObjections(!showObjections)}>
-                {showObjections ? "Hide" : "Open"}
-              </button>
-            </div>
-            {showObjections && (
-              <div style={{ marginTop: 10, display: "grid", gap: 5 }}>
-                {OBJECTIONS.map((o) => (
-                  <div key={o.key}>
-                    <button
-                      className="btn-ghost"
-                      style={{ width: "100%", justifyContent: "flex-start", padding: "5px 10px", fontSize: "0.72rem" }}
-                      onClick={() => {
-                        const opening = openObjection !== o.key;
-                        setOpenObjection(opening ? o.key : null);
-                        if (opening) {
-                          setRaised((prev) =>
-                            prev.some((r) => r.key === o.key)
-                              ? prev
-                              : [...prev, { key: o.key, label: o.label, rebuttal_shown: true }]
-                          );
-                        }
+          {showObjections && (
+            <div style={{ marginTop: 10, display: "grid", gap: 4 }}>
+              {OBJECTIONS.map((o) => (
+                <div key={o.key}>
+                  <button
+                    className="btn-ghost"
+                    style={{
+                      width: "100%",
+                      justifyContent: "flex-start",
+                      padding: "6px 10px",
+                      fontSize: "0.74rem",
+                    }}
+                    onClick={() => {
+                      const opening = openObjection !== o.key;
+                      setOpenObjection(opening ? o.key : null);
+                      if (opening) {
+                        setRaised((prev) =>
+                          prev.some((r) => r.key === o.key)
+                            ? prev
+                            : [...prev, { key: o.key, label: o.label, rebuttal_shown: true }]
+                        );
+                      }
+                    }}
+                  >
+                    {raised.some((r) => r.key === o.key) ? "• " : ""}
+                    {o.label}
+                  </button>
+                  {openObjection === o.key && (
+                    <div
+                      style={{
+                        padding: "10px 12px",
+                        fontSize: "0.88rem",
+                        lineHeight: 1.5,
+                        background: "var(--bg-inset)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 4,
+                        marginTop: 4,
                       }}
                     >
-                      {raised.some((r) => r.key === o.key) ? "• " : ""}
-                      {o.label}
-                    </button>
-                    {openObjection === o.key && (
-                      <div style={{ padding: "8px 10px", fontSize: "0.8rem", lineHeight: 1.5, background: "var(--bg-inset)", border: "1px solid var(--border)", borderRadius: 4, marginTop: 4 }}>
-                        <div>{o.response}</div>
-                        <div style={{ color: "var(--amber)", marginTop: 4 }}>{o.followUp}</div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <h3>Update lead intelligence</h3>
-              <button className="btn-ghost" style={{ padding: "3px 10px" }} onClick={() => setShowIntel(!showIntel)}>
-                {showIntel ? "Hide" : "Open"}
-              </button>
+                      <div>{o.response}</div>
+                      <div style={{ color: "var(--amber)", marginTop: 5 }}>{o.followUp}</div>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
-            {showIntel && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10 }}>
-                {INTEL_FIELDS.map((f) => (
-                  <input
-                    key={f.name}
-                    placeholder={f.label}
-                    value={intel[f.name] || ""}
-                    onChange={(e) => setIntel({ ...intel, [f.name]: e.target.value })}
-                  />
-                ))}
+          )}
+
+          {/* one private nudge, when there is one worth making */}
+          <div style={{ marginTop: 10 }}>
+            <LiveAssistant
+              ctx={{
+                stage,
+                businessName: lead.business_name,
+                ownerName: lead.owner_name,
+                ownerReachedBefore: !!lead.owner_reached,
+                gatekeeperName: lead.gatekeeper_name,
+                answeringSetup: lead.answering_setup || null,
+                existingProvider: lead.existing_provider || null,
+                objectionKey: openObjection || lastObjection,
+                contactConfirmed: false,
+                meetingTimeAgreed: false,
+              }}
+            />
+          </div>
+        </div>
+
+        {/* ---------------------- lead details, on request ---------------------- */}
+        {showDetails && (
+          <div style={{ display: "grid", gap: 12 }}>
+            <LeadDetails lead={lead} history={history} contacts={contacts} aiTip={data.aiTip} dossier={data.dossier} pendingCallback={data.pendingCallback} />
+          </div>
+        )}
+      </div>
+
+      {/* ========================= 3. what happened ========================== */}
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: "var(--bg)",
+          borderTop: "1px solid var(--border-strong)",
+          padding: "10px 16px",
+          zIndex: 30,
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 1180,
+            margin: "0 auto",
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          {PRIMARY_OUTCOMES.map((value) => {
+            const form = OUTCOME_FORM_MAP[value];
+            if (!form) return null;
+            return (
+              <button
+                key={value}
+                className={value === "appointment_set" ? "btn" : "btn-ghost"}
+                onClick={() => setPendingOutcome(value)}
+                disabled={logging}
+                style={{ padding: "9px 14px" }}
+              >
+                {form.label}
+              </button>
+            );
+          })}
+
+          <div style={{ position: "relative" }}>
+            <button
+              className="btn-ghost"
+              onClick={() => setShowMore(!showMore)}
+              disabled={logging}
+              style={{ padding: "9px 14px" }}
+            >
+              More {showMore ? "▾" : "▴"}
+            </button>
+            {showMore && (
+              <div
+                className="card"
+                style={{
+                  position: "absolute",
+                  bottom: "calc(100% + 8px)",
+                  right: 0,
+                  width: 260,
+                  display: "grid",
+                  gap: 6,
+                  zIndex: 40,
+                }}
+              >
+                {MORE_OUTCOMES.map((value) => {
+                  const form = OUTCOME_FORM_MAP[value];
+                  if (!form) return null;
+                  return (
+                    <button
+                      key={value}
+                      className={value === "do_not_call" ? "btn-danger" : "btn-ghost"}
+                      onClick={() => {
+                        setShowMore(false);
+                        setPendingOutcome(value);
+                      }}
+                      style={{ justifyContent: "flex-start", padding: "8px 12px" }}
+                    >
+                      {form.label}
+                      {value === suggested && (
+                        <span className="faint" style={{ marginLeft: 6 }}>
+                          likely
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             )}
-            <p className="faint" style={{ marginTop: 8 }}>
-              Saved with the outcome — visible to every future caller.
-            </p>
           </div>
-
         </div>
       </div>
 
@@ -857,29 +850,174 @@ export default function DialPage() {
             gatekeeper_name: lead.gatekeeper_name || "",
             phone: lead.phone || "",
           }}
+          intel={intel}
+          onIntelChange={setIntel}
           saving={logging}
           onCancel={() => setPendingOutcome(null)}
-          onSave={(values, confirmed) => logOutcome(pendingOutcome, values, confirmed)}
+          onSave={(values, confirmed, intelValues) =>
+            logOutcome(pendingOutcome, values, confirmed, intelValues)
+          }
         />
       )}
     </div>
   );
 }
 
-const INTEL_FIELDS = [
-  { name: "owner_name", label: "Owner name" },
-  { name: "owner_title", label: "Owner title" },
-  { name: "gatekeeper_name", label: "Gatekeeper name" },
-  { name: "best_call_day", label: "Best calling day" },
-  { name: "best_call_time", label: "Best calling time" },
-  { name: "direct_number", label: "Direct number" },
-  { name: "extension", label: "Extension" },
-  { name: "email", label: "Email" },
-  { name: "answering_setup", label: "Current answering setup" },
-  { name: "existing_provider", label: "Existing provider" },
-  { name: "office_staff_count", label: "Office staff count" },
-  { name: "after_hours_process", label: "After-hours process" },
-  { name: "other_decision_maker", label: "Other decision-maker" },
-  { name: "ownership_type", label: "Independent or franchise" },
-  { name: "company_notes", label: "Other company info" },
-];
+/* -------------------------------------------------------------------------- */
+/* lead details                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything true but not urgent. One panel, plain rows — the old screen gave
+ * each of these its own bordered card, which is how six useful facts came to
+ * fill a screen and a half.
+ */
+function LeadDetails({
+  lead,
+  history,
+  contacts,
+  aiTip,
+  dossier,
+  pendingCallback,
+}: {
+  lead: Lead;
+  history: HistoryRow[];
+  contacts: Contact[];
+  aiTip?: string | null;
+  dossier?: Dossier | null;
+  pendingCallback?: { scheduled_for: string; reason: string | null } | null;
+}) {
+  const known: string[] = [];
+  if (lead.owner_name) {
+    known.push(`Owner: ${lead.owner_name}${lead.owner_title ? ` (${lead.owner_title})` : ""}`);
+  }
+  if (lead.best_call_day || lead.best_call_time) {
+    known.push(`Best time: ${[lead.best_call_day, lead.best_call_time].filter(Boolean).join(" ")}`);
+  }
+  if (lead.answering_setup) known.push(`Answers calls via: ${lead.answering_setup}`);
+  if (lead.existing_provider) known.push(`Existing provider: ${lead.existing_provider}`);
+  if (lead.last_objection) known.push(`Last objection: ${lead.last_objection}`);
+  if (lead.notes) known.push(lead.notes);
+
+  return (
+    <div className="card" style={{ maxHeight: "calc(100vh - 250px)", overflowY: "auto" }}>
+      {dossier?.hasSubstance && (
+        <Section title="Where you stand">
+          <p style={{ fontSize: "0.9rem", lineHeight: 1.5 }}>{dossier.status}</p>
+          {(
+            [
+              ["They told us", dossier.theirSituation],
+              ["Their problem", dossier.statedProblems],
+              ["We pitched", dossier.pitched],
+              ["Pushback", dossier.resistance],
+              ["We promised", dossier.promises],
+              ["Booked", dossier.commitments],
+            ] as [string, string[]][]
+          )
+            .filter(([, v]) => v.length > 0)
+            .map(([title, lines]) => (
+              <div key={title} style={{ marginTop: 6 }}>
+                <div className="faint" style={{ fontWeight: 700 }}>
+                  {title}
+                </div>
+                {lines.map((l, i) => (
+                  <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.5 }}>
+                    · {l}
+                  </div>
+                ))}
+              </div>
+            ))}
+          {dossier.gaps.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: "0.78rem", color: "var(--amber)" }}>
+                Find out on this call
+              </div>
+              {dossier.gaps.map((g, i) => (
+                <div key={i} className="faint" style={{ lineHeight: 1.5 }}>
+                  · {g}
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {known.length > 0 && (
+        <Section title="What we know">
+          {known.map((k, i) => (
+            <div key={i} style={{ fontSize: "0.82rem", lineHeight: 1.55 }}>
+              · {k}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {aiTip && (
+        <Section title="AI note">
+          <p style={{ whiteSpace: "pre-wrap", fontSize: "0.85rem", lineHeight: 1.55 }}>{aiTip}</p>
+        </Section>
+      )}
+
+      {(history.length > 0 || pendingCallback) && (
+        <Section title={`Previous calls (${history.length})`}>
+          {pendingCallback && (
+            <div style={{ color: "var(--amber)", fontSize: "0.8rem", marginBottom: 6 }}>
+              Callback booked for {new Date(pendingCallback.scheduled_for).toLocaleString()}
+              {pendingCallback.reason ? ` — ${pendingCallback.reason}` : ""}
+            </div>
+          )}
+          {history.map((h, i) => (
+            <div key={i} style={{ fontSize: "0.79rem", marginBottom: 7, lineHeight: 1.5 }}>
+              <span className="muted">
+                {new Date(h.created_at).toLocaleString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </span>
+              {" — "}
+              <strong>{h.outcome.replace(/_/g, " ")}</strong>
+              {h.callers?.name ? ` (${h.callers.name})` : ""}
+              {h.next_step && <div style={{ color: "var(--amber)" }}>Next: {h.next_step}</div>}
+              {h.notes && <div className="faint">{h.notes}</div>}
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {contacts.length > 0 && (
+        <Section title="Contacts on file">
+          {contacts.map((c) => (
+            <div key={c.id} className="faint" style={{ marginBottom: 3 }}>
+              {c.full_name || "(unknown)"}
+              {c.title ? ` — ${c.title}` : ""}
+              {c.direct_phone ? ` · ${c.direct_phone}` : ""}
+            </div>
+          ))}
+        </Section>
+      )}
+    </div>
+  );
+}
+
+/** One fact in the header strip, with the separator that keeps it its own fact. */
+function Meta({ children, color }: { children: React.ReactNode; color?: string }) {
+  return (
+    <>
+      <span style={{ color }}>{children}</span>
+      <span aria-hidden style={{ opacity: 0.4 }}>
+        ·
+      </span>
+    </>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <h3 style={{ marginBottom: 5, color: "var(--text-dim)" }}>{title}</h3>
+      {children}
+    </div>
+  );
+}

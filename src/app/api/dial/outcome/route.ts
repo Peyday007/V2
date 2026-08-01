@@ -78,7 +78,7 @@ export async function POST(req: NextRequest) {
   if (!lead) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
 
   const reachedDm = DM_REACHED_OUTCOMES.includes(outcome);
-  const spokeWithRole =
+  const inferredRole =
     outcome === "gatekeeper"
       ? "gatekeeper"
       : reachedDm
@@ -88,6 +88,21 @@ export async function POST(req: NextRequest) {
             ? "owner"
             : "gatekeeper"
           : "unknown";
+
+  /**
+   * The dialer asks the caller who picked up, because it changes what the
+   * screen says next. That answer is used ONLY where the outcome itself cannot
+   * settle the question — a voicemail or a callback says nothing about who was
+   * on the phone, while "gatekeeper" or "appointment set" already does.
+   *
+   * The outcome form always wins. It is filled in deliberately, after the
+   * call; the chip is pressed mid-conversation and may never have been touched.
+   */
+  const claimedRole =
+    body.spoke_with_role === "owner" || body.spoke_with_role === "gatekeeper"
+      ? body.spoke_with_role
+      : null;
+  const spokeWithRole = inferredRole === "unknown" && claimedRole ? claimedRole : inferredRole;
 
   /* ----- facts that can only be captured now, never reconstructed later ----- */
   const endedAt = new Date();

@@ -5,7 +5,7 @@ import { anthropic, APPROACH_MODEL } from "@/lib/anthropic";
 import { recommendApproach } from "@/lib/approach";
 import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
 import { buildDossier, type CallRow } from "@/lib/relationship";
-import { orderCandidates, windowCoverage, WINDOW_LABEL } from "@/lib/dialOrder";
+import { orderCandidates } from "@/lib/dialOrder";
 import { buildPrompt } from "@/lib/promptStore";
 import { logEvent } from "@/lib/events";
 
@@ -188,8 +188,6 @@ export async function GET() {
     ? callable.find((c) => c.lead_id === best.candidate.leadId) ?? null
     : null;
 
-  const coverage = windowCoverage(ordered.map((o) => o.candidate));
-
   if (skipped.length > 0) {
     // Close them out of the packet and flag them, so this work is done once.
     await db.from("packet_leads").update({ status: "done" }).in("lead_id", skipped);
@@ -338,18 +336,11 @@ export async function GET() {
     approach,
     aiTip,
     dossier,
-    // Why this lead, now — and what the rest of the packet looks like at this
-    // hour, so a caller understands the order instead of fighting it.
-    whyThisOne: best
-      ? {
-          reasons: best.reasons,
-          windowStatus: best.windowStatus,
-          windowLabel: WINDOW_LABEL[best.windowStatus],
-          localHour: best.localHour,
-          timezone: best.timezone,
-        }
-      : null,
-    coverage,
+    // Deliberately NOT returned: why this lead was chosen, its calling window,
+    // and how much of the packet is in business hours. The ordering still runs
+    // (see orderCandidates above) — the caller simply cannot act on it, and it
+    // was crowding out the conversation they can act on. It stays visible to
+    // admins in the packet and analytics screens.
     packetId: next.packet_id,
     // The dialer shows this so a caller knows they are honouring a promise,
     // not cold-calling someone who already said "call me Thursday".
