@@ -13,20 +13,37 @@ import {
 type ObservationRow = {
   dimension: string;
   variant: string;
-  outcome: string | null;
+  /** The column is outcome_type, not outcome. */
+  outcome_type: string | null;
+  succeeded: boolean | null;
+  industry: string | null;
+  lead_source: string | null;
+  local_hour: number | null;
   call_id: string;
   caller_id: string | null;
 };
 
+/**
+ * The industry, source and hour are read too, not decoration: proposeChange
+ * reports what a comparison was controlled for, and it can only do that from
+ * fields it was given.
+ */
 function toObservation(r: ObservationRow, variant = r.variant): Observation {
   return {
     callId: r.call_id,
     callerId: r.caller_id,
     dimension: r.dimension as LearningDimension,
     variant,
-    outcomeType: (r.outcome ?? null) as OutcomeType | null,
+    industry: r.industry,
+    leadSource: r.lead_source,
+    localHour: r.local_hour,
+    outcomeType: (r.outcome_type ?? null) as OutcomeType | null,
+    succeeded: r.succeeded,
   };
 }
+
+const OBSERVATION_COLUMNS =
+  "dimension, variant, outcome_type, succeeded, industry, lead_source, local_hour, call_id, caller_id";
 
 /** Successes and trials for one arm on one metric. */
 function armFor(obs: Observation[], arm: string, metric: OutcomeType): ArmResult {
@@ -73,10 +90,7 @@ export async function GET() {
         .select("*")
         .order("created_at", { ascending: false })
         .limit(20),
-      db
-        .from("learning_observations")
-        .select("dimension, variant, outcome, call_id, caller_id")
-        .limit(20000),
+      db.from("learning_observations").select(OBSERVATION_COLUMNS).limit(20000),
     ]);
 
     const err = proposals.error || experiments.error || versions.error || observations.error;
@@ -146,7 +160,7 @@ export async function PUT() {
 
     const { data: rows, error } = await db
       .from("learning_observations")
-      .select("dimension, variant, outcome, call_id, caller_id")
+      .select(OBSERVATION_COLUMNS)
       .limit(20000);
     if (error) {
       return NextResponse.json({ error: migrationHint(error.message) || error.message }, { status: 500 });
