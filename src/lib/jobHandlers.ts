@@ -16,6 +16,7 @@ import { findIndustry, roleBasedAsk } from "./industries";
 import { SOURCES, STOP_CONFIDENCE } from "./sources";
 import { logEvent, recordEvent } from "./events";
 import { decideSearching } from "./leadYield";
+import { enrichLeadForOwner } from "./ownerEnrichment";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -1029,14 +1030,31 @@ const enrichLead: Handler = async (job) => {
     return;
   }
 
+  /**
+   * NOT ready_for_calling yet.
+   *
+   * This is the change that fixes the measured problem: 111 live answers
+   * produced 6 owner conversations because any lead with a working main line
+   * entered the queue. A lead now waits here until enrich_owner_contact has
+   * identified a decision-maker and looked for a number that reaches them, and
+   * the GRADE decides whether it becomes callable.
+   */
   await db
     .from("leads")
     .update({
-      machine_status: "ready_for_calling",
+      machine_status: "enriching",
       recommended_ask: recommendedAsk,
       enrichment_confidence: confidence,
+      main_business_phone: lead.normalized_phone,
     })
     .eq("id", leadId);
+
+  await enqueue({
+    type: "enrich_owner_contact",
+    payload: { lead_id: leadId, campaign_id: job.payload.campaign_id ?? null },
+    campaignId: job.payload.campaign_id ? String(job.payload.campaign_id) : null,
+    idempotencyKey: `enrich_owner_contact:${leadId}`,
+  });
 
   await db.from("enrichment_runs").insert({
     lead_id: leadId,
@@ -1216,6 +1234,32 @@ const autoAssignPackets: Handler = async (job) => {
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * Owner identification, direct-number discovery, validation and grading.
+ *
+ * Runs after enrich_lead rather than replacing it: that step still does the
+ * cheap public-source work and the internal-database reuse. This one adds the
+ * paid stage and, crucially, the grade that decides whether the lead may enter
+ * the direct-call queue at all.
+ */
+const enrichOwnerContact: Handler = async (job) => {
+  const leadId = String(job.payload.lead_id);
+  const result = await enrichLeadForOwner(leadId, {
+    adminRequested: job.payload.admin_requested === true,
+  });
+
+  // Assignment only ever sees graded leads, so re-run it after grading.
+  const campaignId = job.payload.campaign_id ? String(job.payload.campaign_id) : null;
+  if (campaignId && result.grade && ["A", "B"].includes(result.grade)) {
+    await enqueue({
+      type: "auto_assign_packets",
+      payload: { campaign_id: campaignId },
+      campaignId,
+      idempotencyKey: `auto_assign:${campaignId}:${Date.now()}`,
+    });
+  }
+};
+
 export const HANDLERS: Record<JobType, Handler> = {
   plan_search_tasks: planSearchTasks,
   execute_places_search: executePlacesSearch,
@@ -1224,5 +1268,6 @@ export const HANDLERS: Record<JobType, Handler> = {
   qualify_lead: qualifyLead,
   queue_enrichment: queueEnrichment,
   enrich_lead: enrichLead,
+  enrich_owner_contact: enrichOwnerContact,
   auto_assign_packets: autoAssignPackets,
 };

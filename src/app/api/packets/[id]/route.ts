@@ -8,6 +8,7 @@ import {
   explainNoneAvailable,
   AVAILABILITY_COLUMNS,
 } from "@/lib/leadEligibility";
+import { ASSIGNMENT_COLUMNS, orderLeadsForAssignment } from "@/lib/enrichmentGrade";
 
 export const dynamic = "force-dynamic";
 
@@ -136,8 +137,13 @@ export async function POST(
     }
 
     const { data: candidates, error: leadErr } = await applyAvailableFilter(
-      db.from("leads").select("id, phone, normalized_phone, do_not_call")
+      db
+        .from("leads")
+        .select(`id, phone, normalized_phone, do_not_call, ${ASSIGNMENT_COLUMNS}`)
     )
+      // Same as packet creation: grade the over-fetch, or the top-up hands out
+      // weaker records than the packet it is topping up.
+      .order("enrichment_grade", { ascending: true })
       .order("created_at")
       .limit(size * 3 + 50);
     if (leadErr) return NextResponse.json({ error: leadErr.message }, { status: 500 });
@@ -150,7 +156,7 @@ export async function POST(
         .update({ do_not_call: true })
         .in("id", blocked.map((b) => b.lead.id));
     }
-    const picked = eligible.slice(0, size);
+    const picked = orderLeadsForAssignment(eligible).slice(0, size);
     if (picked.length === 0) {
       const { data: everything } = await db
         .from("leads")

@@ -60,6 +60,11 @@ describe("everything an admin sees is gated", () => {
       "/admin/history",
       "/admin/import",
       "/admin/appointments",
+      "/admin/enrichment",
+      "/admin/review",
+      "/admin/learning",
+      "/admin/targets",
+      "/admin/recording",
       "/metrics",
     ]) {
       expect(isProtectedPath(p), p).toBe(true);
@@ -81,6 +86,11 @@ describe("everything an admin sees is gated", () => {
       "/api/import",
       "/api/prioritize",
       "/api/metrics",
+      // The enrichment console shows spend, provider configuration and the
+      // budget switch. Callers must never reach it.
+      "/api/enrichment",
+      "/api/review",
+      "/api/learning",
     ]) {
       expect(isProtectedPath(p), p).toBe(true);
     }

@@ -18,6 +18,9 @@ export type LeadRow = {
   do_not_call?: boolean | null;
   phone_invalid?: boolean | null;
   archived_at?: string | null;
+  /** A | B | C | D — see src/lib/enrichmentGrade.ts. */
+  enrichment_grade?: string | null;
+  direct_phone?: string | null;
 };
 
 /** The engine has finished with it. */
@@ -45,6 +48,20 @@ export function unavailableReason(l: LeadRow): string | null {
   if (machine === "assigned_to_packet") return "Already with a caller";
   if (machine === "enrichment_failed") return "Discarded — not worth calling";
   if (machine !== READY_MACHINE_STATUS) return "Still being researched";
+
+  /**
+   * The grade gate.
+   *
+   * Measured before this existed: 111 live answers, 6 owner conversations.
+   * Nearly every answer was a receptionist on a main line for a business
+   * nobody had a name at. C and D leads are still worth working — through a
+   * main-line campaign, where the expectations are different — but mixing them
+   * into the direct queue is what produced that ratio.
+   */
+  const grade = l.enrichment_grade ?? null;
+  if (grade === "C") return "Owner known, but no direct number — main-line campaign only";
+  if (grade === "D") return "No decision-maker identified";
+  if (grade === null) return "Not yet graded";
 
   // Machine-ready, but something else is holding it.
   if ((l.status ?? "") !== UNASSIGNED_STATUS) {
@@ -79,7 +96,7 @@ export function summarizeAvailability(rows: LeadRow[]): Availability {
 
 /** The columns any availability check needs. Keeps the selects honest. */
 export const AVAILABILITY_COLUMNS =
-  "id, status, machine_status, do_not_call, phone_invalid, archived_at";
+  "id, status, machine_status, do_not_call, phone_invalid, archived_at, enrichment_grade, direct_phone";
 
 /** The filters, as data, so they can be asserted in a test. */
 export const AVAILABLE_EQ_FILTERS: [string, unknown][] = [
@@ -90,10 +107,16 @@ export const AVAILABLE_EQ_FILTERS: [string, unknown][] = [
 ];
 export const AVAILABLE_IS_FILTERS: [string, unknown][] = [["archived_at", null]];
 
+/** Grades that may enter the direct-call queue. Mirrors CALL_READY_GRADES. */
+export const AVAILABLE_IN_FILTERS: [string, unknown[]][] = [
+  ["enrichment_grade", ["A", "B"]],
+];
+
 /** The minimum a query builder must support. */
 type Filterable = {
   eq(column: string, value: unknown): Filterable;
   is(column: string, value: unknown): Filterable;
+  in(column: string, values: unknown[]): Filterable;
 };
 
 /**
@@ -106,6 +129,7 @@ export function applyAvailableFilter<T>(q: T): T {
   let f = q as unknown as Filterable;
   for (const [col, val] of AVAILABLE_EQ_FILTERS) f = f.eq(col, val);
   for (const [col, val] of AVAILABLE_IS_FILTERS) f = f.is(col, val);
+  for (const [col, vals] of AVAILABLE_IN_FILTERS) f = f.in(col, vals);
   return f as unknown as T;
 }
 

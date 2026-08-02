@@ -23,6 +23,7 @@ export const EVENT_TYPES = [
   "lead.enrichment_started",
   "lead.enriched",
   "lead.enrichment_failed",
+  "lead.contact_feedback",
   "lead.decision_maker_found",
   "lead.contact_info_changed",
   "lead.intelligence_updated",

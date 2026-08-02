@@ -23,6 +23,8 @@ import CallRecorder from "@/components/CallRecorder";
 import { OUTCOME_FORM_MAP } from "@/lib/outcomeForms";
 import { OBJECTIONS } from "@/lib/callGuidance";
 import { timezoneForState, looksOpen } from "@/lib/callWindows";
+import { PHONE_CLASS_LABEL, formatUs, type PhoneClass } from "@/lib/phoneIntel";
+import { CONTACT_OUTCOMES, CONTACT_OUTCOME_LABEL, type ContactOutcome } from "@/lib/contactFeedback";
 import {
   PRIMARY_OUTCOMES,
   MORE_OUTCOMES,
@@ -64,6 +66,20 @@ type Lead = {
   owner_reached?: boolean;
   attempt_count?: number;
   timezone?: string | null;
+
+  /* --- owner enrichment (migration 0023) --- */
+  decision_maker_name?: string | null;
+  decision_maker_title?: string | null;
+  decision_maker_role?: string | null;
+  decision_maker_confidence?: number | null;
+  decision_maker_source_url?: string | null;
+  decision_maker_evidence?: string | null;
+  direct_phone?: string | null;
+  direct_phone_class?: string | null;
+  direct_phone_confidence?: number | null;
+  direct_phone_provider?: string | null;
+  main_business_phone?: string | null;
+  enrichment_grade?: string | null;
 };
 
 type Contact = {
@@ -141,6 +157,11 @@ export default function DialPage() {
   // Set when a room recording finishes. The calls row does not exist until the
   // outcome is saved, so the recording is linked to the call at that moment.
   const [recordingId, setRecordingId] = useState<string | null>(null);
+  // What the caller found out about the enriched contact details. Separate
+  // from the call outcome: "wrong number" is a fact about the data, not about
+  // how the conversation went.
+  const [showContactFeedback, setShowContactFeedback] = useState(false);
+  const [contactNote, setContactNote] = useState("");
 
   // Measured, not asked for. The caller never types a duration; the clock
   // starts when the lead appears and stops when the outcome is saved.
@@ -173,6 +194,8 @@ export default function DialPage() {
     setShowObjections(false);
     setShowMore(false);
     setShowDetails(false);
+    setShowContactFeedback(false);
+    setContactNote("");
     setRaised([]);
     setSkipping(false);
     setSkipReason("");
@@ -270,6 +293,28 @@ export default function DialPage() {
     }).catch(() => {});
     setLogging(false);
     fetchNext();
+  }
+
+  /**
+   * The caller dialled the enriched number and found out something about it.
+   * Sent separately from the outcome because it corrects the DATA — confidence
+   * drops, a bad number stops being handed out, and the lead is re-graded,
+   * which can take it out of the direct queue on the spot.
+   */
+  async function reportContact(outcome: ContactOutcome) {
+    if (!data?.lead) return;
+    setShowContactFeedback(false);
+    await fetch("/api/dial/contact-feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lead_id: data.lead.id,
+        outcome,
+        phone_dialed: data.lead.direct_phone ?? data.lead.phone,
+        note: contactNote,
+      }),
+    }).catch(() => {});
+    setContactNote("");
   }
 
   async function logout() {
@@ -471,6 +516,19 @@ export default function DialPage() {
           >
             {lead.business_name}
           </h1>
+          {/* The person this number is supposed to reach. Named before the
+              business detail, because it is what the caller says first. */}
+          {lead.decision_maker_name && (
+            <div style={{ marginBottom: 4, color: "var(--amber)", fontWeight: 600 }}>
+              {lead.decision_maker_name}
+              {lead.decision_maker_title ? ` — ${lead.decision_maker_title}` : ""}
+              {lead.decision_maker_confidence != null && (
+                <span className="faint" style={{ marginLeft: 8, fontWeight: 400 }}>
+                  {Math.round(lead.decision_maker_confidence * 100)}% confident
+                </span>
+              )}
+            </div>
+          )}
           <div
             className="faint"
             style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}
@@ -482,6 +540,7 @@ export default function DialPage() {
               </Meta>
             )}
             <Meta>{attemptSummary(lead.attempt_count ?? 0, !!lead.owner_reached)}</Meta>
+            {lead.enrichment_grade && <Meta>grade {lead.enrichment_grade}</Meta>}
             {lead.industry && <Meta>{lead.industry}</Meta>}
             {lead.rating != null && (
               <Meta>
@@ -507,27 +566,53 @@ export default function DialPage() {
           </div>
         </div>
 
-        <div style={{ textAlign: "right" }}>
-          {lead.phone && (
-            <a
-              href={`tel:${lead.phone}`}
-              style={{ fontSize: "1.8rem", fontWeight: 700, whiteSpace: "nowrap", lineHeight: 1.1 }}
-            >
-              {lead.phone}
-            </a>
+        <div style={{ textAlign: "right", minWidth: 260 }}>
+          {/* The direct number leads. Reaching a switchboard is the failure this
+              whole pipeline exists to prevent, so the main line is a fallback
+              and is labelled as one. */}
+          {lead.direct_phone ? (
+            <>
+              <a
+                href={`tel:${lead.direct_phone}`}
+                style={{ fontSize: "1.8rem", fontWeight: 700, whiteSpace: "nowrap", lineHeight: 1.1 }}
+              >
+                {formatUs(lead.direct_phone) ?? lead.direct_phone}
+              </a>
+              <div className="faint" style={{ marginTop: 2 }}>
+                {PHONE_CLASS_LABEL[(lead.direct_phone_class as PhoneClass) ?? "unknown"]}
+                {lead.direct_phone_confidence != null &&
+                  ` · ${Math.round(lead.direct_phone_confidence * 100)}% confident`}
+              </div>
+            </>
+          ) : (
+            lead.phone && (
+              <a
+                href={`tel:${lead.phone}`}
+                style={{ fontSize: "1.8rem", fontWeight: 700, whiteSpace: "nowrap", lineHeight: 1.1 }}
+              >
+                {lead.phone}
+              </a>
+            )
           )}
-          <div>
+
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4, flexWrap: "wrap" }}>
             <button
               className="tag-dim"
-              style={{ border: "none", cursor: "pointer", marginTop: 4 }}
+              style={{ border: "none", cursor: "pointer" }}
               onClick={() => {
-                if (lead.phone) navigator.clipboard?.writeText(lead.phone);
+                const n = lead.direct_phone || lead.phone;
+                if (n) navigator.clipboard?.writeText(n);
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1500);
               }}
             >
               {copied ? "copied ✓" : "copy number"}
             </button>
+            {lead.direct_phone && lead.phone && (
+              <a className="tag-dim" href={`tel:${lead.phone}`} title="Main business line — fallback only">
+                main line {lead.phone}
+              </a>
+            )}
           </div>
         </div>
       </div>
@@ -622,6 +707,15 @@ export default function DialPage() {
                 {raised.length > 0 ? ` · ${raised.length}` : ""}
               </button>
               <div style={{ flex: 1 }} />
+              {lead.direct_phone && (
+                <button
+                  className={showContactFeedback ? "btn" : "btn-ghost"}
+                  onClick={() => setShowContactFeedback(!showContactFeedback)}
+                  title="Tell the system whether these contact details were right"
+                >
+                  Number wrong?
+                </button>
+              )}
               <button
                 className="btn-ghost"
                 onClick={() => setShowDetails(!showDetails)}
@@ -632,6 +726,47 @@ export default function DialPage() {
               </button>
             </div>
           </div>
+
+          {showContactFeedback && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "12px 14px",
+                border: "1px solid var(--border-strong)",
+                borderRadius: 4,
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: "0.82rem" }}>
+                What happened when you dialled it?
+              </div>
+              <p className="faint" style={{ marginTop: 3, marginBottom: 8, lineHeight: 1.5 }}>
+                This corrects the record. A wrong number stops being handed to
+                anyone else and the lead goes back for re-enrichment.
+              </p>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {CONTACT_OUTCOMES.map((o) => (
+                  <button
+                    key={o}
+                    className={
+                      o === "wrong_number" || o === "disconnected" || o === "owner_no_longer_there"
+                        ? "btn-danger"
+                        : "btn-ghost"
+                    }
+                    style={{ padding: "6px 10px", fontSize: "0.72rem" }}
+                    onClick={() => reportContact(o)}
+                  >
+                    {CONTACT_OUTCOME_LABEL[o]}
+                  </button>
+                ))}
+              </div>
+              <input
+                placeholder="Anything worth adding (optional)"
+                value={contactNote}
+                onChange={(e) => setContactNote(e.target.value)}
+                style={{ width: "100%", marginTop: 8 }}
+              />
+            </div>
+          )}
 
           {showObjections && (
             <div style={{ marginTop: 10, display: "grid", gap: 4 }}>

@@ -7,6 +7,7 @@ import {
   applyAvailableFilter,
   AVAILABLE_EQ_FILTERS,
   AVAILABLE_IS_FILTERS,
+  AVAILABLE_IN_FILTERS,
   type LeadRow,
 } from "../src/lib/leadEligibility";
 import { summarizeCounts } from "../src/lib/pipelineState";
@@ -17,6 +18,9 @@ const AVAILABLE: LeadRow = {
   do_not_call: false,
   phone_invalid: false,
   archived_at: null,
+  // A call-ready grade is now part of being available at all.
+  enrichment_grade: "A",
+  direct_phone: "+13135550142",
 };
 
 /**
@@ -140,6 +144,10 @@ describe("the SQL filter matches the predicate", () => {
         applied.push(`is:${col}`);
         return fake;
       },
+      in(col: string) {
+        applied.push(`in:${col}`);
+        return fake;
+      },
     };
     applyAvailableFilter(fake);
     expect(applied).toEqual([
@@ -148,6 +156,7 @@ describe("the SQL filter matches the predicate", () => {
       "eq:do_not_call",
       "eq:phone_invalid",
       "is:archived_at",
+      "in:enrichment_grade",
     ]);
   });
 
@@ -155,14 +164,22 @@ describe("the SQL filter matches the predicate", () => {
     const columns = [
       ...AVAILABLE_EQ_FILTERS.map(([c]) => c),
       ...AVAILABLE_IS_FILTERS.map(([c]) => c),
+      ...AVAILABLE_IN_FILTERS.map(([c]) => c),
     ].sort();
     expect(columns).toEqual(
-      ["archived_at", "do_not_call", "machine_status", "phone_invalid", "status"].sort()
+      [
+        "archived_at",
+        "do_not_call",
+        "enrichment_grade",
+        "machine_status",
+        "phone_invalid",
+        "status",
+      ].sort()
     );
   });
 
   it("returns the builder so the query can carry on being chained", () => {
-    const fake = { eq: () => fake, is: () => fake, marker: 42 };
+    const fake = { eq: () => fake, is: () => fake, in: () => fake, marker: 42 };
     expect(applyAvailableFilter(fake).marker).toBe(42);
   });
 });

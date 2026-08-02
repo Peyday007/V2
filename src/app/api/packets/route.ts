@@ -10,6 +10,7 @@ import {
 } from "@/lib/leadEligibility";
 import { buildCallerProfile } from "@/lib/callerProfile";
 import { windowCoverage } from "@/lib/dialOrder";
+import { ASSIGNMENT_COLUMNS, orderLeadsForAssignment } from "@/lib/enrichmentGrade";
 import type { CallFact } from "@/lib/analytics";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -133,7 +134,9 @@ export async function POST(req: NextRequest) {
   // leads carry campaign_id. Support both, and allow pulling from every ready
   // lead when no campaign is specified.
   let query = applyAvailableFilter(
-    db.from("leads").select("id, phone, normalized_phone, do_not_call, industry")
+    db
+      .from("leads")
+      .select(`id, phone, normalized_phone, do_not_call, industry, ${ASSIGNMENT_COLUMNS}`)
   );
 
   if (sourcing_campaign_id) {
@@ -144,7 +147,13 @@ export async function POST(req: NextRequest) {
 
   // Over-fetch, because suppressed leads are removed after the query. A DNC
   // is matched on the phone number, which no single column filter can express.
+  //
+  // Grade leads the over-fetch, not just the final sort: fetching the oldest
+  // 125 rows and then sorting them would hand out C-quality records while
+  // A-grade ones sat unfetched. 'A' sorts before 'B' lexically, which is why
+  // the grades are single letters.
   const { data: candidates, error: leadsErr } = await query
+    .order("enrichment_grade", { ascending: true })
     .order("created_at")
     .limit(size * 3 + 50);
   if (leadsErr) return NextResponse.json({ error: leadsErr.message }, { status: 500 });
@@ -169,7 +178,15 @@ export async function POST(req: NextRequest) {
   }
 
   const index = buildSuppressionIndex(suppressions || []);
-  const { eligible, blocked } = partitionEligible(candidates || [], index);
+  const { eligible: passedSuppression, blocked } = partitionEligible(candidates || [], index);
+
+  /* ------------------------- best evidence goes first -------------------------
+   * Grade, then how good the number is, then how sure we are of the person,
+   * then how recently it was validated. A packet is worked top-down and a
+   * caller's first hour is their best one, so the strongest records belong at
+   * the front rather than wherever the import happened to put them.
+   */
+  const eligible = orderLeadsForAssignment(passedSuppression);
 
   /* --------------------------- play to their strengths ---------------------------
    * If this caller is MEASURABLY better in certain industries, put those leads

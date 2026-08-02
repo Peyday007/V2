@@ -68,6 +68,7 @@ has not been done yet.
 9k. Repeat with `supabase/migrations/0020_performance_targets.sql` (new query, paste, Run).
 9l. Repeat with `supabase/migrations/0021_browser_recordings.sql` (new query, paste, Run).
 9m. Repeat with `supabase/migrations/0022_ai_authority.sql` (new query, paste, Run).
+9n. Repeat with `supabase/migrations/0023_owner_enrichment.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -572,6 +573,140 @@ referring back to it, and the callback closes itself once the call is logged.
 
 A callback booked by someone who has since been deactivated can be picked up by
 anyone, so a promise is never silently dropped.
+
+## Finding the owner
+
+A batch measured before this existed: **111 calls reached a live person, and
+six of them reached an owner.** Nearly every other answer was a receptionist,
+on a switchboard, at a business nobody had a name for. The callers were fine.
+The leads were a business name and a main number, which is a list of front
+desks.
+
+So a Google business record is now the *start* of a lead, not the finished
+article. Every lead goes through:
+
+    Google business record
+      -> owner identification      (who can actually say yes)
+      -> direct-number discovery   (a number that reaches them)
+      -> number validation
+      -> enrichment grading        (A / B / C / D)
+      -> caller assignment         (A and B only)
+
+Google collection is untouched. Nothing was replaced; a stage was added after
+it.
+
+### The grade
+
+| Grade | What it means | Goes to callers |
+|---|---|---|
+| **A** | Verified decision-maker, verified mobile or direct line | yes |
+| **B** | Confidently identified decision-maker, probable direct number | yes |
+| **C** | Decision-maker identified, but only the main business number | no — main-line campaign |
+| **D** | No confidently identified decision-maker | no |
+
+C and D leads are **not** thrown away and not hidden. They are worked through a
+main-line campaign where the expectations are different. Mixing them into the
+direct queue is precisely what produced the six-out-of-111 figure, so the
+availability rule in `src/lib/leadEligibility.ts` now requires an A or a B.
+
+### What it refuses to do
+
+- **It never hands back the main business number as the owner's mobile.** That
+  is the most expensive kind of wrong: it looks like progress and changes
+  nothing. It is checked in the adapter, checked again in the waterfall, and
+  checked a third time when the number is classified.
+- **It never asserts a person on one signal.** A name needs at least two
+  independent ties to *this* business — the company's own domain, the business
+  name in the evidence, the city, a decision-making title. One is a
+  coincidence. Where the evidence is thin or two names are claimed, the lead is
+  graded D and stays out of the queue, which is better than a caller asking for
+  somebody who does not work there.
+- **It never claims a number is verified because it was found.** "Verified"
+  means a provider asserted the number belongs to that person, at high
+  confidence. Anything else is "probable", and the grade says so.
+- **It never guesses mobile versus landline from the digits.** Number
+  portability made that undecidable in North America. Toll-free is decidable
+  from the area code and is rejected outright.
+- **It never dials anything on its own.** A discovered number goes through the
+  same do-not-call, suppression and eligibility checks as every other number
+  before it can reach a caller.
+
+### Providers
+
+Direct numbers come from a contact-data provider through the adapter interface
+in `src/lib/contactProviders/`. Two adapters ship — People Data Labs and
+Apollo — and **neither has been run against a live account.** Both were written
+from published request and response shapes; there were no credentials here to
+test with. Check the response mapping against current vendor docs and start
+with a small budget cap before trusting a bill.
+
+With no provider configured, owner identification from public sources still
+runs; leads simply grade C at best, and the Enrichment page says so in words.
+
+Environment variables, all optional:
+
+| Variable | What it does |
+|---|---|
+| `PDL_API_KEY` | Enables the People Data Labs adapter |
+| `PDL_COST_CENTS` | What one matched record costs you (default 20) |
+| `APOLLO_API_KEY` | Enables the Apollo adapter |
+| `APOLLO_COST_CENTS` | What one lookup costs you |
+| `CONTACT_PROVIDERS` | Comma-separated allow-list, e.g. `people_data_labs`. Omit to use every configured provider |
+
+Vercel bakes environment variables in at build time, so **redeploy** after
+adding them.
+
+### Money
+
+Enrichment ships **off**. `enrichment_settings.enabled` defaults to false and
+nothing in the pipeline can switch it on — that is an administrator's decision
+on **Admin -> Enrichment**, not the outcome of a run.
+
+The budget is checked **before** each provider call, never after; stopping
+after the spend is not stopping. A provider whose cost would take a lead past
+the per-lead cap is not tried at all. There are four caps — per lead, per
+provider-attempt count, per run, per month — and the waterfall stops at the
+first sufficiently confident number rather than asking everyone.
+
+Re-enrichment needs a named reason: never enriched, data expired, the business
+record changed, an admin asked, a new provider appeared, or **a caller reported
+the contact was wrong**. Paying twice for an unchanged record is the easiest
+money in this system to waste.
+
+### What the caller sees, and says back
+
+The dialer leads with the direct number and who it belongs to, with the main
+line demoted to a labelled fallback. Under it is a **Number wrong?** button
+with nine outcomes — reached the right owner, wrong person, wrong number,
+disconnected, it was the main line, gatekeeper, owner has left, owner declined,
+appointment booked.
+
+That button is the most valuable data in the whole feature, because a caller
+who dialled the number is better evidence than any provider's confidence score.
+It corrects the lead's confidence, stops a bad number being handed out again,
+re-grades the lead — which can take it straight out of the queue — queues it
+for another look, and counts for or against the provider that supplied it.
+
+The correction is deliberately asymmetric: a confirmation nudges confidence up
+a little, a contradiction drops it a lot. "Wrong number" is near-certain;
+"right person" could be a caller ticking the easy box.
+
+A provider's record is **not** used to reorder the waterfall until at least
+twenty calls have settled either way. Re-ranking spend off four calls is how a
+good provider gets dropped for a bad run.
+
+### Admin -> Enrichment
+
+One page, leading with the only number that decides whether any of this was
+worth it: **owner conversations per 100 calls to enriched records**, next to
+the same figure for main-line records. Below that: the funnel (collected,
+owners identified, direct numbers found, verified, call-ready), cost per
+number and per verified number and per call-ready lead, what callers reported,
+results broken down by grade, by number type and by provider, and the budget.
+
+Where a rate has nothing in the denominator it reads "—", not "0". No data and
+a zero rate are different answers, and this page exists to tell them apart. No
+verdict is offered on fewer than fifty calls a side.
 
 ## When is a lead free to hand out?
 

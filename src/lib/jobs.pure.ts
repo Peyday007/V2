@@ -9,6 +9,7 @@ export type JobType =
   | "qualify_lead"
   | "queue_enrichment"
   | "enrich_lead"
+  | "enrich_owner_contact"
   | "auto_assign_packets";
 
 /** Exponential backoff with a ceiling: 30s, 60s, 120s, 240s… max 15 min. */

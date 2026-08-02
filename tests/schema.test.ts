@@ -92,8 +92,22 @@ function selectedColumns(): Reference[] {
       const [, table, between, literal, constName] = m;
       // The window ran past this statement into the next one.
       if (between.includes(".from(")) continue;
-      const cols = literal ?? (constName ? consts.get(constName) : undefined);
+      let cols = literal ?? (constName ? consts.get(constName) : undefined);
       if (cols === undefined || cols.includes("*")) continue;
+      // A select can be a template literal splicing a shared column list in:
+      //   .select(`id, phone, ${ASSIGNMENT_COLUMNS}`)
+      // Leaving the interpolation unresolved would quietly stop checking every
+      // column it contributes, which is the same blindness the constant
+      // resolution above was added to fix.
+      cols = cols.replace(/\$\{\s*([A-Z][A-Z0-9_]*)\s*\}/g, (whole, name: string) => {
+        const resolved = consts.get(name);
+        if (resolved !== undefined) return resolved;
+        for (const file2 of sourceFiles(join(ROOT, "src"))) {
+          const c = constants(readFileSync(file2, "utf8")).get(name);
+          if (c !== undefined) return c;
+        }
+        return whole;
+      });
       // Nested relations — leads(business_name) — are joins, not columns here.
       const flat = cols.replace(/\w+\s*\([^)]*\)/g, "");
       for (const raw of flat.split(",")) {
