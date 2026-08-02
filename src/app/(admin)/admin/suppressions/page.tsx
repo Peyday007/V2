@@ -37,13 +37,13 @@ export default function SuppressionsPage() {
   const load = useCallback(async () => {
     const res = await fetch("/api/suppressions");
     const json = await res.json();
-    if (!res.ok) {
+    if (!res.ok || json.error) {
       setError(json.error || "Could not load the do-not-call list.");
       setRows([]);
       return;
     }
     setError(null);
-    setRows(json.suppressions);
+    setRows(json.suppressions || []);
     setCovers(json.covers || {});
   }, []);
 

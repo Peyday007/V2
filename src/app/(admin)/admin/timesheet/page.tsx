@@ -61,7 +61,7 @@ export default function TimesheetPage() {
     setData(null);
     const res = await fetch(`/api/timesheet?days=${days}`);
     const j = await res.json();
-    if (!res.ok) {
+    if (!res.ok || j.error) {
       setError(j.error || "Could not build the timesheet.");
       return;
     }

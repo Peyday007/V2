@@ -78,14 +78,18 @@ export default function SourcingPage() {
 
   const loadPipeline = useCallback(async () => {
     const res = await fetch("/api/pipeline");
-    if (res.ok) setPipeline(await res.json());
+    if (!res.ok) return;
+    const j = await res.json().catch(() => null);
+    // `counts` is read straight away by the render; an error payload has none.
+    if (j && j.counts) setPipeline(j);
   }, []);
 
   const loadCampaigns = useCallback(async () => {
     const res = await fetch("/api/sourcing");
     const j = await res.json();
-    if (!res.ok) {
+    if (!res.ok || j.error) {
       setError(j.error || "Could not load campaigns");
+      setCampaigns([]);
       return;
     }
     setCampaigns(j.campaigns || []);

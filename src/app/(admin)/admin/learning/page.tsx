@@ -65,8 +65,24 @@ export default function LearningPage() {
   const [note, setNote] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/learning");
-    setData(await res.json());
+    try {
+      const res = await fetch("/api/learning");
+      const j = await res.json();
+      setData({
+        proposals: j.proposals ?? [],
+        experiments: j.experiments ?? [],
+        versions: j.versions ?? [],
+        observationCount: j.observationCount ?? 0,
+        error: j.error ?? null,
+      });
+    } catch (e) {
+      setData({
+        proposals: [],
+        experiments: [],
+        versions: [],
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   }, []);
 
   useEffect(() => {

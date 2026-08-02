@@ -29,10 +29,12 @@ export default function ImportPage() {
   useEffect(() => {
     fetch("/api/campaigns")
       .then((r) => r.json())
-      .then((cs: Campaign[]) => {
-        setCampaigns(cs);
-        if (cs.length > 0) setCampaignId(cs[0].id);
-      });
+      .then((cs) => {
+        const list: Campaign[] = Array.isArray(cs) ? cs : [];
+        setCampaigns(list);
+        if (list.length > 0) setCampaignId(list[0].id);
+      })
+      .catch(() => setCampaigns([]));
   }, []);
 
   async function pickFile(f: File) {

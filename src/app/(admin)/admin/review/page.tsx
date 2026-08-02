@@ -21,9 +21,9 @@ type Row = {
   applied_result: Record<string, unknown> | null;
   transcript_result: Record<string, unknown> | null;
   ai_result: Record<string, unknown> | null;
-  held_fields: { field: string; reason: string }[];
-  disagreements: Disagreement[];
-  review_reasons: string[];
+  held_fields: { field: string; reason: string }[] | null;
+  disagreements: Disagreement[] | null;
+  review_reasons: string[] | null;
   created_at: string;
   leads?: { business_name: string } | { business_name: string }[] | null;
   callers?: { name: string } | { name: string }[] | null;
@@ -39,12 +39,12 @@ type Blocked = {
 };
 
 type Payload = {
-  queue: Row[];
-  blocked: Blocked[];
-  load: string;
-  weekTotal: number;
-  weekEscalated: number;
-  error: string | null;
+  queue?: Row[] | null;
+  blocked?: Blocked[] | null;
+  load?: string | null;
+  weekTotal?: number | null;
+  weekEscalated?: number | null;
+  error?: string | null;
 };
 
 const ACTION_LABEL: Record<string, string> = {
@@ -73,8 +73,14 @@ export default function ReviewPage() {
   const [msg, setMsg] = useState("");
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/review");
-    setData(await res.json());
+    try {
+      const res = await fetch("/api/review");
+      setData(await res.json());
+    } catch (e) {
+      // A page that white-screens hides the very message that would explain
+      // it — usually "run the migration". Never let that happen again.
+      setData({ error: e instanceof Error ? e.message : String(e) });
+    }
   }, []);
 
   useEffect(() => {
@@ -106,6 +112,12 @@ export default function ReviewPage() {
 
   if (!data) return <p className="muted">Loading…</p>;
 
+  // Every field is treated as optional. The API now always sends the full
+  // shape, but a page whose only job is to explain a problem must not be the
+  // thing that breaks when the payload is short.
+  const queue = data.queue ?? [];
+  const blocked = data.blocked ?? [];
+
   return (
     <div style={{ maxWidth: 980, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 6 }}>Review</h1>
@@ -114,7 +126,7 @@ export default function ReviewPage() {
         confirms it. This page is only what it could not settle on its own.
       </p>
       <p className="faint" style={{ marginBottom: 20, lineHeight: 1.6 }}>
-        {data.load} Calls land here when the transcript was too thin to be sure,
+        {data.load ?? ""} Calls land here when the transcript was too thin to be sure,
         when the model contradicts the caller on something that matters, when
         somebody asked not to be called — and a small random slice whatever the
         confidence, because otherwise there is no way to tell whether the model
@@ -133,16 +145,16 @@ export default function ReviewPage() {
       )}
 
       {/* ------------------------ things it refused to do ------------------- */}
-      {data.blocked.length > 0 && (
+      {blocked.length > 0 && (
         <div style={{ marginBottom: 26 }}>
-          <h2 style={{ marginBottom: 6 }}>Waiting on you ({data.blocked.length})</h2>
+          <h2 style={{ marginBottom: 6 }}>Waiting on you ({blocked.length})</h2>
           <p className="faint" style={{ marginBottom: 10, lineHeight: 1.55 }}>
             The model asked to do these and was refused. They are on the
             never-automatic list — no confidence score makes them safe — so they
             happen because you say so, or not at all.
           </p>
           <div style={{ display: "grid", gap: 10 }}>
-            {data.blocked.map((b) => (
+            {blocked.map((b) => (
               <div key={b.id} className="card" style={{ borderColor: "var(--red)" }}>
                 <strong style={{ color: "var(--red)" }}>
                   {ACTION_LABEL[b.action] || b.action.replace(/_/g, " ")}
@@ -178,14 +190,14 @@ export default function ReviewPage() {
       )}
 
       {/* ------------------------------ the queue --------------------------- */}
-      <h2 style={{ marginBottom: 10 }}>Calls to look at ({data.queue.length})</h2>
-      {data.queue.length === 0 ? (
+      <h2 style={{ marginBottom: 10 }}>Calls to look at ({queue.length})</h2>
+      {queue.length === 0 ? (
         <p className="muted">
           Nothing needs a look. Every call this week was read and applied on its own.
         </p>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
-          {data.queue.map((r) => {
+          {queue.map((r) => {
             const lead = one(r.leads);
             const caller = one(r.callers);
             const applied = r.applied_result || {};
@@ -204,13 +216,13 @@ export default function ReviewPage() {
                 </div>
 
                 <p style={{ marginTop: 5, color: "var(--amber)", lineHeight: 1.5 }}>
-                  {r.review_reasons
+                  {(r.review_reasons ?? [])
                     .map((x) => ESCALATION_LABEL[x as EscalationReason] ?? x)
                     .join(". ")}
                   .
                 </p>
 
-                {r.disagreements.length > 0 && (
+                {(r.disagreements ?? []).length > 0 && (
                   <table style={{ marginTop: 10 }}>
                     <thead>
                       <tr>
@@ -220,7 +232,7 @@ export default function ReviewPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {r.disagreements.map((d) => (
+                      {(r.disagreements ?? []).map((d) => (
                         <tr key={d.field}>
                           <td style={{ color: d.material ? "var(--amber)" : undefined }}>
                             {d.label}
@@ -236,10 +248,10 @@ export default function ReviewPage() {
                   </table>
                 )}
 
-                {r.held_fields?.length > 0 && (
+                {(r.held_fields ?? []).length > 0 && (
                   <p className="faint" style={{ marginTop: 8, lineHeight: 1.5 }}>
                     Not taken from the model:{" "}
-                    {r.held_fields
+                    {(r.held_fields ?? [])
                       .map((h) => `${FIELD_LABEL[h.field] ?? h.field} (${h.reason})`)
                       .join("; ")}
                   </p>

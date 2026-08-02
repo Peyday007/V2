@@ -78,8 +78,8 @@ export default function AnalyticsPage() {
   const load = useCallback(async () => {
     setData(null);
     const res = await fetch(`/api/analytics${days ? `?days=${days}` : ""}`);
-    const json = await res.json();
-    if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.error) {
       setError(json.error || "Could not load analytics.");
       return;
     }
@@ -348,8 +348,12 @@ function Briefing() {
     fetch("/api/briefing")
       .then(async (r) => {
         const j = await r.json();
-        if (!r.ok) throw new Error(j.error || "Could not build the briefing.");
-        return j;
+        // A 200 carrying { error } is how a missing migration reports itself,
+        // and `sections` is read straight away by the render below.
+        if (!r.ok || j?.error || !Array.isArray(j?.sections)) {
+          throw new Error(j?.error || "Could not build the briefing.");
+        }
+        return j as BriefingData;
       })
       .then(setB)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
@@ -380,7 +384,7 @@ function Briefing() {
           gap: 14,
         }}
       >
-        {b.sections.map((s) => (
+        {(b.sections ?? []).map((s) => (
           <div key={s.key} className="card">
             <h3 style={{ marginBottom: 10 }}>{s.title}</h3>
             {s.lines.length === 0 ? (

@@ -49,14 +49,41 @@ export default function FollowupsPage() {
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/followups");
-    const j = await res.json();
-    if (!res.ok) {
-      setError(j.error || "Could not load the queue.");
-      return;
+    try {
+      const res = await fetch("/api/followups");
+      const j = await res.json();
+      // Defaults, not assumptions. A page whose job is to report a problem
+      // must not be the thing that breaks when the payload is short.
+      const shape: Payload = {
+        items: j.items ?? [],
+        open: j.open ?? 0,
+        overdue: j.overdue ?? 0,
+        deadlineMinutes: j.deadlineMinutes ?? 10,
+        automaticSending: !!j.automaticSending,
+        medianResponseMinutes: j.medianResponseMinutes ?? null,
+        sentCount: j.sentCount ?? 0,
+        withinTarget: j.withinTarget ?? 0,
+      };
+      if (!res.ok || j.error) {
+        setError(j.error || "Could not load the queue.");
+        setData(shape);
+        return;
+      }
+      setError(null);
+      setData(shape);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setData({
+        items: [],
+        open: 0,
+        overdue: 0,
+        deadlineMinutes: 10,
+        automaticSending: false,
+        medianResponseMinutes: null,
+        sentCount: 0,
+        withinTarget: 0,
+      });
     }
-    setError(null);
-    setData(j);
   }, []);
 
   useEffect(() => {

@@ -21,13 +21,33 @@ type Metrics = {
 
 export default function MetricsPage() {
   const [m, setM] = useState<Metrics | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/metrics")
       .then((r) => r.json())
-      .then(setM);
+      .then((j) => {
+        // An error payload has no `overall`, and reading through it used to
+        // white-screen the page instead of showing the reason.
+        if (!j || j.error || !j.overall) {
+          setError(j?.error || "Could not load metrics.");
+          return;
+        }
+        setM(j);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
+  if (error) {
+    return (
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <h1 style={{ marginBottom: 16 }}>Metrics</h1>
+        <div className="card" style={{ borderColor: "var(--red)", color: "var(--red)" }}>
+          {error}
+        </div>
+      </div>
+    );
+  }
   if (!m) return <p className="muted">Loading…</p>;
 
   const stats = [

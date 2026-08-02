@@ -19,10 +19,25 @@ export default function TargetsPage() {
   const [seeding, setSeeding] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch("/api/targets");
-    const j = await res.json();
-    setData(j);
-    setErr(j.error ?? "");
+    try {
+      const res = await fetch("/api/targets");
+      const j = await res.json();
+      // Defaults, not assumptions. A page whose job is to report a problem
+      // must not be the thing that breaks when the payload is short.
+      setData({
+        metrics: j.metrics ?? [],
+        targets: j.targets ?? [],
+        missing: j.missing ?? [],
+        suggested: j.suggested ?? [],
+        suggestedSource: j.suggestedSource ?? "",
+        error: j.error ?? null,
+      });
+      setErr(j.error ?? "");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setData({ metrics: [], targets: [], missing: [], suggested: [], suggestedSource: "", error: msg });
+      setErr(msg);
+    }
   }, []);
 
   useEffect(() => {

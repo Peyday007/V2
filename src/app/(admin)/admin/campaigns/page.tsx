@@ -45,9 +45,12 @@ export default function PacketsAdmin() {
       fetch("/api/callers"),
       fetch("/api/pipeline"),
     ]);
-    setPackets(await pRes.json());
-    const cs: Caller[] = await kRes.json();
-    const active = (cs || []).filter((k) => k.active);
+    // Both endpoints answer with an object on error, and both of these were
+    // read as arrays a line later.
+    const pJson = await pRes.json().catch(() => []);
+    setPackets(Array.isArray(pJson) ? pJson : []);
+    const cs = await kRes.json().catch(() => []);
+    const active = (Array.isArray(cs) ? cs : []).filter((k: Caller) => k.active);
     setCallers(active);
     setNewCaller((prev) => prev || active[0]?.id || "");
     if (pipeRes.ok) {

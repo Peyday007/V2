@@ -18,7 +18,9 @@ export default function CallersAdmin() {
 
   async function load() {
     const res = await fetch("/api/callers");
-    setCallers(await res.json());
+    // An error payload is an object, not an array; .map would explode.
+    const j = await res.json().catch(() => []);
+    setCallers(Array.isArray(j) ? j : []);
   }
   useEffect(() => {
     load();
