@@ -13,6 +13,8 @@ import {
   OWN_DATA_THRESHOLD,
   isBorrowed,
   replaceBorrowedPrompt,
+  effectiveTarget,
+  impliedStageBar,
   type Target,
 } from "../src/lib/benchmarks";
 
@@ -327,5 +329,69 @@ describe("edges", () => {
     for (const m of METRICS) {
       expect(METRIC_MAP[m.key].meaning.length, m.key).toBeGreaterThan(20);
     }
+  });
+});
+
+/**
+ * "No target set" was honest and useless. Next to a caller's numbers it left
+ * only the team average — the exact comparison that makes someone working a
+ * weak batch look strong.
+ */
+describe("the bar in force, when you have not set one", () => {
+  it("falls back to the borrowed figure and admits it", () => {
+    const eff = effectiveTarget("connect_rate", []);
+    expect(eff?.value).toBe(0.25);
+    expect(eff?.borrowed).toBe(true);
+    expect(eff?.source).toBe(SUGGESTED_SOURCE);
+    expect(eff?.low).toBe(0.15);
+    expect(eff?.high).toBe(0.35);
+  });
+
+  it("prefers a target you actually set", () => {
+    const eff = effectiveTarget("connect_rate", [
+      { metric: "connect_rate", target: 0.4, source: "our best month", minimumSample: 30 },
+    ]);
+    expect(eff?.value).toBe(0.4);
+    expect(eff?.borrowed).toBe(false);
+    expect(eff?.source).toBe("our best month");
+  });
+
+  it("still calls a stored borrowed figure borrowed", () => {
+    // Pressing "use the starting figures" writes rows; they are not yours.
+    const eff = effectiveTarget("connect_rate", [
+      { metric: "connect_rate", target: 0.25, source: SUGGESTED_SOURCE, minimumSample: 30 },
+    ]);
+    expect(eff?.borrowed).toBe(true);
+  });
+});
+
+describe("a bar for a rate measured per stage, not per dial", () => {
+  it("divides the two published per-dial figures", () => {
+    // 12% of dials reach an owner, 25% connect → 48% of answered calls.
+    const bar = impliedStageBar("owner_reach_rate", "connect_rate", []);
+    expect(bar?.value).toBeCloseTo(0.48, 2);
+    expect(bar?.borrowed).toBe(true);
+    expect(bar?.source).toContain("implied by");
+  });
+
+  it("uses your own numbers where you set them", () => {
+    const bar = impliedStageBar("owner_reach_rate", "connect_rate", [
+      { metric: "owner_reach_rate", target: 0.2, source: "ours", minimumSample: 30 },
+      { metric: "connect_rate", target: 0.5, source: "ours", minimumSample: 30 },
+    ]);
+    expect(bar?.value).toBeCloseTo(0.4, 5);
+    expect(bar?.borrowed).toBe(false);
+  });
+
+  it("never implies a rate above 100%", () => {
+    const bar = impliedStageBar("connect_rate", "appointment_rate", []);
+    expect(bar!.value).toBeLessThanOrEqual(1);
+  });
+
+  it("refuses to divide by a zero denominator", () => {
+    const bar = impliedStageBar("owner_reach_rate", "connect_rate", [
+      { metric: "connect_rate", target: 0, source: "ours", minimumSample: 30 },
+    ]);
+    expect(bar).toBeNull();
   });
 });

@@ -136,6 +136,8 @@ type TrialPart = {
   status: "settled" | "unsettled" | "unmeasured";
   verdict: "above" | "below" | "on_par" | "unknown";
   note?: string;
+  bar: Bar;
+  vsBar: "above" | "below" | "on_par" | "unknown";
 };
 
 /** One dial-level rate scored against an absolute bar, not against the team. */
@@ -442,7 +444,8 @@ function TrialCard({
           <tr>
             <th>Measure</th>
             <th>Them</th>
-            <th>Team bar</th>
+            <th>Bar</th>
+            <th>Rest of team</th>
             <th>Verdict</th>
           </tr>
         </thead>
@@ -459,6 +462,9 @@ function TrialCard({
                   : p.key === "effort"
                     ? `${p.rate.toFixed(1)}/day`
                     : `${Math.round(p.rate * 100)}% (${p.successes}/${p.trials})`}
+              </td>
+              <td>
+                <BarCell bar={p.bar} isRate={p.key !== "effort"} />
               </td>
               <td className="faint">
                 {p.benchmarkRate === null
@@ -480,7 +486,14 @@ function TrialCard({
                   fontWeight: 600,
                 }}
               >
-                {p.status === "settled" ? VERDICT_TEXT[p.verdict] : "not settled"}
+                {p.vsBar !== "unknown" && (
+                  <div style={{ color: BAR_COLOR[p.vsBar], fontWeight: 700 }}>
+                    {BAR_WORD[p.vsBar]}
+                  </div>
+                )}
+                <div style={{ fontWeight: p.vsBar === "unknown" ? 600 : 400 }}>
+                  {p.status === "settled" ? VERDICT_TEXT[p.verdict] : "not settled"}
+                </div>
                 {p.note && (
                   <div className="faint" style={{ fontWeight: 400, marginTop: 2 }}>
                     {p.note}
@@ -551,6 +564,44 @@ const VERDICT_COLOR: Record<string, string> = {
   not_enough_data: "var(--text-dim)",
 };
 
+type Bar = { value: number; borrowed: boolean; source: string } | null;
+
+const BAR_COLOR: Record<string, string> = {
+  above: "var(--amber)",
+  on_par: "var(--amber)",
+  below: "var(--red)",
+  unknown: "var(--text-dim)",
+};
+
+const BAR_WORD: Record<string, string> = {
+  above: "clears the bar",
+  on_par: "at the bar",
+  below: "under the bar",
+  unknown: "",
+};
+
+/**
+ * The bar, in the same row as the caller's number.
+ *
+ * Beside a team average alone, every caller in a weak batch reads as strong.
+ * A borrowed figure is dimmed and marked, so it is never mistaken for one you
+ * set — but it is shown, because a blank taught the reader nothing.
+ */
+function BarCell({ bar, isRate = true }: { bar: Bar; isRate?: boolean }) {
+  if (!bar) return <span className="faint">—</span>;
+  const shown = isRate ? `${Math.round(bar.value * 100)}%` : String(Math.round(bar.value * 10) / 10);
+  return (
+    <span
+      className="faint"
+      style={{ color: bar.borrowed ? "var(--text-dim)" : "var(--text)" }}
+      title={bar.borrowed ? `Borrowed starting figure — ${bar.source}` : bar.source}
+    >
+      {shown}
+      {bar.borrowed && <span style={{ opacity: 0.7 }}> ˚</span>}
+    </span>
+  );
+}
+
 const TARGET_COLOR: Record<string, string> = {
   above: "var(--amber)",
   on_par: "var(--amber)",
@@ -575,11 +626,13 @@ function AgainstTheBar({ rows }: { rows: AbsoluteRead[] }) {
       <h3 style={{ marginBottom: 6 }}>Against the bar</h3>
       {!anyTarget ? (
         <p className="faint" style={{ lineHeight: 1.55 }}>
-          No targets are set, so none of the numbers above can be called good or
-          bad — only better or worse than each other.{" "}
-          <a href="/admin/targets">Set targets</a> and this section will say
-          whether the bar was cleared. Starting figures are offered there if you
-          have none of your own.
+          The bars in the table above are <strong>borrowed starting figures</strong>{" "}
+          (marked ˚), because no targets of your own are set. They come from
+          published cold-calling ranges, mostly measured on software teams
+          calling office workers — your connect and owner-reach rates should run
+          higher than those, since the owner usually answers their own phone.{" "}
+          <a href="/admin/targets">Set your own</a> and every bar here becomes a
+          number you chose.
         </p>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
@@ -605,8 +658,9 @@ function AgainstTheBar({ rows }: { rows: AbsoluteRead[] }) {
                   {r.alarm}
                 </div>
               )}
-              {r.targetIsBorrowed && r.targetCaveat && (
-                <div className="faint" style={{ lineHeight: 1.5 }}>{r.targetCaveat}</div>
+              {/* The borrowed caveat is stated once for the block, below. */}
+              {r.targetIsBorrowed && r.targetCaveat?.startsWith("You now have") && (
+                <div style={{ color: "var(--amber)", lineHeight: 1.5 }}>{r.targetCaveat}</div>
               )}
             </div>
           ))}
@@ -625,6 +679,8 @@ type Skill = {
   rate: number;
   teamRate: number | null;
   verdict: string;
+  bar: Bar;
+  vsBar: "above" | "below" | "on_par" | "unknown";
 };
 
 type Profile = {
@@ -689,20 +745,21 @@ function Profiles() {
         Where the calls do not support a judgement, it says so instead of guessing.
       </p>
       <p className="faint" style={{ marginBottom: 18, lineHeight: 1.6 }}>
-        <strong>Against the bar</strong> on each card is the separate question:
-        not who is stronger, but whether anyone is good enough. That one needs
-        targets — and where a caller beats the team while missing the target, the
-        card says the team is under the bar too rather than calling them strong.
+        The <strong>Bar</strong> column answers the separate question: not who is
+        stronger, but whether this is any good. A figure marked ˚ is a borrowed
+        starting benchmark rather than one you set. Where a caller beats the team
+        while missing the bar, the headline says so — being the best of a bad
+        batch is not the same as being good.
       </p>
 
       {profiles && profiles.length > 0 && targetsSet === 0 && (
         <div className="card" style={{ marginBottom: 16, borderColor: "var(--amber-dim)" }}>
-          <strong>No targets are set.</strong>
+          <strong>The bars shown are borrowed.</strong>
           <p className="faint" style={{ marginTop: 4, lineHeight: 1.55 }}>
-            Everything below is relative to your own team, so &ldquo;ahead of the
-            team&rdquo; here does not mean good — with a small team the average is
-            noisy and may simply be low. <a href="/admin/targets">Set targets</a>{" "}
-            to get an absolute read; starting figures are offered there.
+            Every <strong>Bar</strong> below is a borrowed starting figure (marked
+            ˚) rather than a number you chose. They are usable, but they were
+            measured on other people&rsquo;s teams.{" "}
+            <a href="/admin/targets">Set your own</a> and they become real.
           </p>
         </div>
       )}
@@ -749,6 +806,7 @@ function Profiles() {
                 <tr>
                   <th>Skill</th>
                   <th>Them</th>
+                  <th>Bar</th>
                   <th>Rest of team</th>
                   <th>Verdict</th>
                 </tr>
@@ -772,11 +830,27 @@ function Profiles() {
                         <span className="faint">—</span>
                       )}
                     </td>
+                    <td>
+                      <BarCell bar={s.bar} />
+                    </td>
                     <td className="faint">
                       {s.teamRate === null ? "—" : pct(s.teamRate)}
                     </td>
-                    <td style={{ color: VERDICT_COLOR[s.verdict], fontWeight: 600 }}>
-                      {VERDICT_LABEL[s.verdict]}
+                    <td>
+                      {s.vsBar !== "unknown" && (
+                        <div style={{ color: BAR_COLOR[s.vsBar], fontWeight: 700 }}>
+                          {BAR_WORD[s.vsBar]}
+                        </div>
+                      )}
+                      <div
+                        className={s.vsBar === "unknown" ? undefined : "faint"}
+                        style={{
+                          color: s.vsBar === "unknown" ? VERDICT_COLOR[s.verdict] : undefined,
+                          fontWeight: s.vsBar === "unknown" ? 600 : 400,
+                        }}
+                      >
+                        {VERDICT_LABEL[s.verdict]}
+                      </div>
                     </td>
                   </tr>
                 ))}

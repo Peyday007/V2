@@ -303,15 +303,45 @@ describe("hiring is not decided on beating a weak team", () => {
     expect(score.absolute).toEqual([]);
   });
 
-  it("says outright that a finished trial had no absolute bar to clear", () => {
+  it("applies the borrowed bar when no target is set, and says the bar is borrowed", () => {
+    // Previously a trial had no absolute bar until somebody visited the
+    // Targets page, so hiring fell back to the team average by default.
     const score = scoreTrial({
-      calls: trialCalls(100, 60, 30),
+      calls: trialCalls(100, 30, 0),
       targetCalls: 100,
       benchmark: WEAK_TEAM,
     });
+    const owner = score.absolute.find((a) => a.metric === "owner_reach_rate")!;
+    expect(owner.target).toBe(0.12);
+    expect(owner.targetIsBorrowed).toBe(true);
     expect(
-      score.recommendation.unresolved.some((u) => /Set targets on the Targets page/.test(u))
+      score.recommendation.unresolved.some((u) => /borrowed starting figure/.test(u))
     ).toBe(true);
+  });
+
+  /**
+   * The case from production: a candidate reached ZERO owners in 103 dials and
+   * the scorecard still said "add them to the team", because the existing team
+   * had barely reached any either.
+   */
+  it("does not hire someone who reached nobody, however weak the team is", () => {
+    const score = scoreTrial({
+      calls: trialCalls(103, 31, 0),
+      targetCalls: 100,
+      benchmark: { dials: 400, talked: 132, ownerConversations: 11, appointments: 0, callsPerDay: 52.5 },
+    });
+    expect(score.recommendation.key).not.toBe("add");
+    expect(score.headline).toContain("under target on owner-reached rate");
+  });
+
+  it("says the bar is borrowed rather than calling it your target", () => {
+    const score = scoreTrial({
+      calls: trialCalls(103, 31, 0),
+      targetCalls: 100,
+      benchmark: { dials: 400, talked: 132, ownerConversations: 11, appointments: 0, callsPerDay: 52.5 },
+    });
+    expect(score.recommendation.evidence).toContain("the starting benchmark");
+    expect(score.recommendation.evidence).not.toContain("under your target");
   });
 
   it("does not soften a cut — a missed bar never rescues a failing candidate", () => {

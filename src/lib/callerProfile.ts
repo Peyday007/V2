@@ -34,7 +34,17 @@ import {
   type Confidence,
   type Interval,
 } from "./analytics";
-import { assess, type Assessment, type MetricKey, type Target } from "./benchmarks";
+import {
+  assess,
+  effectiveTarget,
+  impliedStageBar,
+  isBorrowed,
+  SUGGESTED_SOURCE,
+  type Assessment,
+  type EffectiveTarget,
+  type MetricKey,
+  type Target,
+} from "./benchmarks";
 
 /* -------------------------------------------------------------------------- */
 /* thresholds                                                                 */
@@ -77,7 +87,47 @@ export type Skill = {
   pValue: number | null;
   verdict: "strong" | "weak" | "on_par" | "not_enough_data";
   confidence: Confidence;
+
+  /**
+   * The absolute bar for this skill, shown in the same row as the caller's
+   * number. Being a page away was the whole problem: on its own, "ahead of the
+   * team" reads as good even when the team is having a bad month.
+   */
+  bar: EffectiveTarget | null;
+  /** The caller against that bar — nothing to do with the team. */
+  vsBar: "above" | "below" | "on_par" | "unknown";
 };
+
+/**
+ * Which bar applies to which skill.
+ *
+ * Only "getting through" has a published figure of its own; the other two are
+ * per-stage rates, so their bars are implied by dividing two per-dial targets.
+ * See impliedStageBar.
+ */
+export function barForSkill(
+  key: SkillKey,
+  targets: Target[] | null | undefined
+): EffectiveTarget | null {
+  if (key === "connecting") return effectiveTarget("connect_rate", targets);
+  if (key === "opening") return impliedStageBar("owner_reach_rate", "connect_rate", targets);
+  return impliedStageBar("appointment_rate", "owner_reach_rate", targets);
+}
+
+/** Within 10% of the bar counts as meeting it — these are approximations. */
+const BAR_NEAR = 0.1;
+
+function compareToBar(
+  rate: number,
+  trials: number,
+  bar: EffectiveTarget | null
+): Skill["vsBar"] {
+  if (!bar || trials < MIN_FOR_SKILL) return "unknown";
+  if (bar.value <= 0) return "unknown";
+  const ratio = rate / bar.value;
+  if (Math.abs(ratio - 1) <= BAR_NEAR) return "on_par";
+  return rate > bar.value ? "above" : "below";
+}
 
 const NO_CONTACT = ["no_answer", "voicemail", "bad_number"];
 
@@ -100,7 +150,8 @@ function buildSkill(
   label: string,
   meaning: string,
   mine: { successes: number; trials: number },
-  theirs: { successes: number; trials: number }
+  theirs: { successes: number; trials: number },
+  targets: Target[] | null | undefined
 ): Skill {
   const interval = wilson(mine.successes, mine.trials);
   const teamRate = theirs.trials > 0 ? theirs.successes / theirs.trials : null;
@@ -116,6 +167,8 @@ function buildSkill(
     else verdict = "on_par";
   }
 
+  const bar = barForSkill(key, targets);
+
   return {
     key,
     label,
@@ -130,6 +183,8 @@ function buildSkill(
     pValue: p,
     verdict,
     confidence: confidenceFor(mine.trials),
+    bar,
+    vsBar: compareToBar(rate, mine.trials, bar),
   };
 }
 
@@ -296,21 +351,24 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
       "Getting through",
       "How often a dial reaches a live person at all",
       mineTally.connecting,
-      othersTally.connecting
+      othersTally.connecting,
+      input.targets
     ),
     buildSkill(
       "opening",
       "Opening",
       "Once someone picks up, how often they get to the owner",
       mineTally.opening,
-      othersTally.opening
+      othersTally.opening,
+      input.targets
     ),
     buildSkill(
       "closing",
       "Closing",
       "Once they have the owner, how often they book a meeting",
       mineTally.closing,
-      othersTally.closing
+      othersTally.closing,
+      input.targets
     ),
   ];
 
@@ -333,7 +391,23 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
       ? input.intelCaptureCount / mine.length
       : null;
 
-  const targetBy = new Map((input.targets || []).map((t) => [t.metric, t]));
+  /**
+   * The bar in force: yours where you set one, the borrowed starting figure
+   * otherwise. Falling back is what puts a number beside the caller instead of
+   * "no target set" — which left only the team average, the exact comparison
+   * that flatters a caller in a weak batch.
+   */
+  const targetFor = (metric: MetricKey): Target | null => {
+    const eff = effectiveTarget(metric, input.targets);
+    if (!eff) return null;
+    return {
+      metric,
+      target: eff.value,
+      source: eff.borrowed ? SUGGESTED_SOURCE : eff.source,
+      minimumSample: 30,
+    };
+  };
+
   const absolute: Assessment[] = DIAL_METRICS.map((metric) => {
     const m = dialRate(mine, metric);
     const o = dialRate(others, metric);
@@ -343,7 +417,7 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
       observations: m.trials,
       teamValue: o.trials > 0 ? o.successes / o.trials : null,
       teamObservations: o.trials,
-      target: targetBy.get(metric) ?? null,
+      target: targetFor(metric),
     });
   });
   absolute.push(
@@ -353,9 +427,12 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
       observations: days,
       teamValue: input.teamCallsPerDay ?? null,
       teamObservations: input.teamCallerDays ?? 0,
-      target: targetBy.get("calls_per_day") ?? null,
+      target: targetFor("calls_per_day"),
     })
   );
+
+  /** True only when at least one bar is a number YOU chose. */
+  const hasOwnTargets = (input.targets || []).some((t) => !isBorrowed(t));
 
   const recommendations = recommend({
     callerName,
@@ -363,7 +440,7 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
     skills,
     industries,
     absolute,
-    hasTargets: targetBy.size > 0,
+    hasOwnTargets,
     perDay,
     teamCallsPerDay: input.teamCallsPerDay ?? null,
     intelCaptureRate,
@@ -381,26 +458,35 @@ export function buildCallerProfile(input: ProfileInput): CallerProfile {
   // that is the headline, however far ahead of the team they are.
   const missedText = missed.map((a) => a.label.toLowerCase()).join(", ");
 
+  // Never "under target" for a figure nobody here chose.
+  const barName = missed.every((a) => a.targetIsBorrowed) ? "the starting benchmark" : "target";
+  const judged = mine.length >= MIN_CALLS_FOR_PROFILE;
+  const shortOfBar = judged && missed.length > 0;
+
   let headline: string;
-  if (mine.length < MIN_CALLS_FOR_PROFILE) {
+  if (!judged) {
     headline = `${mine.length} calls so far — too few to judge anything`;
+  } else if (shortOfBar) {
+    /**
+     * Praise is stated as RELATIVE when the bar is missed. "Strong at opening"
+     * beside "11% against a bar of 48%" reads as a contradiction; "ahead of the
+     * team at opening, but under the benchmark" is the same two facts in the
+     * order that makes them one sentence.
+     */
+    const ahead = strong.length ? `Ahead of the team at ${strong.join(" and ")}, but ` : "";
+    const behind = weak.length ? `Behind the team at ${weak.join(" and ")}, and ` : "";
+    const lead = ahead || behind || "";
+    headline = `${lead}${lead ? "u" : "U"}nder ${barName} on ${missedText}`;
   } else if (strong.length && weak.length) {
     headline = `Strong at ${strong.join(" and ")}, weak at ${weak.join(" and ")}`;
   } else if (strong.length) {
-    headline = `Strong at ${strong.join(" and ")}`;
+    headline = `Strong at ${strong.join(" and ")}, and clearing every bar`;
   } else if (weak.length) {
     headline = `Struggling with ${weak.join(" and ")}`;
-  } else if (targetBy.size === 0) {
-    headline =
-      "Performing in line with the rest of the team — no targets set, so that says nothing about whether it is good enough";
-  } else if (missed.length === 0) {
-    headline = "In line with the rest of the team, and clearing every target set";
   } else {
-    headline = "In line with the rest of the team";
-  }
-
-  if (missed.length > 0 && mine.length >= MIN_CALLS_FOR_PROFILE) {
-    headline += ` — under target on ${missedText}`;
+    headline = hasOwnTargets
+      ? "In line with the rest of the team, and clearing every target"
+      : "In line with the rest of the team, and clearing the starting benchmarks";
   }
 
   return {
@@ -431,7 +517,7 @@ function recommend(ctx: {
   skills: Skill[];
   industries: IndustryFit[];
   absolute: Assessment[];
-  hasTargets: boolean;
+  hasOwnTargets: boolean;
   perDay: number;
   teamCallsPerDay: number | null;
   intelCaptureRate: number | null;
@@ -471,7 +557,7 @@ function recommend(ctx: {
           : "";
     out.push({
       key: "below_target",
-      action: `Under target on ${a.label.toLowerCase()}`,
+      action: `Under ${a.targetIsBorrowed ? "the starting benchmark" : "target"} on ${a.label.toLowerCase()}`,
       evidence:
         `${a.verdict}${relative}` +
         (a.targetCaveat ? ` (${a.targetCaveat})` : "") +
@@ -480,12 +566,12 @@ function recommend(ctx: {
     });
   }
 
-  if (!ctx.hasTargets) {
+  if (!ctx.hasOwnTargets) {
     out.push({
       key: "no_targets_set",
-      action: "Set targets before reading anything here as good or bad",
+      action: "The bars shown are borrowed, not yours",
       evidence:
-        `All ${ctx.skills.length} skill scores and every rate on this profile are measured against the rest of your team. With a small team that average is noisy and may simply be low, so "ahead of the team" does not mean "good enough". Targets are set on the Targets page.`,
+        `All ${ctx.skills.length} skills are scored against published cold-calling figures, because no targets of your own are set. Those were mostly measured on software teams calling office workers, not on people ringing owner-operated trades — your connect and owner-reach should run higher. Set your own on the Targets page and these become real.`,
       severity: "info",
     });
   }
@@ -568,7 +654,7 @@ function recommend(ctx: {
       action: "No change needed",
       evidence:
         `Nothing separates them from the rest of the team by more than chance across ${ctx.mine.length} calls` +
-        (ctx.hasTargets ? ", and they are clearing every target set." : "."),
+        (ctx.hasOwnTargets ? ", and they are clearing every target set." : "."),
       severity: "info",
     });
   }

@@ -191,6 +191,80 @@ export const SUGGESTED_MAP: Record<string, SuggestedTarget> = Object.fromEntries
   SUGGESTED_TARGETS.map((s) => [s.metric, s])
 );
 
+/* -------------------------------------------------------------------------- */
+/* the bar that actually applies                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The bar in force for a metric right now: the one you set, or the borrowed
+ * starting figure if you have not set one.
+ *
+ * Falling back rather than showing nothing is a deliberate change. "No target
+ * set" was honest but useless next to a caller's numbers — it left the reader
+ * with only the team average, which is the exact comparison that makes a
+ * mediocre caller look strong in a weak batch. A labelled borrowed figure is
+ * more use than a blank, as long as it is never mistaken for your own.
+ */
+export type EffectiveTarget = {
+  metric: MetricKey;
+  value: number;
+  /** True when this came from the published ranges, not from you. */
+  borrowed: boolean;
+  source: string;
+  /** The range the published figures span. Null for a target you set. */
+  low?: number;
+  high?: number;
+};
+
+export function effectiveTarget(
+  metric: MetricKey,
+  targets: Target[] | null | undefined
+): EffectiveTarget | null {
+  const own = (targets || []).find((t) => t.metric === metric);
+  if (own && !isBorrowed(own)) {
+    return { metric, value: own.target, borrowed: false, source: own.source };
+  }
+  const suggested = SUGGESTED_MAP[metric];
+  if (!suggested) return null;
+  return {
+    metric,
+    value: own?.target ?? suggested.value,
+    borrowed: true,
+    source: SUGGESTED_SOURCE,
+    low: suggested.low,
+    high: suggested.high,
+  };
+}
+
+/**
+ * A bar for a rate whose denominator is a STAGE, not a dial.
+ *
+ * The published figures are all per-dial, because that is how they are
+ * quoted. A caller's opening rate is owners per ANSWERED call, so the bar for
+ * it is implied rather than published: reach 25% of dials and 12% of dials,
+ * and the implied opening bar is 12/25 — just under half of answered calls.
+ *
+ * Derived, and labelled as derived, because two ratios divided carry the error
+ * of both.
+ */
+export function impliedStageBar(
+  numerator: MetricKey,
+  denominator: MetricKey,
+  targets: Target[] | null | undefined
+): EffectiveTarget | null {
+  const n = effectiveTarget(numerator, targets);
+  const d = effectiveTarget(denominator, targets);
+  if (!n || !d || d.value <= 0) return null;
+  return {
+    metric: numerator,
+    value: Math.min(1, n.value / d.value),
+    borrowed: n.borrowed || d.borrowed,
+    source: `implied by ${METRIC_MAP[numerator]?.label ?? numerator} ÷ ${
+      METRIC_MAP[denominator]?.label ?? denominator
+    }`,
+  };
+}
+
 /** True when a target is still a borrowed figure rather than your own. */
 export function isBorrowed(target: Target | null | undefined): boolean {
   return !!target && target.source === SUGGESTED_SOURCE;
@@ -367,17 +441,21 @@ export function assess(input: AssessInput): Assessment {
   let verdict: string;
   let warning: string | undefined;
 
+  // "your target" is a lie for a figure nobody here chose.
+  const borrowedBar = isBorrowed(input.target);
+  const barName = borrowedBar ? "the starting benchmark of" : "your target of";
+
   if (input.observations === 0) {
     verdict = `No ${label.toLowerCase()} recorded yet.`;
   } else if (input.target && vsTarget === "below") {
     // Missing the bar leads, whatever the team is doing.
-    verdict = `${shown} — below your target of ${format(input.target.target, kind)}.`;
+    verdict = `${shown} — below ${barName} ${format(input.target.target, kind)}.`;
     if (vsTeam === "above") {
       warning =
-        "Ahead of the rest of the team, but the team is below target too. Being the best of the group is not the same as being good enough.";
+        "Ahead of the rest of the team, but the team is below the bar too. Being the best of the group is not the same as being good enough.";
     }
   } else if (input.target && (vsTarget === "above" || vsTarget === "on_par")) {
-    verdict = `${shown} — ${vsTarget === "above" ? "above" : "at"} your target of ${format(input.target.target, kind)}.`;
+    verdict = `${shown} — ${vsTarget === "above" ? "above" : "at"} ${barName} ${format(input.target.target, kind)}.`;
   } else if (vsTeam !== "unknown") {
     // No target set. Say only what is true: a relative position.
     const rel =
@@ -391,7 +469,6 @@ export function assess(input: AssessInput): Assessment {
     verdict = `${shown} — no target set and no team average to compare against.`;
   }
 
-  const borrowed = isBorrowed(input.target);
   const replace = replaceBorrowedPrompt(input.target, input.value, input.observations);
 
   return {
@@ -405,8 +482,8 @@ export function assess(input: AssessInput): Assessment {
     target: input.target?.target ?? null,
     targetSource: input.target?.source ?? null,
     vsTarget,
-    targetIsBorrowed: borrowed,
-    targetCaveat: borrowed
+    targetIsBorrowed: borrowedBar,
+    targetCaveat: borrowedBar
       ? replace ??
         "This bar is a borrowed starting figure from general cold-calling numbers, not measured on your business."
       : undefined,

@@ -114,7 +114,12 @@ describe("it separates opening from closing", () => {
     const closing = p.skills.find((s) => s.key === "closing")!;
     expect(opening.verdict).toBe("strong");
     expect(closing.verdict).toBe("weak");
-    expect(p.headline).toContain("Strong at opening");
+    // The headline names the opening strength as RELATIVE, because this caller
+    // books 1% of the owners they reach — praise that ignored the bar would be
+    // the misreading this whole feature exists to stop.
+    expect(p.headline).toContain("opening");
+    expect(p.headline).toMatch(/ahead of the team|strong at/i);
+    expect(closing.vsBar).toBe("below");
     expect(p.recommendations.some((r) => r.key === "coach_closing")).toBe(true);
     expect(p.recommendations.some((r) => r.key === "strong_opener")).toBe(true);
   });
@@ -153,7 +158,7 @@ describe("it separates opening from closing", () => {
       others: mix(400, 300, 150, 30),
     });
     for (const s of p.skills) expect(s.verdict).toBe("on_par");
-    expect(p.headline).toContain("in line with the rest of the team");
+    expect(p.headline.toLowerCase()).toContain("in line with the rest of the team");
   });
 });
 
@@ -385,23 +390,37 @@ describe("beating a weak team is not reported as good", () => {
   it("does not flag a missed bar when the bar is met", () => {
     const p = buildCallerProfile({
       callerName: "Genuinely good",
-      mine: mix(300, 200, 120),
-      others: mix(600, 300, 150),
-      targets: [bar("owner_reach_rate", 0.3)],
+      // 120 owners and 30 appointments from 300 dials clears every bar.
+      mine: mix(300, 200, 120, 30),
+      others: mix(600, 300, 150, 12),
+      targets: [
+        bar("owner_reach_rate", 0.3),
+        bar("connect_rate", 0.25),
+        bar("appointment_rate", 0.02),
+        bar("calls_per_day", 40),
+      ],
     });
-    expect(p.recommendations.some((r) => r.key === "below_target")).toBe(false);
+    const owner = p.absolute.find((a) => a.metric === "owner_reach_rate")!;
+    expect(owner.vsTarget).toBe("above");
     expect(p.headline).not.toContain("under target");
   });
 
-  it("warns that nothing here is absolute when no target is set at all", () => {
+  it("falls back to the borrowed benchmark and says so, rather than showing nothing", () => {
+    // "No target set" left only the team average on screen — the exact
+    // comparison that flatters a caller working a bad batch.
     const p = buildCallerProfile({
       callerName: "Average",
       mine: mix(200, 150, 75, 15),
       others: mix(400, 300, 150, 30),
     });
-    expect(p.recommendations.some((r) => r.key === "no_targets_set")).toBe(true);
-    expect(p.headline).toContain("no targets set");
-    expect(p.absolute.every((a) => a.vsTarget === "unknown")).toBe(true);
+    const rec = p.recommendations.find((r) => r.key === "no_targets_set")!;
+    expect(rec.action).toContain("borrowed");
+    // Every skill now carries a bar, and every bar admits it is not yours.
+    for (const s of p.skills) {
+      expect(s.bar, s.key).not.toBeNull();
+      expect(s.bar!.borrowed, s.key).toBe(true);
+    }
+    expect(p.absolute.some((a) => a.targetIsBorrowed)).toBe(true);
   });
 
   it("uses per-dial denominators for the bar, not the coaching denominators", () => {
@@ -447,5 +466,89 @@ describe("beating a weak team is not reported as good", () => {
     });
     const rec = p.recommendations.find((r) => r.key === "below_target")!;
     expect(rec.evidence).toContain("borrowed starting figure");
+  });
+});
+
+/**
+ * The complaint: "I really need the baseline target numbers right next to the
+ * callers. The caller may be strong in this bad batch."
+ */
+describe("the bar sits in the same row as the caller's number", () => {
+  it("gives every skill a bar, even with no targets set", () => {
+    const p = buildCallerProfile({
+      callerName: "Adeel",
+      mine: mix(132, 54, 6),
+      others: mix(300, 81, 0),
+    });
+    for (const s of p.skills) {
+      expect(s.bar, s.key).not.toBeNull();
+      expect(s.bar!.value, s.key).toBeGreaterThan(0);
+    }
+  });
+
+  it("implies the opening bar from the two published per-dial figures", () => {
+    // 12% owner-reached ÷ 25% connect = 48% of answered calls.
+    const p = buildCallerProfile({ callerName: "X", mine: mix(132, 54, 6), others: mix(300, 81, 0) });
+    const opening = p.skills.find((s) => s.key === "opening")!;
+    expect(opening.bar!.value).toBeCloseTo(0.48, 2);
+  });
+
+  it("calls the real case correctly: ahead of the team, under the bar", () => {
+    // Adeel's actual numbers. The team reached zero owners, so team-relative
+    // scoring called him strong; 11% against a 48% bar is not strong.
+    const p = buildCallerProfile({
+      callerName: "Adeel",
+      mine: mix(132, 54, 6),
+      others: mix(300, 81, 0),
+    });
+    const opening = p.skills.find((s) => s.key === "opening")!;
+    expect(opening.verdict).toBe("strong");
+    expect(opening.vsBar).toBe("below");
+    expect(p.headline).toContain("Ahead of the team");
+    expect(p.headline).toContain("under the starting benchmark");
+  });
+
+  it("says 'target' only for a bar you chose", () => {
+    const p = buildCallerProfile({
+      callerName: "Own bars",
+      mine: mix(200, 60, 10),
+      others: mix(300, 90, 15),
+      targets: [
+        { metric: "connect_rate" as never, target: 0.6, source: "our 2025 numbers", minimumSample: 30 },
+        { metric: "owner_reach_rate" as never, target: 0.3, source: "our 2025 numbers", minimumSample: 30 },
+        { metric: "appointment_rate" as never, target: 0.05, source: "our 2025 numbers", minimumSample: 30 },
+        { metric: "calls_per_day" as never, target: 60, source: "our 2025 numbers", minimumSample: 30 },
+      ],
+    });
+    expect(p.headline.toLowerCase()).toContain("under target");
+    expect(p.headline).not.toContain("starting benchmark");
+    expect(p.skills.every((s) => s.bar && !s.bar.borrowed)).toBe(true);
+  });
+
+  it("marks a bar as borrowed so it is never mistaken for yours", () => {
+    const p = buildCallerProfile({ callerName: "X", mine: mix(200, 60, 10), others: mix(300, 90, 15) });
+    expect(p.skills.every((s) => s.bar?.borrowed)).toBe(true);
+  });
+
+  it("withholds a bar verdict on too few of that skill's own denominator", () => {
+    // 4 owner conversations cannot settle closing against any bar.
+    const p = buildCallerProfile({
+      callerName: "Thin",
+      mine: mix(120, 60, 4),
+      others: mix(300, 150, 30),
+    });
+    expect(p.skills.find((s) => s.key === "closing")!.vsBar).toBe("unknown");
+    expect(p.skills.find((s) => s.key === "connecting")!.vsBar).not.toBe("unknown");
+  });
+
+  it("clears the bar when the caller is genuinely good", () => {
+    // 60% connect against a 25% bar; 67% of answered reach the owner against 48%.
+    const p = buildCallerProfile({
+      callerName: "Good",
+      mine: mix(200, 120, 80, 12),
+      others: mix(300, 90, 15),
+    });
+    expect(p.skills.find((s) => s.key === "connecting")!.vsBar).toBe("above");
+    expect(p.skills.find((s) => s.key === "opening")!.vsBar).toBe("above");
   });
 });

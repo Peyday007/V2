@@ -29,7 +29,17 @@ import {
   type Interval,
 } from "./analytics";
 import { talkedToSomeone, MIN_FOR_SKILL, P_POSITIVE, P_NEGATIVE } from "./callerProfile";
-import { assess, type Assessment, type MetricKey, type Target } from "./benchmarks";
+import {
+  assess,
+  effectiveTarget,
+  isBorrowed,
+  SUGGESTED_SOURCE,
+  type Assessment,
+  type EffectiveTarget,
+  type MetricKey,
+  type Target,
+} from "./benchmarks";
+import { barForSkill } from "./callerProfile";
 
 /**
  * Which absolute bars a trial is big enough to speak to.
@@ -75,7 +85,29 @@ export type TrialPart = {
   verdict: "above" | "below" | "on_par" | "unknown";
   /** Why it could not be settled, when it could not. */
   note?: string;
+
+  /**
+   * The absolute bar, in the same row as the candidate's number. The team
+   * benchmark alone decides hires against whatever the team happens to be
+   * doing this month — which is how a weak team stays weak.
+   */
+  bar: EffectiveTarget | null;
+  vsBar: "above" | "below" | "on_par" | "unknown";
 };
+
+/** Within 10% of the bar counts as meeting it — these are approximations. */
+const BAR_NEAR = 0.1;
+
+function againstBar(
+  rate: number | null,
+  trials: number,
+  bar: EffectiveTarget | null
+): TrialPart["vsBar"] {
+  if (!bar || rate === null || trials < MIN_FOR_SKILL || bar.value <= 0) return "unknown";
+  const ratio = rate / bar.value;
+  if (Math.abs(ratio - 1) <= BAR_NEAR) return "on_par";
+  return rate > bar.value ? "above" : "below";
+}
 
 export type TrialRecommendation = {
   key: "add" | "cut" | "extend" | "in_progress";
@@ -128,10 +160,20 @@ function part(
   trials: number,
   benchSuccesses: number,
   benchTrials: number,
-  noteWhenThin: string
+  noteWhenThin: string,
+  targets?: Target[] | null
 ): TrialPart {
   const { p, verdict, status } = judge(successes, trials, benchSuccesses, benchTrials);
+  const rate = trials > 0 ? successes / trials : null;
+  // The trial parts share their denominators with the profile skills, so they
+  // share the bar too.
+  const bar =
+    key === "connecting" || key === "opening" || key === "closing"
+      ? barForSkill(key, targets)
+      : null;
   return {
+    bar,
+    vsBar: againstBar(rate, trials, bar),
     key,
     label,
     meaning,
@@ -176,7 +218,8 @@ export function scoreTrial(input: TrialInput): TrialScore {
       calls.length,
       benchmark.talked,
       benchmark.dials,
-      "Not enough dials yet to compare."
+      "Not enough dials yet to compare.",
+      input.targets
     ),
     part(
       "opening",
@@ -186,7 +229,8 @@ export function scoreTrial(input: TrialInput): TrialScore {
       talked.length,
       benchmark.ownerConversations,
       benchmark.talked,
-      "Not enough answered calls yet to compare."
+      "Not enough answered calls yet to compare.",
+      input.targets
     ),
     part(
       "closing",
@@ -196,7 +240,8 @@ export function scoreTrial(input: TrialInput): TrialScore {
       owners.length,
       benchmark.appointments,
       benchmark.ownerConversations,
-      `Only ${owners.length} owner conversations came out of this trial. A trial this size almost never produces enough of them to judge closing — treat this number as a hint, not a verdict.`
+      `Only ${owners.length} owner conversations came out of this trial. A trial this size almost never produces enough of them to judge closing — treat this number as a hint, not a verdict.`,
+      input.targets
     ),
   ];
 
@@ -210,7 +255,17 @@ export function scoreTrial(input: TrialInput): TrialScore {
         : perDay < benchmark.callsPerDay * 0.6
           ? "below"
           : "on_par";
+  const effortBar = effectiveTarget("calls_per_day", input.targets);
   parts.unshift({
+    bar: effortBar,
+    vsBar:
+      effortBar && days > 0
+        ? Math.abs(perDay / effortBar.value - 1) <= BAR_NEAR
+          ? "on_par"
+          : perDay > effortBar.value
+            ? "above"
+            : "below"
+        : "unknown",
     key: "effort",
     label: "Effort",
     meaning: "Calls made per day worked",
@@ -231,6 +286,9 @@ export function scoreTrial(input: TrialInput): TrialScore {
   if (input.intelCaptureCount !== undefined) {
     const rate = calls.length > 0 ? input.intelCaptureCount / calls.length : 0;
     parts.push({
+      // No published figure exists for how often a caller writes things down.
+      bar: null,
+      vsBar: "unknown",
       key: "capture",
       label: "Capture",
       meaning: "How often they wrote down something new about the business",
@@ -253,7 +311,24 @@ export function scoreTrial(input: TrialInput): TrialScore {
   );
 
   /* --------------------------- against the bar --------------------------- */
-  const targetBy = new Map((input.targets || []).map((t) => [t.metric, t]));
+  /**
+   * The bar in force: yours where you set one, the borrowed starting figure
+   * otherwise. Without the fallback a trial had no absolute bar at all until
+   * someone visited the Targets page — so a candidate who reached zero owners
+   * in a hundred dials still came back as "add them to the team", purely
+   * because the existing team had not reached many either.
+   */
+  const targetFor = (metric: MetricKey): Target | null => {
+    const eff = effectiveTarget(metric, input.targets);
+    if (!eff) return null;
+    return {
+      metric,
+      target: eff.value,
+      source: eff.borrowed ? SUGGESTED_SOURCE : eff.source,
+      minimumSample: 30,
+    };
+  };
+
   const absolute: Assessment[] =
     calls.length < MIN_DIALS_FOR_ABSOLUTE
       ? []
@@ -268,7 +343,7 @@ export function scoreTrial(input: TrialInput): TrialScore {
             observations: calls.length,
             teamValue: benchmark.dials > 0 ? teamSuccesses / benchmark.dials : null,
             teamObservations: benchmark.dials,
-            target: targetBy.get(metric) ?? null,
+            target: targetFor(metric),
           });
         });
 
@@ -337,10 +412,14 @@ function recommendOnTrial(
   const missed = missedBars(absolute);
   const missedText = missed.map((a) => a.label.toLowerCase()).join(" and ");
 
-  const noBarSet = absolute.every((a) => a.target === null);
-  if (noBarSet && made >= target) {
+  if (absolute.length === 0 && made >= target) {
     unresolved.push(
-      "Whether any of this is good in absolute terms: every score above is relative to your existing team. Set targets on the Targets page and this trial will say whether the bar was cleared."
+      `Whether any of this is good in absolute terms: under ${MIN_DIALS_FOR_ABSOLUTE} dials no bar is applied, so every score above is relative to your existing team.`
+    );
+  }
+  if (missed.some((a) => a.targetIsBorrowed)) {
+    unresolved.push(
+      "Whether the bar itself is right for you: it is a borrowed starting figure from general cold-calling numbers, not measured on your business. Set your own on the Targets page."
     );
   }
 
@@ -354,7 +433,9 @@ function recommendOnTrial(
       key: "extend",
       action: "Extend the trial before adding them",
       evidence:
-        `${evidence} But they are under your target on ${missedText} — ` +
+        `${evidence} But they are under ${
+          missed.every((a) => a.targetIsBorrowed) ? "the starting benchmark" : "your target"
+        } on ${missedText} — ` +
         missed.map((a) => a.verdict).join(" ") +
         ` Beating the current team is not the same as being good enough, and the ` +
         `team is under that bar too. Another block of calls will show whether this ` +
@@ -420,11 +501,19 @@ function recommendOnTrial(
     ]
       .filter(Boolean)
       .join(", ");
+    // A missed bar belongs in the evidence even when the team comparison is
+    // what triggered the extension — it is usually the more damning of the two.
+    const barNote =
+      missed.length > 0
+        ? ` They are also under ${
+            missed.every((a) => a.targetIsBorrowed) ? "the starting benchmark" : "your target"
+          } on ${missedText}.`
+        : "";
     return {
       key: "extend",
       action: "Extend the trial before deciding",
       evidence:
-        `One weak area — ${why} — but the rest is either fine or unresolved. ` +
+        `One weak area — ${why} — but the rest is either fine or unresolved.${barNote} ` +
         `Another hundred calls would settle it; deciding now would be a coin toss on ` +
         `whichever part this trial could not measure.`,
       unresolved,
