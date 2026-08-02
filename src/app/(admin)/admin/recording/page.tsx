@@ -8,6 +8,9 @@ type Settings = {
   consent_announcement: string;
   retention_days: number;
   transcription_enabled: boolean;
+  ai_decides: boolean;
+  ai_confidence_floor: number;
+  ai_spot_check_rate: number;
 };
 
 type Payload = {
@@ -63,7 +66,7 @@ export default function RecordingSettingsPage() {
     load();
   }, [load]);
 
-  async function save(patch: Partial<Settings>) {
+  async function save(patch: Partial<Settings> & { acknowledge_unmeasurable?: boolean }) {
     setBusy(true);
     setErr("");
     const res = await fetch("/api/recording-settings", {
@@ -244,6 +247,99 @@ export default function RecordingSettingsPage() {
               puts the prospect&rsquo;s words in your caller&rsquo;s mouth is
               worse than one that admits it does not know.
             </p>
+          </div>
+
+          <h2 style={{ margin: "22px 0 8px" }}>Who has the last word</h2>
+
+          <div className="card" style={{ marginBottom: 10 }}>
+            <label style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={draft.ai_decides}
+                disabled={busy}
+                onChange={(e) => save({ ai_decides: e.target.checked })}
+              />
+              <strong>Let the AI decide what happened on a call</strong>
+            </label>
+            <p className="faint" style={{ marginTop: 4, lineHeight: 1.55 }}>
+              On: the model reads each transcript and its reading is written
+              straight to the call record. Nobody confirms it. Off: nothing
+              applies until a person does, which at any real call volume means
+              nothing applies.
+            </p>
+            <p className="faint" style={{ marginTop: 6, lineHeight: 1.55 }}>
+              Either way there is a short list it never decides alone — lifting a
+              do-not-call, changing a price or the script, messaging a prospect,
+              or judging a caller. Those are consequence problems, not confidence
+              problems, and they appear on the{" "}
+              <a href="/admin/review">Review</a> page instead.
+            </p>
+          </div>
+
+          <div className="card" style={{ marginBottom: 10 }}>
+            <strong>Check this share of confident calls anyway</strong>
+            <p className="faint" style={{ marginTop: 4, marginBottom: 8, lineHeight: 1.55 }}>
+              A random slice is put in front of you whatever the model&rsquo;s
+              confidence. Without it, &ldquo;the AI decides&rdquo; quietly becomes
+              &ldquo;nobody can tell whether the AI is any good&rdquo; — accuracy
+              stops being measurable the moment every reading is accepted unseen.
+              At 300 calls a day, 2% is about six calls.
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={Math.round((draft.ai_spot_check_rate ?? 0) * 100)}
+                onChange={(e) =>
+                  setDraft({ ...draft, ai_spot_check_rate: Number(e.target.value) / 100 })
+                }
+                style={{ maxWidth: 90 }}
+              />
+              <span className="faint">% of calls</span>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={() =>
+                  save({
+                    ai_spot_check_rate: draft.ai_spot_check_rate,
+                    // Zero is allowed, but only deliberately.
+                    acknowledge_unmeasurable: draft.ai_spot_check_rate === 0,
+                  })
+                }
+              >
+                Save
+              </button>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 10 }}>
+            <strong>Escalate anything below this confidence</strong>
+            <p className="faint" style={{ marginTop: 4, marginBottom: 8, lineHeight: 1.55 }}>
+              Confidence comes from the transcript — how much usable speech there
+              was and how much of it could be attributed — not from the model
+              being asked how sure it feels.
+            </p>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={Math.round((draft.ai_confidence_floor ?? 0.6) * 100)}
+                onChange={(e) =>
+                  setDraft({ ...draft, ai_confidence_floor: Number(e.target.value) / 100 })
+                }
+                style={{ maxWidth: 90 }}
+              />
+              <span className="faint">%</span>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={() => save({ ai_confidence_floor: draft.ai_confidence_floor })}
+              >
+                Save
+              </button>
+            </div>
           </div>
 
           {!data.serviceRole && (

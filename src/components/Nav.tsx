@@ -11,6 +11,8 @@ const links = [
   { href: "/metrics", label: "Metrics" },
   { href: "/admin/analytics", label: "Analytics" },
   { href: "/admin/followups", label: "Follow-ups" },
+  { href: "/admin/review", label: "Review" },
+  { href: "/admin/learning", label: "Learning" },
   { href: "/admin/appointments", label: "Appointments" },
   { href: "/admin/callers", label: "Callers" },
   { href: "/admin/targets", label: "Targets" },

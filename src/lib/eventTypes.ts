@@ -60,6 +60,11 @@ export const EVENT_TYPES = [
   "followup.updated",
   "followup.overdue",
   "analysis.confirmed",
+  // The model read the call and its reading was written without being asked.
+  "analysis.applied",
+  "analysis.escalated",
+  "analysis.corrected",
+  "action.blocked",
   "recording.started",
   "recording.blocked",
   "consent.captured",

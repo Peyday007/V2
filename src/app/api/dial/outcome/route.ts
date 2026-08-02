@@ -8,6 +8,7 @@ import { coerceStage, nextStageAfterOutcome } from "@/lib/stages";
 import { normalizePhone } from "@/lib/normalize";
 import { processCompletedCall } from "@/lib/callIntelligence";
 import { linkRecordingToCall } from "@/lib/recordingStore";
+import { reviewCall } from "@/lib/callReview";
 
 type Values = Record<string, string>;
 
@@ -615,6 +616,20 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     console.error("[dial/outcome] call intelligence failed:", e);
+  }
+
+  /* ---------------- the model's reading ----------------
+   * The recording is usually finalised before this call row existed, so the
+   * transcript has nowhere to attach until now. Running it here means the
+   * model's reading lands on calls where the caller saved the outcome after
+   * hanging up — which is all of them.
+   *
+   * Guarded like everything else in this block: the outcome is already saved.
+   */
+  try {
+    await reviewCall(call.id);
+  } catch (e) {
+    console.error("[dial/outcome] transcript review failed:", e);
   }
 
   return NextResponse.json({

@@ -67,6 +67,7 @@ has not been done yet.
 9j. Repeat with `supabase/migrations/0019_call_intelligence.sql` (new query, paste, Run).
 9k. Repeat with `supabase/migrations/0020_performance_targets.sql` (new query, paste, Run).
 9l. Repeat with `supabase/migrations/0021_browser_recordings.sql` (new query, paste, Run).
+9m. Repeat with `supabase/migrations/0022_ai_authority.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -489,6 +490,69 @@ caller directly and the prospect through a phone speaker across a desk. Telling
 them apart from that is guesswork, so a label is only kept where the
 transcriber was confident. A transcript that confidently puts the prospect's
 words in your caller's mouth is worse than one that admits it does not know.
+
+### The AI decides what happened
+
+Three hundred calls a day cannot be confirmed by hand. Asking for it produces
+an ignored queue or a rubber stamp, and both are worse than letting the machine
+decide. So once a call is transcribed, **the model reads it and its reading is
+written to the call record. Nobody confirms it.**
+
+Three things stop that being reckless, and none of them need you to review 300
+calls:
+
+**A short queue.** `/admin/review` shows only what the model could not settle:
+a transcript too thin to be sure, a contradiction with the caller on something
+that matters, or anything touching do-not-call or a complaint. The page states
+its own load — *"7 of 300 calls need a look — 2% of them"* — so the promise
+stays checkable.
+
+**A spot check.** A random 2% is surfaced whatever the confidence. Without it,
+"the AI decides" quietly becomes "nobody can tell whether the AI is any good" —
+accuracy stops being measurable the moment every reading is accepted unseen. At
+300 calls that is about six a day. You can turn it down; setting it to zero
+needs a deliberate confirmation.
+
+**A list it never decides alone.** Lifting a do-not-call, changing a price or
+the script, messaging a prospect, judging a caller. These are consequence
+problems, not confidence problems, and no score makes them safe. The model can
+*ask*; the request lands on the Review page and happens because you said so, or
+not at all.
+
+Two smaller rules, both of which exist because of how this audio is captured:
+
+- **Suppression applies immediately, release never does.** A do-not-call heard
+  on a call is acted on at once — that direction is safe. Undoing one is the
+  dangerous direction and it is blocked.
+- **A typed email beats a transcribed one.** Where your caller wrote down an
+  email or a meeting time, theirs stands. A transcript of "d-a-v-e at north
+  side" is exactly where speech-to-text fails, and this is a phone speaker
+  across a desk.
+
+Confidence comes from the transcript — how much usable speech there was, how
+much of it could be attributed — not from asking the model how sure it feels. A
+model asked that will say 0.9 about three words.
+
+Both readings are kept: what the caller's form said, and what the model heard.
+That pair is the only thing that makes accuracy measurable after the fact.
+
+## Learning
+
+`/admin/learning` is what the calls suggest might work better. **Nothing there
+applies itself.** A platform that rewrites its own pitch after a good week is
+how a team ends up with a script nobody chose and nobody can explain to a new
+hire.
+
+Press *Look for something worth changing* and it examines every recorded
+approach. It refuses far more often than it proposes, which is correct — most
+differences between two openers are noise, and it ranks by the lower bound of
+the interval so a lucky run of six calls cannot beat a steady four hundred.
+
+Approving a proposal starts a **test**, not a rollout. Traffic splits between
+the current approach and the candidate, and the candidate is only promoted if
+the primary metric improves **and** nothing on the guardrail list gets worse.
+More meetings booked with fewer attended is a regression wearing a win's
+clothes, and the guardrails are there to catch exactly that.
 
 ### What this is not
 

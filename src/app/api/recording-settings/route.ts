@@ -24,7 +24,7 @@ export async function GET() {
     const { data, error } = await supabaseAdmin()
       .from("call_intelligence_settings")
       .select(
-        "recording_enabled, consent_policy, consent_announcement, retention_days, transcription_enabled"
+        "recording_enabled, consent_policy, consent_announcement, retention_days, transcription_enabled, ai_decides, ai_confidence_floor, ai_spot_check_rate"
       )
       .eq("id", true)
       .maybeSingle();
@@ -57,6 +57,35 @@ export async function PUT(req: NextRequest) {
   }
   if (typeof body.transcription_enabled === "boolean") {
     patch.transcription_enabled = body.transcription_enabled;
+  }
+  if (typeof body.ai_decides === "boolean") {
+    patch.ai_decides = body.ai_decides;
+  }
+  if (body.ai_spot_check_rate !== undefined) {
+    const rate = Number(body.ai_spot_check_rate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+      return NextResponse.json(
+        { error: "The spot-check rate is a share between 0 and 1 — 0.02 means 2%." },
+        { status: 400 }
+      );
+    }
+    if (rate === 0 && body.acknowledge_unmeasurable !== true) {
+      return NextResponse.json(
+        {
+          error:
+            "A zero spot-check rate means no reading is ever checked, so model accuracy becomes unmeasurable. Set at least 1%, or confirm you want it off.",
+        },
+        { status: 400 }
+      );
+    }
+    patch.ai_spot_check_rate = rate;
+  }
+  if (body.ai_confidence_floor !== undefined) {
+    const floor = Number(body.ai_confidence_floor);
+    if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
+      return NextResponse.json({ error: "The confidence floor is between 0 and 1." }, { status: 400 });
+    }
+    patch.ai_confidence_floor = floor;
   }
   if (typeof body.consent_policy === "string") {
     if (!(POLICIES as readonly string[]).includes(body.consent_policy)) {
