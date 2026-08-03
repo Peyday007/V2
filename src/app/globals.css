@@ -69,7 +69,7 @@ button {
   cursor: pointer;
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
   font: inherit;
@@ -80,6 +80,25 @@ textarea {
   padding: 8px 10px;
   width: 100%;
 }
+
+/*
+ * A checkbox is a control, not a field.
+ *
+ * The rule above used to catch these too, which stretched every tickbox to the
+ * full width of its row and pushed the label that belongs to it out to the far
+ * right — so on the Recording page the box sat mid-row and "Record calls" was
+ * against the opposite margin, with no way to tell which label went with which
+ * control. Three call sites had already patched around it with an inline
+ * width:auto; the rest had not.
+ */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  flex: none;
+  accent-color: var(--amber);
+  cursor: pointer;
+}
+
 input:focus,
 select:focus,
 textarea:focus {

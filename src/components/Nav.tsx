@@ -47,10 +47,21 @@ export default function Nav({ protectedConsole }: { protectedConsole: boolean })
           redeploy.
         </div>
       )}
+    {/*
+      Wraps rather than overflowing.
+
+      Seventeen links no longer fit on one line, and without this the nav forced
+      the whole page wider than the window — so every admin page sat scrolled a
+      little to the right, with "DISPATCH BOARD" chopped off at the left edge
+      and the last link chopped off at the right. A navigation bar that pushes
+      the page it navigates out of view is worse than a second row.
+    */}
     <nav
       style={{
         display: "flex",
         alignItems: "center",
+        flexWrap: "wrap",
+        rowGap: 4,
         gap: 8,
         padding: "14px 24px",
         borderBottom: "1px solid var(--border)",
@@ -87,7 +98,7 @@ export default function Nav({ protectedConsole }: { protectedConsole: boolean })
             href={l.href}
             style={{
               padding: "6px 2px",
-              marginRight: 18,
+              marginRight: 10,
               color: active ? "var(--amber)" : "var(--text-dim)",
               fontWeight: 700,
               fontSize: "0.8rem",
