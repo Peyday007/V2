@@ -395,11 +395,39 @@ export default function DialPage() {
         */}
         <CallerUpdates />
         <div style={{ textAlign: "center", marginTop: 30 }}>
-          <h1 style={{ marginBottom: 12 }}>All done 🎉</h1>
-          <p className="muted" style={{ marginBottom: 20 }}>
-            No leads left in your packet, {data.caller}. Check with your admin for a
-            new packet.
-          </p>
+          {/*
+            Only celebrate a real finish.
+            
+            "All done 🎉" used to show whenever no lead could be served, for any
+            reason, so a fault looked exactly like a completed packet and the
+            caller signed out on a packet with leads still in it.
+          */}
+          {data.error ? (
+            <>
+              <h1 style={{ marginBottom: 12, color: "var(--red)" }}>
+                Something is wrong
+              </h1>
+              <p style={{ marginBottom: 8, lineHeight: 1.6, maxWidth: 520, margin: "0 auto 8px" }}>
+                {data.error}
+              </p>
+              {data.remaining > 0 && (
+                <p className="muted" style={{ marginBottom: 20 }}>
+                  {data.remaining} lead{data.remaining === 1 ? "" : "s"} still in your packet.
+                </p>
+              )}
+              <button className="btn" onClick={fetchNext} style={{ marginRight: 8 }}>
+                Try again
+              </button>
+            </>
+          ) : (
+            <>
+              <h1 style={{ marginBottom: 12 }}>All done 🎉</h1>
+              <p className="muted" style={{ marginBottom: 20 }}>
+                No leads left in your packet, {data.caller}. Check with your admin for
+                a new packet.
+              </p>
+            </>
+          )}
           <button className="btn-ghost" onClick={logout}>
             Sign out
           </button>

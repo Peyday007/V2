@@ -115,7 +115,8 @@ export async function GET() {
   // Wider scan than we will serve: ordering is decided across the whole
   // window, not just the next few in list order.
   const scanIds = candidates.slice(0, 150).map((p) => p.lead_id);
-  const [{ data: scanLeads }, { data: suppressions, error: supErr }] = await Promise.all([
+  const [{ data: scanLeads, error: scanErr }, { data: suppressions, error: supErr }] =
+    await Promise.all([
     db
       .from("leads")
       .select(
@@ -123,7 +124,24 @@ export async function GET() {
       )
       .in("id", scanIds),
     db.from("suppressions").select("lead_id, normalized_phone"),
-  ]);
+    ]);
+
+  // A failed lead scan used to be swallowed: scanLeads came back null, every
+  // candidate was dropped for having no row, and the caller was told "All
+  // done". Silently, with a full packet.
+  if (scanErr) {
+    return NextResponse.json(
+      {
+        caller: caller.name,
+        lead: null,
+        remaining: candidates.length,
+        error:
+          `Your packet has ${candidates.length} leads left, but they could not be read. ` +
+          `Tell your admin: ${scanErr.message}`,
+      },
+      { status: 503 }
+    );
+  }
 
   if (supErr) {
     // Refuse to serve a lead rather than guess. Being unable to read the
@@ -190,7 +208,13 @@ export async function GET() {
 
   if (skipped.length > 0) {
     // Close them out of the packet and flag them, so this work is done once.
-    await db.from("packet_leads").update({ status: "done" }).in("lead_id", skipped);
+    // Scoped to this caller's own packets. Unscoped, this closed the lead out
+    // of every packet in the system that happened to contain it.
+    await db
+      .from("packet_leads")
+      .update({ status: "done" })
+      .in("packet_id", packetIds)
+      .in("lead_id", skipped);
     // A suppressed lead's callback must die with it, or it comes straight back.
     await db.from("callbacks").update({ status: "cancelled" }).in("lead_id", skipped);
     await db.from("leads").update({ do_not_call: true }).in("id", skipped);
@@ -203,11 +227,43 @@ export async function GET() {
   }
 
   if (!next) {
+    /*
+     * THE LIE THIS REPLACES.
+     *
+     * `remaining` was hardcoded to 0 here, so any reason for failing to serve
+     * a lead — a lead row that could not be read, every candidate suppressed,
+     * a packet whose rows point at leads that no longer exist — came out as
+     * "All done, no leads left in your packet". A caller with 96 pending leads
+     * was told they had finished, and nobody could tell the difference between
+     * a real finish and a fault.
+     */
+    const unreadable = candidates.filter((c) => !leadById.has(c.lead_id)).length;
+    const stillPending = candidates.length - skipped.length;
+
+    let explanation: string | null = null;
+    if (candidates.length === 0) {
+      explanation = null; // genuinely finished
+    } else if (unreadable > 0) {
+      explanation =
+        `${unreadable} of the ${candidates.length} leads left in your packet could not be ` +
+        `loaded. This is a fault, not an empty packet — tell your admin.`;
+    } else if (skipped.length > 0 && stillPending === 0) {
+      explanation =
+        `The ${skipped.length} leads left in your packet were all on the do-not-call ` +
+        `list and have been removed. Ask your admin for a new packet.`;
+    } else if (stillPending > 0) {
+      explanation =
+        `Your packet still has ${stillPending} leads, but none could be served. ` +
+        `This is a fault, not an empty packet — tell your admin.`;
+    }
+
     return NextResponse.json({
       caller: caller.name,
       lead: null,
-      remaining: 0,
+      // The truth. Zero only when the packet really is empty.
+      remaining: Math.max(0, stillPending),
       suppressed_removed: skipped.length,
+      error: explanation,
     });
   }
 
