@@ -171,17 +171,30 @@ export async function createAndSendPacket(input: SendInput): Promise<SendOutcome
       )
       .single();
     if (error || !data) {
-      const msg = error?.message || "Could not create the packet.";
-      return {
-        ok: false,
-        error: /relation .* does not exist|column .* does not exist|schema cache/i.test(msg)
-          ? `Run supabase/migrations/0024_workshop_packets.sql in the Supabase SQL Editor. (${msg})`
-          : msg,
-        link: null,
-        packet: null,
-      };
+      // 23505 = the one-packet-per-lead unique index. Two people pressed Send
+      // on the same business at once; the other one won. That is not a failure
+      // worth showing anybody — load the row they created and carry on with
+      // the same token, which is exactly what the constraint is there to
+      // guarantee.
+      if (error?.code === "23505") {
+        const existing = await loadPacket(input.leadId);
+        if (existing) packet = existing;
+      }
+
+      if (!packet) {
+        const msg = error?.message || "Could not create the packet.";
+        return {
+          ok: false,
+          error: /relation .* does not exist|column .* does not exist|schema cache/i.test(msg)
+            ? `Run supabase/migrations/0024_workshop_packets.sql in the Supabase SQL Editor. (${msg})`
+            : msg,
+          link: null,
+          packet: null,
+        };
+      }
+    } else {
+      packet = data as PacketRow;
     }
-    packet = data as PacketRow;
   }
 
   const origin = await appOrigin();

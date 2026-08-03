@@ -105,6 +105,33 @@ create index if not exists calls_script_version_idx
 --    the browser.
 -- ---------------------------------------------------------------------------
 alter table workshop_packets enable row level security;
+
 drop policy if exists workshop_packets_anon_all on workshop_packets;
-create policy workshop_packets_anon_all on workshop_packets
-  for all to anon, authenticated using (true) with check (true);
+
+-- Broken across short lines deliberately. A long final line is the one a
+-- copy-paste truncates, and a half-pasted policy fails with "syntax error at
+-- or near \"wi\"" — which reads like a bug in the file rather than a clipboard
+-- that dropped the last few characters.
+create policy workshop_packets_anon_all
+  on workshop_packets
+  for all
+  to anon, authenticated
+  using (true)
+  with check (true);
+
+-- ---------------------------------------------------------------------------
+-- 4. Did it all land?
+--
+--    Run this whole file, then look for one row saying "0024 applied". If you
+--    do not see it, the paste was cut short — scroll to the bottom of the
+--    editor, check the last line is a semicolon, and paste it again. Re-running
+--    is safe: every statement above is idempotent.
+-- ---------------------------------------------------------------------------
+select
+  '0024 applied' as migration,
+  (select count(*) from information_schema.columns
+     where table_name = 'workshop_packets') as packet_columns,
+  (select count(*) from information_schema.columns
+     where table_name = 'calls' and column_name = 'script_version') as script_version_column,
+  (select count(*) from pg_policies
+     where tablename = 'workshop_packets') as policies;
