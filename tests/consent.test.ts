@@ -157,3 +157,48 @@ describe("retention", () => {
     expect(retentionExpiry(created, 0).getTime()).toBeGreaterThan(created.getTime());
   });
 });
+
+describe("record one-party states, skip the two-party ones", () => {
+  const base = { policy: "one_party_only" as const, recordingEnabled: true };
+
+  it("records where one person's consent is enough, with NO announcement", () => {
+    const d = decideConsent({ ...base, leadState: "TX" });
+    expect(d.allowed).toBe(true);
+    expect(d.announcementRequired).toBe(false);
+    expect(d.affirmativeConsentRequired).toBe(false);
+    expect(d.status).toBe("not_required");
+  });
+
+  it("DOES NOT RECORD AT ALL in an all-party state — it does not announce instead", () => {
+    // This is the whole difference from the other policies: they handle a
+    // two-party state by asking; this one handles it by walking away.
+    for (const state of ALL_PARTY_CONSENT_STATES) {
+      const d = decideConsent({ ...base, leadState: state });
+      expect(d.allowed, state).toBe(false);
+      expect(d.announcementRequired, state).toBe(false);
+      expect(d.status, state).toBe("blocked");
+    }
+  });
+
+  it("says which state stopped it, so nobody thinks it is broken", () => {
+    expect(decideConsent({ ...base, leadState: "CA" }).reason).toMatch(/CA/);
+    expect(decideConsent({ ...base, leadState: "CA" }).reason).toMatch(/not recorded/i);
+  });
+
+  it("an unknown state is not recorded either", () => {
+    const d = decideConsent({ ...base, leadState: null });
+    expect(d.allowed).toBe(false);
+    expect(d.status).toBe("blocked");
+  });
+
+  it("the master switch still wins", () => {
+    expect(decideConsent({ ...base, recordingEnabled: false, leadState: "TX" }).allowed).toBe(false);
+  });
+
+  it("NEVER asks a caller to say anything, in any state", () => {
+    const states = [...ALL_PARTY_CONSENT_STATES, "TX", "NY", "OH", null];
+    for (const leadState of states) {
+      expect(decideConsent({ ...base, leadState }).announcementRequired, String(leadState)).toBe(false);
+    }
+  });
+});

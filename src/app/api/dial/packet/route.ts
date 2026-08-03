@@ -3,7 +3,7 @@ import { getCallerId } from "@/lib/callerSession";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { recordEvent } from "@/lib/events";
 import { smsCapability } from "@/lib/sms";
-import { canSend, computeGaps } from "@/lib/workshopPacket";
+import { canGenerateLink, computeGaps } from "@/lib/workshopPacket";
 import {
   COMPANY_NAME,
   createAndSendPacket,
@@ -29,8 +29,7 @@ function payload(over: Record<string, unknown> = {}) {
     link: null,
     defaults: { name: "", phone: "" },
     gaps: [],
-    canSend: false,
-    blockedReason: null as string | null,
+    suppressedReason: null as string | null,
     sms: smsCapability(),
     companyName: COMPANY_NAME,
     error: null as string | null,
@@ -61,9 +60,9 @@ export async function GET(req: NextRequest) {
 
     const packet = await loadPacket(leadId);
     const defaults = defaultsFor(lead);
-    const gate = canSend({
-      ownerName: packet?.owner_name || defaults.name,
-      ownerPhone: packet?.owner_phone || defaults.phone,
+    // Only suppression is reported here. Whether a TEXT can go is decided in
+    // the panel from the name and number, because those are editable there.
+    const gate = canGenerateLink({
       doNotCall: lead.do_not_call,
       phoneInvalid: lead.phone_invalid,
     });
@@ -72,8 +71,7 @@ export async function GET(req: NextRequest) {
       payload({
         packet,
         defaults,
-        canSend: gate.allowed,
-        blockedReason: gate.reason,
+        suppressedReason: gate.reason,
         gaps: computeGaps({
           businessName: lead.business_name,
           city: lead.city,

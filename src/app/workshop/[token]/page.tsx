@@ -10,13 +10,14 @@ import { use, useCallback, useEffect, useState } from "react";
 // if there are no computable gaps, it shows none rather than filling the space.
 
 type Gap = { key: string; headline: string; detail: string; basis: string };
+type Recommendation = { key: string; title: string; detail: string; basis: string };
 
 type Packet = {
   businessName: string;
   city: string | null;
   state: string | null;
   gaps: Gap[];
-  demoUrl: string | null;
+  recommendations: Recommendation[];
   contact: { name: string; phone: string; email: string };
   alreadyRequested: boolean;
   requestedAt: string | null;
@@ -170,20 +171,45 @@ export default function WorkshopPage({ params }: { params: Promise<{ token: stri
         </p>
       )}
 
-      {/* ------------------------------- the demo ----------------------------- */}
-      {data.demoUrl && (
-        <div style={{ marginBottom: 30 }}>
-          <h2 style={{ marginBottom: 10 }}>Hear it answer</h2>
-          <a
-            className="btn"
-            href={data.demoUrl}
-            target="_blank"
-            rel="noreferrer"
-            style={{ display: "inline-flex" }}
-          >
-            Play the demo ↗
-          </a>
-        </div>
+      {/* --------------------------- what we would do -------------------------- */}
+      {data.recommendations.length > 0 && (
+        <>
+          <h2 style={{ marginBottom: 4 }}>What we&rsquo;d set up for you</h2>
+          <p className="faint" style={{ marginBottom: 14, lineHeight: 1.55 }}>
+            All of it runs on your existing number. Nothing to install.
+          </p>
+          <div style={{ display: "grid", gap: 16, marginBottom: 30 }}>
+            {data.recommendations.map((r, i) => (
+              <div key={r.key} style={{ display: "flex", gap: 12 }}>
+                <div
+                  aria-hidden
+                  style={{
+                    flex: "none",
+                    width: 26,
+                    height: 26,
+                    borderRadius: "50%",
+                    border: "1px solid var(--amber)",
+                    color: "var(--amber)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "0.8rem",
+                    fontWeight: 700,
+                    marginTop: 2,
+                  }}
+                >
+                  {i + 1}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: "1.02rem", marginBottom: 3 }}>
+                    {r.title}
+                  </div>
+                  <p style={{ lineHeight: 1.6 }}>{r.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {/* -------------------------------- the CTA ----------------------------- */}

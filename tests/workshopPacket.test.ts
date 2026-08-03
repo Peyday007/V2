@@ -19,6 +19,8 @@ import {
   advanceStatus,
   needsAttention,
   canSend,
+  canGenerateLink,
+  buildRecommendations,
   computeGaps,
   gapsAreThin,
   renderMessage,
@@ -125,6 +127,75 @@ describe("whether a packet may be sent at all", () => {
   it("suppression outranks a missing name — the most decisive reason wins", () => {
     const v = canSend({ ownerName: "", ownerPhone: "", doNotCall: true });
     expect(v.reason).toMatch(/do-not-call/i);
+  });
+});
+
+describe("copying the link is a weaker bar than texting it", () => {
+  it("THE BUG: a link needs no owner name and no mobile", () => {
+    // Copy Link shared the send gate, so on every lead with no discovered
+    // mobile — all of them, until a contact provider is configured — the
+    // button was disabled and pressing it did nothing at all.
+    expect(canGenerateLink({}).allowed).toBe(true);
+    expect(canSend({ ownerName: "", ownerPhone: "" }).allowed).toBe(false);
+  });
+
+  it("but suppression still blocks both routes", () => {
+    expect(canGenerateLink({ doNotCall: true }).allowed).toBe(false);
+    expect(canGenerateLink({ phoneInvalid: true }).allowed).toBe(false);
+  });
+
+  it("a pasted link is still a pitch, so do-not-call is the reason given", () => {
+    expect(canGenerateLink({ doNotCall: true }).reason).toMatch(/do-not-call/i);
+  });
+});
+
+describe("the recommendations on the owner's page", () => {
+  it("always offers something, even on a bare record", () => {
+    const recs = buildRecommendations({ businessName: "Rivera Plumbing" });
+    expect(recs.length).toBeGreaterThan(0);
+    expect(recs.length).toBeLessThanOrEqual(4);
+    expect(recs.every((r) => !!r.title && !!r.detail)).toBe(true);
+  });
+
+  it("tailors the wording when the review count supports it", () => {
+    const recs = buildRecommendations({ businessName: "Rivera Plumbing", reviewCount: 140 });
+    expect(recs[0].detail).toMatch(/140 reviews/);
+    expect(recs[0].basis).toBe("review_count");
+  });
+
+  it("SAYS NOTHING SPECIFIC when the record is empty", () => {
+    const recs = buildRecommendations({ businessName: "Rivera Plumbing", reviewCount: null });
+    const text = recs.map((r) => r.detail).join(" ");
+    expect(text).not.toMatch(/\d+ reviews/);
+    expect(text).not.toMatch(/undefined|null|NaN/);
+    expect(recs[0].basis).toBe("general");
+  });
+
+  it("adds the no-website point only when there is genuinely no website", () => {
+    const without = buildRecommendations({ businessName: "X" });
+    const withSite = buildRecommendations({ businessName: "X", website: "https://x.com" });
+    expect(without.some((r) => r.key === "no_website_capture")).toBe(true);
+    expect(withSite.some((r) => r.key === "no_website_capture")).toBe(false);
+  });
+
+  it("quotes the owner back to themselves when a caller recorded it", () => {
+    const recs = buildRecommendations({
+      businessName: "X",
+      website: "https://x.com",
+      reviewCount: 90,
+      answeringSetup: "Voicemail, and I never check it.",
+    });
+    const said = recs.find((r) => r.key === "stated_setup");
+    expect(said?.detail).toMatch(/Voicemail, and I never check it\./);
+  });
+
+  it("these are an offer, not a claim about how they run today", () => {
+    // The distinction that keeps the page honest on a thin record: promising
+    // to answer after-hours calls is fair to say to anybody; asserting they
+    // ARE missing calls needs evidence we may not have.
+    const recs = buildRecommendations({ businessName: "X", website: "https://x.com" });
+    const text = recs.map((r) => `${r.title} ${r.detail}`).join(" ").toLowerCase();
+    expect(text).not.toMatch(/you are currently missing|you have missed \d/);
   });
 });
 

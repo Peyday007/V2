@@ -5,6 +5,7 @@ import { supabaseAdmin } from "./supabaseAdmin";
 import { recordEvent } from "./events";
 import { sendSms, smsCapability } from "./sms";
 import {
+  canGenerateLink,
   canSend,
   packetUrl,
   renderMessage,
@@ -140,12 +141,20 @@ export async function createAndSendPacket(input: SendInput): Promise<SendOutcome
   if (!lead) return { ok: false, error: "No such lead.", link: null, packet: null };
 
   const l = lead as LeadForPacket;
-  const gate = canSend({
-    ownerName: input.ownerName,
-    ownerPhone: input.ownerPhone,
-    doNotCall: l.do_not_call,
-    phoneInvalid: l.phone_invalid,
-  });
+
+  // Two different bars. Producing a link needs only that the business is not
+  // suppressed; TEXTING one also needs somebody to address it to and a number
+  // to send it to. Applying the send bar to both is what made Copy Link dead
+  // on every lead without a discovered mobile — which, with no contact
+  // provider configured, is all of them.
+  const gate = input.linkOnly
+    ? canGenerateLink({ doNotCall: l.do_not_call, phoneInvalid: l.phone_invalid })
+    : canSend({
+        ownerName: input.ownerName,
+        ownerPhone: input.ownerPhone,
+        doNotCall: l.do_not_call,
+        phoneInvalid: l.phone_invalid,
+      });
   if (!gate.allowed) {
     return { ok: false, error: gate.reason || "Cannot send to this lead.", link: null, packet: null };
   }
@@ -200,7 +209,7 @@ export async function createAndSendPacket(input: SendInput): Promise<SendOutcome
   const origin = await appOrigin();
   const link = packetUrl(origin, packet.token);
   const message = renderMessage({
-    ownerName: input.ownerName,
+    ownerName: input.ownerName.trim() || "there",
     vaName: input.senderName,
     companyName: COMPANY_NAME,
     businessName: l.business_name,

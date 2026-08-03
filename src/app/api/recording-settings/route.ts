@@ -7,7 +7,16 @@ import { usingServiceRole } from "@/lib/supabaseAdmin";
 
 export const dynamic = "force-dynamic";
 
-const POLICIES = ["all_party", "per_state", "one_party", "disabled"] as const;
+// Mirrors the check constraint on call_intelligence_settings.consent_policy.
+// Adding one here without adding it in a migration means the save fails on a
+// constraint violation instead of doing anything.
+const POLICIES = [
+  "all_party",
+  "per_state",
+  "one_party",
+  "one_party_only",
+  "disabled",
+] as const;
 
 function migrationHint(message: string): string | null {
   if (/relation .* does not exist|column .* does not exist|schema cache/i.test(message)) {

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { recordEvent } from "@/lib/events";
 import {
   advanceStatus,
+  buildRecommendations,
   computeGaps,
   looksLikeToken,
   type PacketStatus,
@@ -23,8 +24,6 @@ export const dynamic = "force-dynamic";
 //      provider, the do-not-call flag and every internal id.
 //   3. Not found and expired look identical from outside. Distinguishing them
 //      turns this into an oracle for guessing tokens.
-
-const DEMO_URL = process.env.DEMO_VIDEO_URL || "";
 
 function notFound() {
   return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -109,7 +108,14 @@ export async function GET(
       reviewCount: lead.review_count,
       answeringSetup: lead.answering_setup,
     }),
-    demoUrl: DEMO_URL || null,
+    recommendations: buildRecommendations({
+      businessName: lead.business_name,
+      city: lead.city,
+      website: lead.website,
+      rating: lead.rating,
+      reviewCount: lead.review_count,
+      answeringSetup: lead.answering_setup,
+    }),
     // Prefilled into the form. These are values this owner supplied or that a
     // caller recorded about them — nothing about any other business.
     contact: {

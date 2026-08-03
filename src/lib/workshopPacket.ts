@@ -70,6 +70,34 @@ export type SendGate = { allowed: boolean; reason: string | null };
  * exactly the kind of gap that turns a compliance rule into a fine.
  */
 export function canSend(subject: SendSubject): SendGate {
+  const suppressed = canGenerateLink(subject);
+  if (!suppressed.allowed) return suppressed;
+
+  if (!(subject.ownerName || "").trim()) {
+    return { allowed: false, reason: "Add the owner's name first — the message is addressed to them." };
+  }
+  if (!(subject.ownerPhone || "").trim()) {
+    return { allowed: false, reason: "Add a mobile number to text the link to." };
+  }
+  return { allowed: true, reason: null };
+}
+
+/**
+ * A weaker gate, for producing the link without sending anything.
+ *
+ * Deliberately does NOT require a name or a mobile.
+ *
+ * The bug this fixes: Copy Link shared the send gate, so on a lead with no
+ * owner name and no direct number — which is every lead until a contact
+ * provider is configured — the button was disabled and pressing it did
+ * nothing at all. But copying a link needs neither of those. The page it opens
+ * is about the BUSINESS; the owner's name only ever appears in the text
+ * message, and there is no text message on this path.
+ *
+ * Suppression still applies. Someone on the do-not-call list should not be
+ * receiving a pitch by any route, including one a caller pastes by hand.
+ */
+export function canGenerateLink(subject: Pick<SendSubject, "doNotCall" | "phoneInvalid">): SendGate {
   if (subject.doNotCall) {
     return {
       allowed: false,
@@ -78,12 +106,6 @@ export function canSend(subject: SendSubject): SendGate {
   }
   if (subject.phoneInvalid) {
     return { allowed: false, reason: "This number is marked as not callable." };
-  }
-  if (!(subject.ownerName || "").trim()) {
-    return { allowed: false, reason: "Add the owner's name first — the message is addressed to them." };
-  }
-  if (!(subject.ownerPhone || "").trim()) {
-    return { allowed: false, reason: "Add a mobile number to text the link to." };
   }
   return { allowed: true, reason: null };
 }
@@ -187,12 +209,103 @@ export function computeGaps(input: GapInput): Gap[] {
 /**
  * When there is nothing honest to say.
  *
- * The page still works — the demo and the offer stand on their own — and it
- * says nothing about the business rather than filling the space with a
- * template. Callers should know this happens so they are not surprised.
+ * The page still works — the recommendations and the offer stand on their own
+ * — and it says nothing about the business rather than filling the space with
+ * a template. Callers should know this happens so they are not surprised.
  */
 export function gapsAreThin(gaps: Gap[]): boolean {
   return gaps.length === 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* what we would actually do for them                                         */
+/* -------------------------------------------------------------------------- */
+
+export type Recommendation = {
+  key: string;
+  title: string;
+  detail: string;
+  /**
+   * The field this was tailored from, or "general" when it applies to any
+   * home-service business. Shown to nobody, but it keeps the distinction
+   * between "we noticed this about YOU" and "this is what we do" explicit in
+   * the code rather than blurred in the copy.
+   */
+  basis: string;
+};
+
+/**
+ * The recommendations on the owner's page.
+ *
+ * These are an OFFER — what would be set up if they said yes — not a set of
+ * claims about how the business currently runs. That distinction is what keeps
+ * the page honest when the record is thin: a recommendation to answer
+ * after-hours calls is fair to make about anybody, whereas asserting that they
+ * *are* missing calls needs evidence we may not have.
+ *
+ * Where the record does support it, the wording is tailored and the reason is
+ * stated. Where it does not, the recommendation still stands but says nothing
+ * specific about them.
+ */
+export function buildRecommendations(input: GapInput): Recommendation[] {
+  const out: Recommendation[] = [];
+  const reviews = input.reviewCount;
+  const busy = typeof reviews === "number" && reviews >= BUSY_REVIEW_COUNT;
+
+  out.push(
+    busy
+      ? {
+          key: "after_hours",
+          title: "Pick up after hours and at weekends",
+          detail: `With ${reviews} reviews you are clearly getting found. The calls that come in at seven in the evening, on a Sunday, or while you are under a sink are the ones worth catching — every one of them gets answered, and you get the details by text.`,
+          basis: "review_count",
+        }
+      : {
+          key: "after_hours",
+          title: "Pick up after hours and at weekends",
+          detail:
+            "Calls that arrive outside working hours, or while you are already on a job, get answered instead of going to voicemail. You get the caller's name, number and what they wanted, by text.",
+          basis: "general",
+        }
+  );
+
+  out.push({
+    key: "never_voicemail",
+    title: "Stop sending new customers to voicemail",
+    detail:
+      "Most people ringing a trade will not leave a message — they ring the next name on the list. Anything missed is answered on the first or second ring instead, so the job does not walk.",
+    basis: "general",
+  });
+
+  if (!(input.website || "").trim()) {
+    out.push({
+      key: "no_website_capture",
+      title: "Capture the enquiries your listing sends you",
+      detail:
+        "There is no website on your listing, so everyone who looks you up has exactly one way in: the phone. That makes every unanswered call a lost job rather than an inconvenience.",
+      basis: "website",
+    });
+  }
+
+  out.push({
+    key: "qualify",
+    title: "Find out what the job is before you ring back",
+    detail:
+      "Callers are asked what they need, where they are, and how urgent it is. You get that in a text, so you can decide who is worth ringing back first instead of working through them blind.",
+    basis: "general",
+  });
+
+  const setup = (input.answeringSetup || "").trim();
+  if (setup) {
+    out.push({
+      key: "stated_setup",
+      title: "Replace what you described on the call",
+      detail: `You told us: "${setup}" — that is exactly the gap this closes.`,
+      basis: "answering_setup",
+    });
+  }
+
+  return out.slice(0, 4);
 }
 
 /* -------------------------------------------------------------------------- */

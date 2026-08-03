@@ -35,10 +35,16 @@ const POLICIES: { key: string; label: string; blurb: string }[] = [
       "Announce and get agreement in all-party states; record without an announcement elsewhere. A lead with no state on file is never recorded, because the law that applies is unknown.",
   },
   {
+    key: "one_party_only",
+    label: "Only record one-party states — skip the rest",
+    blurb:
+      "Record in states where one person's consent is enough, and do not record at all in the 14 that need everyone to agree. No announcement, ever: your callers never have to remember to say anything. The trade is no recordings from those 14 states, and none where the state is unknown.",
+  },
+  {
     key: "one_party",
     label: "One-party where lawful",
     blurb:
-      "Same as above in practice — an all-party state still overrides this, because a business preference does not outrank a state's law.",
+      "Records everywhere, announcing only where the law demands it — an all-party state still overrides the setting, because a business preference does not outrank a state's law. Same behaviour as the option above it.",
   },
   {
     key: "disabled",

@@ -20,7 +20,12 @@ export const ALL_PARTY_CONSENT_STATES = [
   "NV", "NH", "OR", "PA", "WA",
 ] as const;
 
-export type ConsentPolicy = "all_party" | "one_party" | "per_state" | "disabled";
+export type ConsentPolicy =
+  | "all_party"
+  | "one_party"
+  | "per_state"
+  | "one_party_only"
+  | "disabled";
 
 export type ConsentDecision = {
   /** May recording start at all? */
@@ -72,6 +77,51 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       status: "pending",
       reason:
         "Every call is announced and needs the prospect's agreement before recording starts.",
+      policyApplied: policy,
+    };
+  }
+
+  /**
+   * Record where one-party consent is lawful, and DO NOT RECORD AT ALL where
+   * it is not.
+   *
+   * The other policies handle an all-party state by announcing and asking. This
+   * one handles it by walking away — no announcement, no script change, no
+   * agreement to capture, just no recording on that call. Callers never have to
+   * remember to say anything, at the cost of no recordings from fourteen
+   * states.
+   *
+   * Legally the most conservative option here: it can only ever record where a
+   * single party's consent is sufficient, and the caller is always that party.
+   */
+  if (policy === "one_party_only") {
+    if (!leadState) {
+      return {
+        allowed: false,
+        announcementRequired: false,
+        affirmativeConsentRequired: false,
+        status: "blocked",
+        reason:
+          "No state on file for this business, so the law that applies is unknown. Not recorded.",
+        policyApplied: policy,
+      };
+    }
+    if (isAllPartyState(leadState)) {
+      return {
+        allowed: false,
+        announcementRequired: false,
+        affirmativeConsentRequired: false,
+        status: "blocked",
+        reason: `${leadState} needs everyone on the call to agree, so this call is not recorded.`,
+        policyApplied: policy,
+      };
+    }
+    return {
+      allowed: true,
+      announcementRequired: false,
+      affirmativeConsentRequired: false,
+      status: "not_required",
+      reason: `${leadState} allows one-party consent, and the caller is a party to the call.`,
       policyApplied: policy,
     };
   }

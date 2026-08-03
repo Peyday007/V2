@@ -71,6 +71,7 @@ has not been done yet.
 9n. Repeat with `supabase/migrations/0023_owner_enrichment.sql` (new query, paste, Run).
 9o. Repeat with `supabase/migrations/0024_workshop_packets.sql` (new query, paste, Run).
 9p. Repeat with `supabase/migrations/0025_team_updates.sql` (new query, paste, Run).
+9q. Repeat with `supabase/migrations/0026_one_party_only_consent.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -725,8 +726,8 @@ Public, with no login. The unguessable token in the URL is the whole access
 control, which is why it is 128 bits of randomness generated on the server and
 why a malformed one is rejected before it reaches the database.
 
-The page shows the business name, up to three gap bullets, the demo if one is
-configured, and one button. **Every bullet is computed from a field already on
+The page shows the business name, up to three gap bullets, up to four
+recommendations, and one button. There is no demo video. **Every bullet is computed from a field already on
 the record** — the review count, whether the listing has a website, and what
 the owner themselves told the caller. A field that is null produces no bullet.
 There is no "no online booking detected", because nothing in this application
@@ -756,9 +757,11 @@ A send that fails **stays "not sent"**. The error appears on the panel in words
 can fix it and press it again mid-call. A packet marked sent that never arrived
 would be worse than a visible failure, because nobody would chase it.
 
-**Copy link** creates the packet and hands back the URL without texting
-anything — for an international number, a Twilio outage, or an owner who would
-rather have it by email.
+**Copy link** puts the URL straight on the clipboard. It needs **neither a name
+nor a mobile** — only the business must not be suppressed — because the page it
+opens is about the business, and the owner's name appears only in a text
+message that this path never sends. That is the whole point of it working while
+Twilio does not.
 
 Texting somebody on the **do-not-call list is blocked**, in the same place a
 call would be. Someone who asked not to be called did not ask to be texted

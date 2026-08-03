@@ -41,8 +41,8 @@ type Packet = {
 type Payload = {
   packet: Packet | null;
   defaults: { name: string; phone: string };
-  canSend: boolean;
-  blockedReason: string | null;
+  /** Only do-not-call / bad-number. A missing name or mobile is NOT this. */
+  suppressedReason: string | null;
   sms: { available: boolean; reason: string };
   error: string | null;
 };
@@ -89,8 +89,7 @@ export default function PacketPanel({
       const payload: Payload = {
         packet: j.packet ?? null,
         defaults: j.defaults ?? { name: "", phone: "" },
-        canSend: j.canSend ?? false,
-        blockedReason: j.blockedReason ?? null,
+        suppressedReason: j.suppressedReason ?? null,
         sms: j.sms ?? { available: false, reason: "" },
         error: j.error ?? null,
       };
@@ -101,8 +100,7 @@ export default function PacketPanel({
       setData({
         packet: null,
         defaults: { name: "", phone: "" },
-        canSend: false,
-        blockedReason: null,
+        suppressedReason: null,
         sms: { available: false, reason: "" },
         error: e instanceof Error ? e.message : String(e),
       });
@@ -141,7 +139,24 @@ export default function PacketPanel({
     }
 
     if (linkOnly) {
-      setMessage("Link ready — copy it below.");
+      // Actually copy it. Pressing a button called "Copy link" and having a
+      // text box appear instead is not copying, and it is why this looked
+      // broken. The box below stays as a fallback for when the clipboard is
+      // blocked, which browsers do outside a secure context.
+      let copiedOk = false;
+      try {
+        await navigator.clipboard.writeText(j.link);
+        copiedOk = true;
+      } catch {
+        copiedOk = false;
+      }
+      setCopied(copiedOk);
+      if (copiedOk) setTimeout(() => setCopied(false), 2000);
+      setMessage(
+        copiedOk
+          ? "Link copied — paste it into your own text message."
+          : "Link ready. Your browser blocked the clipboard, so copy it from the box below."
+      );
     } else {
       setMessage(
         `Texted to ${phone}${j.segments && j.segments > 1 ? ` (${j.segments} parts)` : ""}.`
@@ -154,8 +169,11 @@ export default function PacketPanel({
   if (!data) return <p className="faint">Loading packet…</p>;
 
   const status: PacketStatus = data.packet?.status ?? "not_sent";
-  const blocked = data.blockedReason && !data.canSend;
-  const ready = !!name.trim() && !!phone.trim() && !blocked;
+  // Suppression blocks everything. Only the do-not-call and bad-number reasons
+  // do that — a missing name or number stops a TEXT, not a link.
+  const suppressed = !!data.suppressedReason;
+  const canLink = !suppressed;
+  const canText = canLink && !!name.trim() && !!phone.trim() && data.sms.available;
 
   return (
     <div
@@ -203,11 +221,21 @@ export default function PacketPanel({
         </div>
       )}
 
-      {blocked && (
-        <p style={{ color: "var(--red)", marginTop: 8, lineHeight: 1.5 }}>{data.blockedReason}</p>
+      {suppressed && (
+        <p style={{ color: "var(--red)", marginTop: 8, lineHeight: 1.5 }}>
+          {data.suppressedReason}
+        </p>
       )}
 
-      {!data.sms.available && !blocked && (
+      {!suppressed && !canText && (
+        <p className="faint" style={{ marginTop: 8, lineHeight: 1.5 }}>
+          {!name.trim() || !phone.trim()
+            ? "No mobile on file yet — ask for it at step 5, or use Copy link and send it yourself."
+            : ""}
+        </p>
+      )}
+
+      {!data.sms.available && !suppressed && (
         <p className="faint" style={{ marginTop: 8, lineHeight: 1.5, color: "var(--red)" }}>
           {data.sms.reason}
         </p>
@@ -217,13 +245,15 @@ export default function PacketPanel({
         <button
           className="btn"
           onClick={() => post(false)}
-          disabled={busy || !ready || !data.sms.available}
+          disabled={busy || !canText}
           title={
-            !ready
-              ? "Needs the owner's name and a mobile number"
-              : !data.sms.available
-                ? data.sms.reason
-                : "Texts the link straight to them"
+            suppressed
+              ? data.suppressedReason || ""
+              : !name.trim() || !phone.trim()
+                ? "Needs the owner's name and a mobile number"
+                : !data.sms.available
+                  ? data.sms.reason
+                  : "Texts the link straight to them"
           }
         >
           {busy ? "Sending…" : status === "not_sent" ? "Send packet" : "Send again"}
@@ -232,8 +262,12 @@ export default function PacketPanel({
         <button
           className="btn-ghost"
           onClick={() => post(true)}
-          disabled={busy || !ready}
-          title="Creates the link without texting. Use when the text will not go through."
+          disabled={busy || !canLink}
+          title={
+            suppressed
+              ? data.suppressedReason || ""
+              : "Copies the link to your clipboard. No name or number needed — send it however you like."
+          }
         >
           Copy link
         </button>
