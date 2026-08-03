@@ -147,6 +147,39 @@ export default function CallRecorder({
     loadConfig();
   }, [leadId, loadConfig, onRecordingChange]);
 
+  /* ------------------------- record it, don't ask -------------------------- */
+
+  /*
+   * Where the law needs only one party's consent, recording is not a choice
+   * the caller makes — so it starts by itself.
+   *
+   * Two failure modes existed and this removes the second. Recording somewhere
+   * unlawful is already impossible: the controls do not render and the server
+   * refuses independently. What was left was forgetting to press Record in a
+   * state where recording was fine, which loses the call silently and is
+   * exactly the sort of thing that goes wrong at 4pm on a Friday.
+   *
+   * Deliberately fires once per lead, and never while anything is already
+   * running or finishing — an auto-start that retried would spawn a second
+   * recorder over the first.
+   */
+  const autoStartedFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!config?.enabled) return;
+    if (!config.decision.mandatory) return;
+    if (autoStartedFor.current === leadId) return;
+    // Something is already in flight, or already finished, for this lead.
+    if (state !== "idle") return;
+    if (config.open) return;
+
+    autoStartedFor.current = leadId;
+    void start();
+    // `start` is stable enough for this: it closes over refs and setters, and
+    // the guard above makes a second run impossible for the same lead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, leadId, state]);
+
   /* -------------------------------- timer --------------------------------- */
 
   useEffect(() => {
@@ -460,12 +493,24 @@ export default function CallRecorder({
   if (!config) return null;
 
   if (!config.enabled || !config.decision.allowed) {
-    // A pill, not a card. The reason still reaches anyone who wants it — an
-    // admin looking over a caller's shoulder can hover — but "off" is the
-    // normal state and does not deserve a block of the call screen.
+    /*
+     * No controls at all. Not a disabled button, not a consent panel — there
+     * is nothing here to press.
+     *
+     * In a two-party state this is the whole safety design: the caller cannot
+     * record even by accident, because the control does not exist and the
+     * server refuses the same request independently. Human error has nowhere
+     * to enter.
+     */
+    const blockedByLaw =
+      config.enabled && !config.decision.allowed && !!config.leadState;
     return (
-      <span className="tag-dim" title={config.decision.reason}>
-        not recording
+      <span
+        className="tag-dim"
+        title={config.decision.reason}
+        style={blockedByLaw ? { color: "var(--text-dim)" } : undefined}
+      >
+        {blockedByLaw ? `${config.leadState} — not recorded` : "not recording"}
       </span>
     );
   }

@@ -202,3 +202,85 @@ describe("record one-party states, skip the two-party ones", () => {
     }
   });
 });
+
+/**
+ * The two rules an admin asked for, in one place:
+ *
+ *   a two-party state can never be recorded, by anybody, by any route;
+ *   a one-party state is recorded without being asked.
+ *
+ * Between them there is no decision left for a caller to get wrong.
+ */
+describe("no judgement calls left for a human", () => {
+  const policy = "one_party_only" as const;
+  const on = { policy, recordingEnabled: true };
+
+  it("A TWO-PARTY STATE CANNOT BE RECORDED — no announcement, no consent, no route in", () => {
+    for (const leadState of ALL_PARTY_CONSENT_STATES) {
+      const d = decideConsent({ ...on, leadState });
+      expect(d.allowed, leadState).toBe(false);
+      expect(d.mandatory, leadState).toBe(false);
+      // Crucially it does not fall back to "announce and ask", which is where
+      // a caller could talk their way into recording anyway.
+      expect(d.announcementRequired, leadState).toBe(false);
+      expect(d.affirmativeConsentRequired, leadState).toBe(false);
+      expect(d.status, leadState).toBe("blocked");
+    }
+  });
+
+  it("even a prospect ENTHUSIASTICALLY agreeing cannot unlock it", () => {
+    const d = decideConsent({ ...on, leadState: "MI" });
+    expect(mayStartRecording(d, "granted").start).toBe(false);
+    expect(mayStartRecording(d, "not_required").start).toBe(false);
+  });
+
+  it("A ONE-PARTY STATE IS RECORDED WITHOUT ASKING", () => {
+    for (const leadState of ["TX", "NY", "OH", "GA", "AZ"]) {
+      const d = decideConsent({ ...on, leadState });
+      expect(d.allowed, leadState).toBe(true);
+      expect(d.mandatory, leadState).toBe(true);
+      expect(d.announcementRequired, leadState).toBe(false);
+      expect(mayStartRecording(d, null).start, leadState).toBe(true);
+    }
+  });
+
+  it("an unknown state is not recorded — the law that applies is unknown", () => {
+    const d = decideConsent({ ...on, leadState: null });
+    expect(d.allowed).toBe(false);
+    expect(d.mandatory).toBe(false);
+  });
+
+  it("the master switch still beats everything", () => {
+    const d = decideConsent({ ...on, recordingEnabled: false, leadState: "TX" });
+    expect(d.allowed).toBe(false);
+    expect(d.mandatory).toBe(false);
+  });
+
+  it("MANDATORY IS NEVER TRUE WHERE A HUMAN HAS TO SAY SOMETHING", () => {
+    // If an announcement is required, a person is in the loop and the recorder
+    // must not start itself behind them.
+    const policies = ["all_party", "one_party", "per_state", "one_party_only", "disabled"] as const;
+    const states = [...ALL_PARTY_CONSENT_STATES, "TX", "NY", null];
+    for (const p of policies) {
+      for (const leadState of states) {
+        const d = decideConsent({ policy: p, recordingEnabled: true, leadState });
+        if (d.mandatory) {
+          expect(d.allowed, `${p}/${leadState}`).toBe(true);
+          expect(d.announcementRequired, `${p}/${leadState}`).toBe(false);
+          expect(d.affirmativeConsentRequired, `${p}/${leadState}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("only the skip-two-party policy ever makes it mandatory", () => {
+    for (const p of ["all_party", "one_party", "per_state", "disabled"] as const) {
+      for (const leadState of ["TX", "NY", "MI", null]) {
+        expect(
+          decideConsent({ policy: p, recordingEnabled: true, leadState }).mandatory,
+          `${p}/${leadState}`
+        ).toBe(false);
+      }
+    }
+  });
+});

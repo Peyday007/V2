@@ -36,9 +36,9 @@ const POLICIES: { key: string; label: string; blurb: string }[] = [
   },
   {
     key: "one_party_only",
-    label: "Only record one-party states — skip the rest",
+    label: "Only record one-party states — skip the rest, automatically",
     blurb:
-      "Record in states where one person's consent is enough, and do not record at all in the 14 that need everyone to agree. No announcement, ever: your callers never have to remember to say anything. The trade is no recordings from those 14 states, and none where the state is unknown.",
+      "Nothing is left to the caller. In the 14 all-party states there is no Record button at all and the server refuses the request independently, so an unlawful recording cannot be made by mistake. Everywhere one person's consent is enough, recording starts on its own the moment the lead opens — no announcement, nothing to remember, nothing to forget. The trade is no recordings from those 14 states, or where the state is unknown.",
   },
   {
     key: "one_party",

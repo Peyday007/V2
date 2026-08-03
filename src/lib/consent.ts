@@ -36,6 +36,16 @@ export type ConsentDecision = {
   affirmativeConsentRequired: boolean;
   /** What to store on the recording row. */
   status: "pending" | "not_required" | "blocked";
+  /**
+   * Recording is REQUIRED here, not offered.
+   *
+   * True only where a single party's consent is legally sufficient AND the
+   * policy has been set to skip two-party states entirely. There is nothing
+   * for the caller to decide in that situation: no announcement to read, no
+   * agreement to capture, no judgement call. So the recorder starts itself
+   * rather than waiting for somebody to remember.
+   */
+  mandatory: boolean;
   /** Why, in words a non-lawyer can act on. */
   reason: string;
   policyApplied: ConsentPolicy;
@@ -64,6 +74,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: false,
       affirmativeConsentRequired: false,
       status: "blocked",
+      mandatory: false,
       reason: "Recording is switched off for this deployment.",
       policyApplied: policy,
     };
@@ -75,6 +86,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: true,
       affirmativeConsentRequired: true,
       status: "pending",
+      mandatory: false,
       reason:
         "Every call is announced and needs the prospect's agreement before recording starts.",
       policyApplied: policy,
@@ -101,6 +113,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
         announcementRequired: false,
         affirmativeConsentRequired: false,
         status: "blocked",
+        mandatory: false,
         reason:
           "No state on file for this business, so the law that applies is unknown. Not recorded.",
         policyApplied: policy,
@@ -112,6 +125,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
         announcementRequired: false,
         affirmativeConsentRequired: false,
         status: "blocked",
+        mandatory: false,
         reason: `${leadState} needs everyone on the call to agree, so this call is not recorded.`,
         policyApplied: policy,
       };
@@ -121,7 +135,11 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: false,
       affirmativeConsentRequired: false,
       status: "not_required",
-      reason: `${leadState} allows one-party consent, and the caller is a party to the call.`,
+      // The caller is not asked whether to record. Forgetting is the only
+      // failure mode left once the unlawful case is impossible, so it is
+      // designed out rather than trained out.
+      mandatory: true,
+      reason: `${leadState} allows one-party consent, so this call is recorded automatically.`,
       policyApplied: policy,
     };
   }
@@ -135,6 +153,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
         announcementRequired: true,
         affirmativeConsentRequired: true,
         status: "pending",
+        mandatory: false,
         reason: `${leadState} requires everyone on the call to consent, which overrides the one-party setting.`,
         policyApplied: policy,
       };
@@ -145,6 +164,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
         announcementRequired: true,
         affirmativeConsentRequired: true,
         status: "blocked",
+        mandatory: false,
         reason:
           "No state on file for this business, so the law that applies is unknown. Recording is blocked rather than guessed.",
         policyApplied: policy,
@@ -155,6 +175,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: false,
       affirmativeConsentRequired: false,
       status: "not_required",
+      mandatory: false,
       reason: `${leadState} allows one-party consent, and the caller is a party to the call.`,
       policyApplied: policy,
     };
@@ -169,6 +190,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: true,
       affirmativeConsentRequired: true,
       status: "blocked",
+      mandatory: false,
       reason:
         "No state on file for this business, so the law that applies is unknown. Recording is blocked rather than guessed.",
       policyApplied: policy,
@@ -180,6 +202,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: true,
       affirmativeConsentRequired: true,
       status: "pending",
+      mandatory: false,
       reason: `${leadState} requires everyone on the call to consent.`,
       policyApplied: policy,
     };
@@ -189,6 +212,7 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
     announcementRequired: false,
     affirmativeConsentRequired: false,
     status: "not_required",
+    mandatory: false,
     reason: `${leadState} allows one-party consent.`,
     policyApplied: policy,
   };

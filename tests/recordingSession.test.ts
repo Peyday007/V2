@@ -24,6 +24,7 @@ const decision = (over: Partial<ReturnType<typeof decideConsent>> = {}) => ({
   announcementRequired: true,
   affirmativeConsentRequired: true,
   status: "pending" as const,
+  mandatory: false,
   reason: "because",
   policyApplied: "all_party" as const,
   ...over,

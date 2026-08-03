@@ -815,6 +815,24 @@ on real leads; until then Copy Link is the working path.
 blocked by the carriers, not by Twilio, so it looks like a silent failure. Both
 of these come back to the caller as a plain-English error rather than a code.
 
+### Taking the caller out of the decision
+
+The **"Only record one-party states"** policy is the one to use if you do not
+want a caller ever making a judgement call about recording law.
+
+In an all-party state there is no Record control on the screen — not a disabled
+button, not a consent panel, nothing to press — and the server re-decides
+independently, so a hand-crafted request is refused too. An unlawful recording
+cannot be made by mistake because there is no route to make one.
+
+Everywhere a single party's consent is sufficient, the recorder **starts by
+itself** when the lead opens. Nothing to remember and nothing to forget, which
+was the only failure left once the unlawful case became impossible.
+
+`mandatory` on the consent decision is never true where an announcement is
+required — if a person has to say something, the recorder does not start behind
+them. There is a test that asserts that across every policy and every state.
+
 ## Team updates
 
 Say it once instead of texting five VAs the same paragraph and finding out a
