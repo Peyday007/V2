@@ -73,6 +73,7 @@ has not been done yet.
 9p. Repeat with `supabase/migrations/0025_team_updates.sql` (new query, paste, Run).
 9q. Repeat with `supabase/migrations/0026_one_party_only_consent.sql` (new query, paste, Run).
 9r. Repeat with `supabase/migrations/0027_unstick_leads.sql` (new query, paste, Run).
+9s. Repeat with `supabase/migrations/0028_restore_uncalled_packet_leads.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
