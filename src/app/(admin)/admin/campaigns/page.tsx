@@ -30,6 +30,8 @@ export default function PacketsAdmin() {
   const [packets, setPackets] = useState<Packet[] | null>(null);
   const [ready, setReady] = useState(0);
   const [whyNone, setWhyNone] = useState<string | null>(null);
+  /** Set when the ready-lead count itself failed, rather than being genuinely 0. */
+  const [countBroken, setCountBroken] = useState<string | null>(null);
   const [newCaller, setNewCaller] = useState("");
   const [newSize, setNewSize] = useState("50");
   const [msg, setMsg] = useState("");
@@ -40,23 +42,44 @@ export default function PacketsAdmin() {
   const { ask, dialog } = useConfirm();
 
   const load = useCallback(async () => {
-    const [pRes, kRes, pipeRes] = await Promise.all([
-      fetch("/api/packets"),
-      fetch("/api/callers"),
-      fetch("/api/pipeline"),
-    ]);
-    // Both endpoints answer with an object on error, and both of these were
-    // read as arrays a line later.
-    const pJson = await pRes.json().catch(() => []);
-    setPackets(Array.isArray(pJson) ? pJson : []);
-    const cs = await kRes.json().catch(() => []);
-    const active = (Array.isArray(cs) ? cs : []).filter((k: Caller) => k.active);
-    setCallers(active);
-    setNewCaller((prev) => prev || active[0]?.id || "");
-    if (pipeRes.ok) {
-      const pipe = await pipeRes.json();
-      setReady(pipe.counts?.readyToCall ?? 0);
-      setWhyNone(pipe.noneAvailableExplanation ?? null);
+    try {
+      const [pRes, kRes, pipeRes] = await Promise.all([
+        fetch("/api/packets"),
+        fetch("/api/callers"),
+        fetch("/api/pipeline"),
+      ]);
+      // Both endpoints answer with an object on error, and both of these were
+      // read as arrays a line later.
+      const pJson = await pRes.json().catch(() => []);
+      setPackets(Array.isArray(pJson) ? pJson : []);
+      const cs = await kRes.json().catch(() => []);
+      const active = (Array.isArray(cs) ? cs : []).filter((k: Caller) => k.active);
+      setCallers(active);
+      setNewCaller((prev) => prev || active[0]?.id || "");
+
+      if (pipeRes.ok) {
+        const pipe = await pipeRes.json();
+        setReady(pipe.counts?.readyToCall ?? 0);
+        setWhyNone(pipe.noneAvailableExplanation ?? null);
+        setCountBroken(null);
+      } else {
+        /*
+         * This count used to fail silently, and failing silently DISABLED THE
+         * SEND BUTTON — because the button was gated on it being above zero.
+         * /api/pipeline selects the availability columns, so on a database
+         * missing a migration it 500s, the count stays 0, and every packet
+         * button on the page looks dead with nothing on screen to explain it.
+         */
+        const why = await pipeRes.json().catch(() => ({}));
+        setCountBroken(
+          why.error || `The ready-lead count could not be read (HTTP ${pipeRes.status}).`
+        );
+        setReady(0);
+      }
+    } catch (e) {
+      // Without this the page sat on "Loading…" for ever.
+      setPackets([]);
+      setErr(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
@@ -68,18 +91,26 @@ export default function PacketsAdmin() {
     setBusy(key);
     setMsg("");
     setErr("");
-    const res = await fn();
-    // An expired admin session returns 401 from middleware. Silently doing
-    // nothing is how these buttons looked broken, so say so and go sign in.
-    if (res.status === 401) {
-      window.location.href = `/admin-login?next=${encodeURIComponent(window.location.pathname)}`;
-      return;
+    try {
+      const res = await fn();
+      // An expired admin session returns 401 from middleware. Silently doing
+      // nothing is how these buttons looked broken, so say so and go sign in.
+      if (res.status === 401) {
+        window.location.href = `/admin-login?next=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) setErr(j.error || `That did not work (HTTP ${res.status}).`);
+      else setMsg(success(j as never));
+      await load();
+    } catch (e) {
+      // A thrown fetch left `busy` set for ever, so the button stayed disabled
+      // and every later click did nothing at all. That is what "the buttons
+      // stopped working" looked like from the outside.
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
     }
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) setErr(j.error || `That did not work (HTTP ${res.status}).`);
-    else setMsg(success(j as never));
-    setBusy(null);
-    await load();
   }
 
   function createPacket() {
@@ -218,6 +249,18 @@ export default function PacketsAdmin() {
   const open = (packets || []).filter((p) => p.status === "open");
   const closed = (packets || []).filter((p) => p.status !== "open");
 
+  /*
+   * Callers with nothing to dial.
+   *
+   * A packet that is closed, or open with every lead worked, means that caller
+   * is sitting idle — and nothing on this page said so. One caller finished his
+   * packet while another held 150 untouched leads, and the only place it
+   * surfaced was the caller's own dialer saying "all done".
+   */
+  const idle = callers.filter(
+    (k) => !open.some((p) => p.caller_id === k.id && p.remaining > 0)
+  );
+
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 6 }}>Packets</h1>
@@ -250,9 +293,24 @@ export default function PacketsAdmin() {
       {/* ------------------------------ send a packet ----------------------------- */}
       <div className="card" style={{ marginBottom: 26, borderColor: "var(--amber-dim)" }}>
         <h3 style={{ marginBottom: 6, color: "var(--amber)" }}>Send out a packet</h3>
+        {countBroken && (
+          <p style={{ color: "var(--red)", marginBottom: 10, lineHeight: 1.55 }}>
+            {countBroken} The number below is not reliable — press Send it anyway and
+            the answer will say what actually happened.
+          </p>
+        )}
+        {idle.length > 0 && (
+          <p style={{ marginBottom: 10, lineHeight: 1.55, color: "var(--amber)" }}>
+            <strong>
+              {idle.map((k) => k.name).join(", ")}
+            </strong>{" "}
+            {idle.length === 1 ? "has" : "have"} no packet open — nothing to dial right
+            now.
+          </p>
+        )}
         <p className="faint" style={{ marginBottom: 12 }}>
           <strong>{ready}</strong> lead{ready === 1 ? "" : "s"} free to hand out.
-          {ready === 0 && whyNone && (
+          {ready === 0 && !countBroken && whyNone && (
             <>
               {" "}
               {whyNone.replace(/Generate more on the Leads tab\.$/, "")}
@@ -285,7 +343,14 @@ export default function PacketsAdmin() {
           <button
             className="btn"
             onClick={createPacket}
-            disabled={busy === "create" || !newCaller || ready === 0}
+            /*
+             * Deliberately NOT gated on `ready`. That count comes from a
+             * separate endpoint, and when it failed the button went dead with
+             * nothing on screen explaining why. The server already refuses
+             * politely and says how many leads are actually free, so let the
+             * press happen and show that answer.
+             */
+            disabled={busy === "create" || !newCaller}
           >
             {busy === "create" ? "Sending…" : "Send it"}
           </button>
