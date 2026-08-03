@@ -49,19 +49,24 @@ export function unavailableReason(l: LeadRow): string | null {
   if (machine === "enrichment_failed") return "Discarded — not worth calling";
   if (machine !== READY_MACHINE_STATUS) return "Still being researched";
 
-  /**
-   * The grade gate.
+  /*
+   * THE ENRICHMENT GRADE DOES NOT DECIDE THIS. It used to, and that was wrong.
    *
-   * Measured before this existed: 111 live answers, 6 owner conversations.
-   * Nearly every answer was a receptionist on a main line for a business
-   * nobody had a name at. C and D leads are still worth working — through a
-   * main-line campaign, where the expectations are different — but mixing them
-   * into the direct queue is what produced that ratio.
+   * The reasoning was sound — 111 live answers produced 6 owner conversations,
+   * because most answers were receptionists at businesses nobody had a name
+   * for. The implementation was not: it required an A or a B, and a lead only
+   * reaches A or B if a paid contact provider returned a direct number. With
+   * no provider configured, every lead grades C at best, so the rule excluded
+   * EVERY LEAD IN THE SYSTEM and the callers had nothing to dial.
+   *
+   * A quality bar that cannot be met is not a quality bar, it is an outage.
+   *
+   * So the grade now decides ORDER, not eligibility — see
+   * orderLeadsForAssignment in enrichmentGrade.ts. A packet is filled best-
+   * first, so when direct numbers do exist the callers reach them first, and
+   * when they do not, the packet is simply the main-line leads that were
+   * always there.
    */
-  const grade = l.enrichment_grade ?? null;
-  if (grade === "C") return "Owner known, but no direct number — main-line campaign only";
-  if (grade === "D") return "No decision-maker identified";
-  if (grade === null) return "Not yet graded";
 
   // Machine-ready, but something else is holding it.
   if ((l.status ?? "") !== UNASSIGNED_STATUS) {
@@ -107,10 +112,16 @@ export const AVAILABLE_EQ_FILTERS: [string, unknown][] = [
 ];
 export const AVAILABLE_IS_FILTERS: [string, unknown][] = [["archived_at", null]];
 
-/** Grades that may enter the direct-call queue. Mirrors CALL_READY_GRADES. */
-export const AVAILABLE_IN_FILTERS: [string, unknown[]][] = [
-  ["enrichment_grade", ["A", "B"]],
-];
+/**
+ * Deliberately empty.
+ *
+ * This used to carry ["enrichment_grade", ["A","B"]], which put the grade gate
+ * into the SQL as well as the predicate. Kept as an empty list rather than
+ * deleted so the shape stays symmetrical with the eq/is filters above, and so
+ * the test that asserts the predicate and the query check the same things has
+ * something to compare.
+ */
+export const AVAILABLE_IN_FILTERS: [string, unknown[]][] = [];
 
 /** The minimum a query builder must support. */
 type Filterable = {

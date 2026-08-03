@@ -285,6 +285,15 @@ export async function enrichLeadForOwner(
         enrichment_sources: sourcesUsed,
         enriched_at: new Date().toISOString(),
         enrichment_error: selection.reason,
+        /*
+         * Callable. Not knowing the owner's name is the situation this whole
+         * business started in — you ring the main line and ask for them.
+         *
+         * This line was missing entirely, so a lead nobody could name a
+         * decision-maker for sat on machine_status 'enriching' forever and was
+         * never handed to anybody. Silently, and for most of the batch.
+         */
+        machine_status: "ready_for_calling",
       })
       .eq("id", leadId);
     await recordEvent({
@@ -445,9 +454,20 @@ export async function enrichLeadForOwner(
       enriched_at: new Date().toISOString(),
       enrichment_error: waterfall && !waterfall.phone ? waterfall.reason : null,
       contact_reported_wrong_at: null,
-      // The engine's own status still gates the packet builder; only a graded,
-      // call-ready lead becomes available.
-      machine_status: graded.callReady ? "ready_for_calling" : "enrichment_failed",
+      /*
+       * Always callable once enrichment has finished with it.
+       *
+       * This used to be `graded.callReady ? ready_for_calling :
+       * enrichment_failed`, which marked every lead without a provider-supplied
+       * direct number as "discarded — not worth calling". Without a contact
+       * provider configured that is every lead, so the entire queue emptied
+       * itself. A C grade means "we know who to ask for but not their mobile",
+       * which is a perfectly good main-line lead and always was.
+       *
+       * The grade still decides ORDER — see orderLeadsForAssignment — so a
+       * direct number gets called first when one exists.
+       */
+      machine_status: "ready_for_calling",
       enrichment_confidence: selection.confidence,
       recommended_ask: graded.callReady
         ? `Ask for ${selection.name}${selection.title ? `, the ${selection.title.toLowerCase()}` : ""} — dialling their direct number.`

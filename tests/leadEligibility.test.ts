@@ -156,7 +156,9 @@ describe("the SQL filter matches the predicate", () => {
       "eq:do_not_call",
       "eq:phone_invalid",
       "is:archived_at",
-      "in:enrichment_grade",
+      // No in:enrichment_grade. The grade decides ORDER, not eligibility —
+      // requiring an A or a B meant requiring a paid provider's direct number,
+      // which excluded every lead in the system.
     ]);
   });
 
@@ -167,14 +169,7 @@ describe("the SQL filter matches the predicate", () => {
       ...AVAILABLE_IN_FILTERS.map(([c]) => c),
     ].sort();
     expect(columns).toEqual(
-      [
-        "archived_at",
-        "do_not_call",
-        "enrichment_grade",
-        "machine_status",
-        "phone_invalid",
-        "status",
-      ].sort()
+      ["archived_at", "do_not_call", "machine_status", "phone_invalid", "status"].sort()
     );
   });
 
@@ -201,5 +196,55 @@ describe("the dashboard count now agrees with the packet query", () => {
     });
     expect(naive.readyToCall).toBe(5); // what the page used to claim
     expect(honest.readyToCall).toBe(2); // what the Add button can actually do
+  });
+});
+
+/**
+ * The outage this file now guards against.
+ *
+ * The grade gate required an A or a B. A lead only reaches A or B when a paid
+ * contact provider returns a direct number for a named owner. With no provider
+ * configured every lead grades C at best — so the rule excluded the entire
+ * database and the callers had nothing to dial.
+ */
+describe("a lead with no enrichment is still a lead", () => {
+  const base: LeadRow = {
+    status: "new",
+    machine_status: "ready_for_calling",
+    do_not_call: false,
+    phone_invalid: false,
+    archived_at: null,
+  };
+
+  it("AN UNGRADED LEAD IS CALLABLE — this is the normal state without a provider", () => {
+    expect(isAvailableToCall({ ...base, enrichment_grade: null })).toBe(true);
+    expect(isAvailableToCall({ ...base })).toBe(true);
+  });
+
+  it("a C is callable — you ring the main line and ask for them by name", () => {
+    expect(isAvailableToCall({ ...base, enrichment_grade: "C" })).toBe(true);
+  });
+
+  it("a D is callable — not knowing the owner's name is where this all started", () => {
+    expect(isAvailableToCall({ ...base, enrichment_grade: "D" })).toBe(true);
+  });
+
+  it("an A is callable too, obviously", () => {
+    expect(isAvailableToCall({ ...base, enrichment_grade: "A" })).toBe(true);
+  });
+
+  it("the real gates still hold", () => {
+    expect(isAvailableToCall({ ...base, do_not_call: true })).toBe(false);
+    expect(isAvailableToCall({ ...base, phone_invalid: true })).toBe(false);
+    expect(isAvailableToCall({ ...base, archived_at: "2026-01-01" })).toBe(false);
+    expect(isAvailableToCall({ ...base, machine_status: "enriching" })).toBe(false);
+    expect(isAvailableToCall({ ...base, status: "in_packet" })).toBe(false);
+  });
+
+  it("a whole batch of ungraded leads reports as available, not as a wall of reasons", () => {
+    const rows = Array.from({ length: 50 }, () => ({ ...base }));
+    const summary = summarizeAvailability(rows);
+    expect(summary.available).toBe(50);
+    expect(summary.reasons).toEqual([]);
   });
 });

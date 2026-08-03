@@ -72,6 +72,7 @@ has not been done yet.
 9o. Repeat with `supabase/migrations/0024_workshop_packets.sql` (new query, paste, Run).
 9p. Repeat with `supabase/migrations/0025_team_updates.sql` (new query, paste, Run).
 9q. Repeat with `supabase/migrations/0026_one_party_only_consent.sql` (new query, paste, Run).
+9r. Repeat with `supabase/migrations/0027_unstick_leads.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -600,17 +601,24 @@ it.
 
 ### The grade
 
-| Grade | What it means | Goes to callers |
-|---|---|---|
-| **A** | Verified decision-maker, verified mobile or direct line | yes |
-| **B** | Confidently identified decision-maker, probable direct number | yes |
-| **C** | Decision-maker identified, but only the main business number | no — main-line campaign |
-| **D** | No confidently identified decision-maker | no |
+| Grade | What it means |
+|---|---|
+| **A** | Verified decision-maker, verified mobile or direct line |
+| **B** | Confidently identified decision-maker, probable direct number |
+| **C** | Decision-maker identified, but only the main business number |
+| **D** | No confidently identified decision-maker |
 
-C and D leads are **not** thrown away and not hidden. They are worked through a
-main-line campaign where the expectations are different. Mixing them into the
-direct queue is precisely what produced the six-out-of-111 figure, so the
-availability rule in `src/lib/leadEligibility.ts` now requires an A or a B.
+**The grade decides the ORDER a packet is worked in, not whether a lead
+qualifies.** Every callable lead goes to the callers; the ones with a direct
+number to a named owner simply come first.
+
+It briefly worked the other way — a lead needed an A or a B to be handed out at
+all — and that was a mistake worth recording. A lead only reaches A or B when a
+paid contact provider returns a direct number. With no provider configured
+nothing grades above C, so the rule excluded **every lead in the database** and
+the dialer had nothing to hand out. A quality bar that cannot be met is not a
+quality bar, it is an outage. `0027_unstick_leads.sql` releases the rows that
+were stranded by it.
 
 ### What it refuses to do
 
