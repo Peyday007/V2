@@ -99,9 +99,18 @@ export function summarizeAvailability(rows: LeadRow[]): Availability {
   };
 }
 
-/** The columns any availability check needs. Keeps the selects honest. */
+/**
+ * The columns any availability check needs. Keeps the selects honest.
+ *
+ * Deliberately free of enrichment columns. They used to be here, back when the
+ * grade gated eligibility — which meant this select, and therefore the Tryout
+ * page and every "why is nothing available" explainer, failed outright with
+ * "column leads.enrichment_grade does not exist" on a database where migration
+ * 0023 had not been run. The predicate no longer reads them, so neither does
+ * this.
+ */
 export const AVAILABILITY_COLUMNS =
-  "id, status, machine_status, do_not_call, phone_invalid, archived_at, enrichment_grade, direct_phone";
+  "id, status, machine_status, do_not_call, phone_invalid, archived_at";
 
 /** The filters, as data, so they can be asserted in a test. */
 export const AVAILABLE_EQ_FILTERS: [string, unknown][] = [

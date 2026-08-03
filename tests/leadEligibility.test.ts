@@ -8,8 +8,10 @@ import {
   AVAILABLE_EQ_FILTERS,
   AVAILABLE_IS_FILTERS,
   AVAILABLE_IN_FILTERS,
+  AVAILABILITY_COLUMNS,
   type LeadRow,
 } from "../src/lib/leadEligibility";
+import { isMissingColumnError } from "../src/lib/enrichmentGrade";
 import { summarizeCounts } from "../src/lib/pipelineState";
 
 const AVAILABLE: LeadRow = {
@@ -246,5 +248,47 @@ describe("a lead with no enrichment is still a lead", () => {
     const summary = summarizeAvailability(rows);
     expect(summary.available).toBe(50);
     expect(summary.reasons).toEqual([]);
+  });
+});
+
+/**
+ * The outage that emptied the packets.
+ *
+ * Every packet query — create AND top-up — selected the enrichment columns and
+ * ordered by enrichment_grade. Those columns arrive with migration 0023. On a
+ * database without it, pressing "Add leads" ran a query that errored, returned
+ * a 500, and inserted nothing. The leads were fine; 100 callable ones sat there
+ * untouched. The caller's dialer then correctly reported an empty packet.
+ *
+ * Message text below is copied verbatim from Postgres 16 and from PostgREST.
+ */
+describe("a missing enrichment column must not empty the packets", () => {
+  it("recognises what Postgres actually says", () => {
+    expect(isMissingColumnError({ message: 'column "enrichment_grade" does not exist' })).toBe(true);
+    expect(isMissingColumnError({ message: "column leads.enrichment_grade does not exist" })).toBe(true);
+  });
+
+  it("recognises what PostgREST actually says", () => {
+    expect(
+      isMissingColumnError({
+        message: "Could not find the 'enrichment_grade' column of 'leads' in the schema cache",
+      })
+    ).toBe(true);
+  });
+
+  it("does NOT swallow a real failure", () => {
+    // The fallback must only fire for a missing column. Everything else has to
+    // keep surfacing, or a genuine outage becomes an empty packet instead.
+    expect(isMissingColumnError({ message: "permission denied for table leads" })).toBe(false);
+    expect(isMissingColumnError({ message: "JWT expired" })).toBe(false);
+    expect(isMissingColumnError({ message: "connection refused" })).toBe(false);
+    expect(isMissingColumnError(null)).toBe(false);
+    expect(isMissingColumnError({ message: "" })).toBe(false);
+  });
+
+  it("the availability select no longer names an enrichment column", () => {
+    // This select is what the Tryout page runs. It failed outright for the
+    // same reason, which is how the missing migration first became visible.
+    expect(AVAILABILITY_COLUMNS).not.toMatch(/enrichment_grade|direct_phone/);
   });
 });

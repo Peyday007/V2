@@ -8,7 +8,11 @@ import {
   explainNoneAvailable,
   AVAILABILITY_COLUMNS,
 } from "@/lib/leadEligibility";
-import { ASSIGNMENT_COLUMNS, orderLeadsForAssignment } from "@/lib/enrichmentGrade";
+import {
+  ASSIGNMENT_COLUMNS,
+  isMissingColumnError,
+  orderLeadsForAssignment,
+} from "@/lib/enrichmentGrade";
 
 export const dynamic = "force-dynamic";
 
@@ -136,16 +140,42 @@ export async function POST(
       );
     }
 
-    const { data: candidates, error: leadErr } = await applyAvailableFilter(
-      db
-        .from("leads")
-        .select(`id, phone, normalized_phone, do_not_call, ${ASSIGNMENT_COLUMNS}`)
+    // Same as packet creation: grade the over-fetch so the top-up does not hand
+    // out weaker records than the packet it is topping up — but fall back to a
+    // plain select when the enrichment columns are not there. A missing
+    // migration must not be the reason a caller gets no leads.
+    const CORE = "id, phone, normalized_phone, do_not_call";
+    const over = size * 3 + 50;
+
+    /** The enrichment fields only exist after migration 0023. */
+    type CandidateRow = {
+      id: string;
+      phone: string | null;
+      normalized_phone: string | null;
+      do_not_call: boolean | null;
+      enrichment_grade?: string | null;
+      direct_phone_class?: string | null;
+      decision_maker_confidence?: number | null;
+      direct_phone_validated_at?: string | null;
+    };
+
+    const enriched = await applyAvailableFilter(
+      db.from("leads").select(`${CORE}, ${ASSIGNMENT_COLUMNS}`)
     )
-      // Same as packet creation: grade the over-fetch, or the top-up hands out
-      // weaker records than the packet it is topping up.
       .order("enrichment_grade", { ascending: true })
       .order("created_at")
-      .limit(size * 3 + 50);
+      .limit(over);
+
+    let candidates = enriched.data as CandidateRow[] | null;
+    let leadErr: { message: string } | null = enriched.error;
+
+    if (leadErr && isMissingColumnError(leadErr)) {
+      const plain = await applyAvailableFilter(db.from("leads").select(CORE))
+        .order("created_at")
+        .limit(over);
+      candidates = plain.data as CandidateRow[] | null;
+      leadErr = plain.error;
+    }
     if (leadErr) return NextResponse.json({ error: leadErr.message }, { status: 500 });
 
     const index = buildSuppressionIndex(suppressions || []);

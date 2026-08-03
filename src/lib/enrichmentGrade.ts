@@ -154,6 +154,27 @@ export function callReadyOnly<T extends AssignmentCandidate>(rows: T[]): T[] {
 export const ASSIGNMENT_COLUMNS =
   "enrichment_grade, direct_phone_class, decision_maker_confidence, direct_phone_validated_at";
 
+/**
+ * Does this error mean the enrichment columns simply are not there?
+ *
+ * Every column in ASSIGNMENT_COLUMNS arrives with migration 0023. Selecting or
+ * ordering by one before that migration has run is a hard query error, and
+ * because packet creation and packet top-up both do exactly that, the entire
+ * lead pipeline returned a 500 for anybody who had not run it. Pressing "Add
+ * leads" appeared to do nothing and the packet stayed empty.
+ *
+ * Enrichment is an ENHANCEMENT to ordering. It must never be the reason a
+ * caller cannot be given work, so its queries fall back to a plain select when
+ * the columns are absent.
+ */
+export function isMissingColumnError(
+  err: { message?: string | null } | null | undefined
+): boolean {
+  const message = err?.message || "";
+  if (!message) return false;
+  return /column .* does not exist|could not find the .* column|schema cache/i.test(message);
+}
+
 export type EnrichedLeadRow = {
   id: string;
   enrichment_grade?: string | null;

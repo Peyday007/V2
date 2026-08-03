@@ -10,7 +10,11 @@ import {
 } from "@/lib/leadEligibility";
 import { buildCallerProfile } from "@/lib/callerProfile";
 import { windowCoverage } from "@/lib/dialOrder";
-import { ASSIGNMENT_COLUMNS, orderLeadsForAssignment } from "@/lib/enrichmentGrade";
+import {
+  ASSIGNMENT_COLUMNS,
+  isMissingColumnError,
+  orderLeadsForAssignment,
+} from "@/lib/enrichmentGrade";
 import type { CallFact } from "@/lib/analytics";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -133,17 +137,40 @@ export async function POST(req: NextRequest) {
   // Leads from the sourcing engine carry sourcing_campaign_id; older/imported
   // leads carry campaign_id. Support both, and allow pulling from every ready
   // lead when no campaign is specified.
-  let query = applyAvailableFilter(
-    db
-      .from("leads")
-      .select(`id, phone, normalized_phone, do_not_call, industry, ${ASSIGNMENT_COLUMNS}`)
-  );
+  const CORE_COLUMNS = "id, phone, normalized_phone, do_not_call, industry";
 
-  if (sourcing_campaign_id) {
-    query = query.eq("sourcing_campaign_id", sourcing_campaign_id);
-  } else if (campaign_id) {
-    query = query.eq("campaign_id", campaign_id);
-  }
+  /** The enrichment fields are optional: they only exist after migration 0023. */
+  type CandidateRow = {
+    id: string;
+    phone: string | null;
+    normalized_phone: string | null;
+    do_not_call: boolean | null;
+    industry: string | null;
+    enrichment_grade?: string | null;
+    direct_phone_class?: string | null;
+    decision_maker_confidence?: number | null;
+    direct_phone_validated_at?: string | null;
+  };
+
+  /**
+   * Try the enriched select, fall back to the plain one.
+   *
+   * Every column in ASSIGNMENT_COLUMNS arrives with migration 0023. Before this
+   * fallback existed, building a packet on a database without that migration
+   * failed with a bare 500 — so "New packet" and "Add leads" simply did not
+   * work, the leads never landed, and the caller's dialer said "all done".
+   * Enrichment improves the ORDER of a packet; it is not allowed to be the
+   * reason there is no packet.
+   */
+  const buildQuery = (columns: string) => {
+    let q = applyAvailableFilter(db.from("leads").select(columns));
+    if (sourcing_campaign_id) {
+      q = q.eq("sourcing_campaign_id", sourcing_campaign_id);
+    } else if (campaign_id) {
+      q = q.eq("campaign_id", campaign_id);
+    }
+    return q;
+  };
 
   // Over-fetch, because suppressed leads are removed after the query. A DNC
   // is matched on the phone number, which no single column filter can express.
@@ -152,10 +179,20 @@ export async function POST(req: NextRequest) {
   // 125 rows and then sorting them would hand out C-quality records while
   // A-grade ones sat unfetched. 'A' sorts before 'B' lexically, which is why
   // the grades are single letters.
-  const { data: candidates, error: leadsErr } = await query
+  const overFetch = size * 3 + 50;
+  const enriched = await buildQuery(`${CORE_COLUMNS}, ${ASSIGNMENT_COLUMNS}`)
     .order("enrichment_grade", { ascending: true })
     .order("created_at")
-    .limit(size * 3 + 50);
+    .limit(overFetch);
+
+  let candidates = enriched.data as CandidateRow[] | null;
+  let leadsErr: { message: string } | null = enriched.error;
+
+  if (leadsErr && isMissingColumnError(leadsErr)) {
+    const plain = await buildQuery(CORE_COLUMNS).order("created_at").limit(overFetch);
+    candidates = plain.data as CandidateRow[] | null;
+    leadsErr = plain.error;
+  }
   if (leadsErr) return NextResponse.json({ error: leadsErr.message }, { status: 500 });
 
   // The do-not-call list is authoritative and is checked against the NUMBER,
