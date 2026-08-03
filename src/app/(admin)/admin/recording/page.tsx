@@ -13,9 +13,18 @@ type Settings = {
   ai_spot_check_rate: number;
 };
 
+type LeadStates = {
+  recordable: number;
+  allParty: number;
+  unknown: number;
+  total: number;
+  topAllParty: { state: string; count: number }[];
+};
+
 type Payload = {
   settings: Settings | null;
   allPartyStates: string[];
+  leadStates?: LeadStates;
   transcription: { available: boolean; reason: string; remedy: string | null };
   serviceRole: boolean;
   error: string | null;
@@ -52,6 +61,44 @@ const POLICIES: { key: string; label: string; blurb: string }[] = [
     blurb: "Nothing is recorded, whatever the toggle above says.",
   },
 ];
+
+function Figure({
+  label,
+  value,
+  note,
+  strong,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  strong?: boolean;
+}) {
+  return (
+    <div>
+      <div
+        className="faint"
+        style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.08em" }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: strong ? "1.7rem" : "1.3rem",
+          fontWeight: 700,
+          color: strong ? "var(--amber)" : "var(--text)",
+          lineHeight: 1.2,
+        }}
+      >
+        {value}
+      </div>
+      {note && (
+        <div className="faint" style={{ fontSize: "0.72rem", marginTop: 2 }}>
+          {note}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function RecordingSettingsPage() {
   const [data, setData] = useState<Payload | null>(null);
@@ -112,6 +159,41 @@ export default function RecordingSettingsPage() {
       {err && (
         <div className="card" style={{ borderColor: "var(--red)", color: "var(--red)", marginBottom: 16 }}>
           {err}
+        </div>
+      )}
+
+      {/* What the policy below actually costs, against the real lead pool. */}
+      {data.leadStates && data.leadStates.total > 0 && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            <Figure
+              label="Leads you can record"
+              value={String(data.leadStates.recordable)}
+              note={`${Math.round((data.leadStates.recordable / data.leadStates.total) * 100)}% of ${data.leadStates.total}`}
+              strong
+            />
+            <Figure
+              label="In all-party states"
+              value={String(data.leadStates.allParty)}
+              note={
+                data.leadStates.topAllParty.length > 0
+                  ? data.leadStates.topAllParty
+                      .map((s) => `${s.state} ${s.count}`)
+                      .join(" · ")
+                  : undefined
+              }
+            />
+            <Figure
+              label="No state on file"
+              value={String(data.leadStates.unknown)}
+              note="never recorded — the law is unknown"
+            />
+          </div>
+          <p className="faint" style={{ marginTop: 12, lineHeight: 1.55 }}>
+            New lead runs now search one-party states only, so this share grows as
+            you generate more. Naming a city in an all-party state still works —
+            those leads are worth calling, their calls just cannot be recorded.
+          </p>
         </div>
       )}
       {msg && !err && (

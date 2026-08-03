@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { recordEvent } from "@/lib/events";
-import { ALL_PARTY_CONSENT_STATES } from "@/lib/consent";
+import { ALL_PARTY_CONSENT_STATES, isAllPartyState } from "@/lib/consent";
 import { transcriptionCapability } from "@/lib/transcription";
 import { usingServiceRole } from "@/lib/supabaseAdmin";
 
@@ -44,9 +44,44 @@ export async function GET() {
       );
     }
     const cap = transcriptionCapability();
+
+    /*
+     * Where the leads actually are.
+     *
+     * The consent policy is a real trade — "skip two-party states" costs you
+     * every recording from those fourteen — and it was being chosen blind.
+     * This counts the live pool so the choice is made against a number instead
+     * of a guess about which states the sourcing happens to favour.
+     */
+    let leadStates = { recordable: 0, allParty: 0, unknown: 0, total: 0, topAllParty: [] as { state: string; count: number }[] };
+    try {
+      const { data: rows } = await supabaseAdmin()
+        .from("leads")
+        .select("state")
+        .is("archived_at", null)
+        .limit(50000);
+      const allPartyCounts = new Map<string, number>();
+      for (const r of rows || []) {
+        const st = (r.state || "").trim().toUpperCase();
+        leadStates.total += 1;
+        if (!st) leadStates.unknown += 1;
+        else if (isAllPartyState(st)) {
+          leadStates.allParty += 1;
+          allPartyCounts.set(st, (allPartyCounts.get(st) || 0) + 1);
+        } else leadStates.recordable += 1;
+      }
+      leadStates.topAllParty = [...allPartyCounts.entries()]
+        .map(([state, count]) => ({ state, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 6);
+    } catch {
+      // A count is not worth failing the settings page over.
+    }
+
     return NextResponse.json({
       settings: data,
       allPartyStates: ALL_PARTY_CONSENT_STATES,
+      leadStates,
       transcription: { available: cap.available, reason: cap.reason, remedy: cap.remedy ?? null },
       serviceRole: usingServiceRole(),
       error: null,
