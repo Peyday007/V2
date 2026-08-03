@@ -70,6 +70,7 @@ has not been done yet.
 9m. Repeat with `supabase/migrations/0022_ai_authority.sql` (new query, paste, Run).
 9n. Repeat with `supabase/migrations/0023_owner_enrichment.sql` (new query, paste, Run).
 9o. Repeat with `supabase/migrations/0024_workshop_packets.sql` (new query, paste, Run).
+9p. Repeat with `supabase/migrations/0025_team_updates.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -801,6 +802,49 @@ on real leads; until then Copy Link is the working path.
 **US long-code SMS needs A2P 10DLC registration.** An unregistered number gets
 blocked by the carriers, not by Twilio, so it looks like a silent failure. Both
 of these come back to the caller as a plain-English error rather than a code.
+
+## Team updates
+
+Say it once instead of texting five VAs the same paragraph and finding out a
+week later that two of them never got it.
+
+**Admin → Updates** is where they are written: a title, a body in markdown, and
+a Pin toggle. There is a Preview that renders exactly what the callers will
+see, because a process note with the formatting mangled is a process note
+people skim.
+
+On the caller's side, **unread updates open themselves** the next time the
+dialer loads — above the lead, before anything else. A badge on its own is
+something people learn to scroll past, and the brief for this was
+"impossible to miss". It is not a modal and it does not block dialling; it sits
+there until they press **Got it**, and then it collapses to a button in the
+session bar and never nags again. That is all `last_seen_at` is for — it is not
+proof anybody read anything.
+
+Three things worth knowing:
+
+- **Pinned beats recent, outright.** The one update everybody must read does
+  not sink under a fortnight of small notes.
+- **Editing does not re-notify.** Fixing a typo would otherwise nag every
+  caller who had already read and acted on it, and after that happens twice
+  they stop trusting the badge. Something genuinely new gets posted as new.
+- **A caller who has never opened it sees everything**, which is what makes
+  this double as day-one onboarding.
+
+Retiring an update takes it off the callers' panel without deleting it, so
+"what did that update say again?" three weeks later still has an answer.
+
+### The markdown
+
+Headings, bold, italic, inline code, bullet and numbered lists. Deliberately no
+links, images or raw HTML — the brief asked for formatted text, and every
+construct that is not there is one that cannot go wrong.
+
+It parses to a data structure, never to an HTML string, and the renderer emits
+React elements. There is no `dangerouslySetInnerHTML` anywhere in the path, so
+a body containing `<script>` renders as the literal characters `<script>`.
+There is a test that pastes four real injection payloads through it and checks
+nothing executes.
 
 ## Gatekeeper scripts (A/B/C)
 

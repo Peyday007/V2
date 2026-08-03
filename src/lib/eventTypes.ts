@@ -57,6 +57,11 @@ export const EVENT_TYPES = [
   "workshop.trial_requested",
   "workshop.acknowledged",
 
+  // team updates — one post, every caller sees the same words
+  "update.posted",
+  "update.edited",
+  "update.archived",
+
   // calls
   "call.logged",
   "call.outcome_recorded",
@@ -121,6 +126,7 @@ export const ENTITY_TYPES = [
   "proposal",
   "experiment",
   "coaching",
+  "update",
 ] as const;
 
 export type EntityType = (typeof ENTITY_TYPES)[number];
@@ -167,6 +173,7 @@ export function primaryEntityFor(type: string): EntityType | null {
     deal: "deal",
     note: "call",
     import: "campaign",
+    update: "update",
   };
   return map[prefix] ?? null;
 }

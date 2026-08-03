@@ -21,6 +21,7 @@ const links = [
   { href: "/admin/campaigns", label: "Packets" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/suppressions", label: "Do Not Call" },
+  { href: "/admin/updates", label: "Updates" },
   { href: "/admin/prompts", label: "Prompts" },
   { href: "/admin/scripts", label: "Scripts" },
   { href: "/admin/recording", label: "Recording" },

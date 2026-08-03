@@ -45,6 +45,7 @@ import {
 import OutcomeModal from "@/components/OutcomeModal";
 import LiveAssistant from "@/components/LiveAssistant";
 import PacketPanel from "@/components/PacketPanel";
+import CallerUpdates from "@/components/CallerUpdates";
 
 type Lead = {
   id: string;
@@ -383,15 +384,26 @@ export default function DialPage() {
 
   if (!data.lead) {
     return (
-      <div style={{ maxWidth: 480, margin: "80px auto", textAlign: "center" }}>
-        <h1 style={{ marginBottom: 12 }}>All done 🎉</h1>
-        <p className="muted" style={{ marginBottom: 20 }}>
-          No leads left in your packet, {data.caller}. Check with your admin for a new
-          packet.
-        </p>
-        <button className="btn-ghost" onClick={logout}>
-          Sign out
-        </button>
+      <div style={{ maxWidth: 700, margin: "60px auto" }}>
+        {/*
+          The updates belong here too.
+
+          This branch returns early, so without it a caller who has finished
+          their packet — or who signs in before one has been built — sees
+          nothing at all. That is exactly the person most likely to be reading
+          the board and asking what to do next.
+        */}
+        <CallerUpdates />
+        <div style={{ textAlign: "center", marginTop: 30 }}>
+          <h1 style={{ marginBottom: 12 }}>All done 🎉</h1>
+          <p className="muted" style={{ marginBottom: 20 }}>
+            No leads left in your packet, {data.caller}. Check with your admin for a
+            new packet.
+          </p>
+          <button className="btn-ghost" onClick={logout}>
+            Sign out
+          </button>
+        </div>
       </div>
     );
   }
@@ -497,6 +509,11 @@ export default function DialPage() {
           Sign out
         </button>
       </div>
+
+      {/* Unread process updates open themselves here, above the lead. The brief
+          asked for impossible-to-miss on login, and a badge alone is something
+          people learn to scroll past. */}
+      <CallerUpdates />
 
       {data.dueCallback && (
         <div

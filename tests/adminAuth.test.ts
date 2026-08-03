@@ -29,6 +29,8 @@ describe("the caller app is never gated", () => {
     expect(isProtectedPath("/api/dial/outcome")).toBe(false);
     // Sending an owner their packet happens mid-call, from the dialer.
     expect(isProtectedPath("/api/dial/packet")).toBe(false);
+    // Callers must be able to read the team updates before their shift.
+    expect(isProtectedPath("/api/dial/updates")).toBe(false);
   });
 
   it("leaves the background engine open — it has its own secret", () => {
@@ -63,6 +65,7 @@ describe("everything an admin sees is gated", () => {
       "/admin/import",
       "/admin/appointments",
       "/admin/enrichment",
+      "/admin/updates",
       "/admin/review",
       "/admin/learning",
       "/admin/targets",
@@ -93,6 +96,9 @@ describe("everything an admin sees is gated", () => {
       "/api/enrichment",
       "/api/review",
       "/api/learning",
+      // Posting, pinning and retiring updates is the admin's alone. A caller
+      // reads them through /api/dial/updates, which is read-only.
+      "/api/updates",
     ]) {
       expect(isProtectedPath(p), p).toBe(true);
     }
