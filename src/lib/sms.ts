@@ -83,6 +83,17 @@ const KNOWN_ERRORS: Record<number, { message: string; retryable: boolean }> = {
     retryable: false,
   },
   21614: { message: "That number cannot receive text messages — it looks like a landline.", retryable: false },
+  // The two that a new account actually hits, in the order it hits them.
+  21608: {
+    message:
+      "This is a Twilio TRIAL account, which can only text numbers you have verified in the Twilio console. A cold prospect will never be verified — upgrade the account to text real leads. Use Copy link until then.",
+    retryable: false,
+  },
+  30034: {
+    message:
+      "The Twilio number is not registered for A2P 10DLC, so US carriers are blocking it. Register it in Twilio under Messaging → Regulatory Compliance, or use a verified toll-free number.",
+    retryable: false,
+  },
   20003: {
     message: "Twilio rejected the credentials. Check TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.",
     retryable: false,

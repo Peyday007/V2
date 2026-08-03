@@ -792,6 +792,16 @@ of them ever logged:
 Unset, the Send button is disabled and says exactly which variables are
 missing. Copy Link keeps working throughout.
 
+**A trial account cannot text cold prospects.** Twilio trials only deliver to
+numbers you have verified in their console, and a business owner you just
+cold-called will never be one. Trial sends also get "Sent from your Twilio
+trial account -" pasted on the front of the message. Upgrade before using this
+on real leads; until then Copy Link is the working path.
+
+**US long-code SMS needs A2P 10DLC registration.** An unregistered number gets
+blocked by the carriers, not by Twilio, so it looks like a silent failure. Both
+of these come back to the caller as a plain-English error rather than a code.
+
 ## Gatekeeper scripts (A/B/C)
 
 Three openers, testing one thing each: **A** states the reason, **B** assumes
