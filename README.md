@@ -69,6 +69,7 @@ has not been done yet.
 9l. Repeat with `supabase/migrations/0021_browser_recordings.sql` (new query, paste, Run).
 9m. Repeat with `supabase/migrations/0022_ai_authority.sql` (new query, paste, Run).
 9n. Repeat with `supabase/migrations/0023_owner_enrichment.sql` (new query, paste, Run).
+9o. Repeat with `supabase/migrations/0024_workshop_packets.sql` (new query, paste, Run).
 10. **Optional:** `supabase/migrations/0007_cron.sql` makes the engine run headlessly with no browser open. Edit the two placeholders inside it first. Skip it if you're happy leaving the Sourcing page open while a campaign runs.
 
 ### How the engine works
@@ -707,6 +708,124 @@ results broken down by grade, by number type and by provider, and the budget.
 Where a rate has nothing in the denominator it reads "—", not "0". No data and
 a zero rate are different answers, and this page exists to tell them apart. No
 verdict is offered on fewer than fifty calls a side.
+
+## The packet, and the trial
+
+A caller who has the owner on the phone has about ninety seconds of interest.
+The packet is what they do with it: one button, and the owner's mobile gets a
+link to a page about *their* business with the offer on it.
+
+    caller presses Send  ->  Twilio texts the link  ->  owner opens it
+      ->  owner ticks the box  ->  banner on the Sales Board  ->  a person rings them
+
+### What the owner sees — `/workshop/<token>`
+
+Public, with no login. The unguessable token in the URL is the whole access
+control, which is why it is 128 bits of randomness generated on the server and
+why a malformed one is rejected before it reaches the database.
+
+The page shows the business name, up to three gap bullets, the demo if one is
+configured, and one button. **Every bullet is computed from a field already on
+the record** — the review count, whether the listing has a website, and what
+the owner themselves told the caller. A field that is null produces no bullet.
+There is no "no online booking detected", because nothing in this application
+has ever checked that, and a confident claim about a stranger's business that
+nobody verified is the fastest way to lose the call that earned the click. When
+there is nothing honest to say, the page says nothing and the offer stands on
+its own.
+
+Agreeing is a checkbox on a public page. There is **no identity verification,
+no OTP, and no contract** — the value of the tick is that a human is alerted
+and follows up, and nothing downstream treats it as binding.
+
+One thing worth knowing about: the page marks itself "opened" on every load, so
+statuses only ever move forward. Without that, an owner who agreed and then
+refreshed would be knocked back from `trial_requested` to `opened`, destroying
+the only state anybody cares about.
+
+### What the caller does
+
+**Send packet** on the dialer, and the same panel on a lead record. It needs
+the owner's name and a mobile — the name because the message is addressed to
+them, the mobile because the number on the record is usually the switchboard,
+and Twilio rejects a landline outright.
+
+A send that fails **stays "not sent"**. The error appears on the panel in words
+("that is not a valid phone number", "buy an SMS-capable number") so the caller
+can fix it and press it again mid-call. A packet marked sent that never arrived
+would be worse than a visible failure, because nobody would chase it.
+
+**Copy link** creates the packet and hands back the URL without texting
+anything — for an international number, a Twilio outage, or an owner who would
+rather have it by email.
+
+Texting somebody on the **do-not-call list is blocked**, in the same place a
+call would be. Someone who asked not to be called did not ask to be texted
+instead.
+
+### What Peyton sees
+
+A banner at the top of the Sales Board, above everything including errors,
+because everything else on that board can wait an hour and this cannot. It
+shows the business, the owner's name and number as a tap-to-call link, how long
+they have been waiting, and which VA sent it. **"I've got this"** clears it off
+the list without changing the packet's status — the owner still requested a
+trial, and rewriting that to make a banner go away would falsify the record the
+stats are built on.
+
+Nothing automates past this point, by design.
+
+### Twilio
+
+Real sending, through the `twilio` package. Three environment variables, none
+of them ever logged:
+
+| Variable | What it is |
+|---|---|
+| `TWILIO_ACCOUNT_SID` | Starts `AC`, 34 characters. Not the API Key SID |
+| `TWILIO_AUTH_TOKEN` | From the same console page |
+| `TWILIO_FROM_NUMBER` | An **SMS-capable** number you own, in `+1...` form |
+| `COMPANY_NAME` | Optional. Omitted from the message entirely if unset — never printed as a placeholder |
+| `DEMO_VIDEO_URL` | Optional. The demo link on the owner's page. No demo section renders without it |
+| `APP_BASE_URL` | Optional. Only needed if the app sits behind a proxy on a different hostname; otherwise the link is built from the request |
+
+Unset, the Send button is disabled and says exactly which variables are
+missing. Copy Link keeps working throughout.
+
+## Gatekeeper scripts (A/B/C)
+
+Three openers, testing one thing each: **A** states the reason, **B** assumes
+the right to be put through and gives no reason at all, **C** leads with
+something specific about that business.
+
+The caller picks a version on the dialer and it replaces the opener and the
+pushback line — and only those. Once the owner is on the phone all three
+versions say the same thing, so a difference in the numbers can be attributed
+to the opener rather than to everything at once.
+
+It is **off by default**. Nobody is silently enrolled, and a call logged with no
+version set is counted nowhere rather than becoming a fourth variant. The
+Scripts page reports how many untagged calls there were, because a big number
+there means the picker is being skipped and the test is quietly running on a
+fraction of the dials.
+
+**Admin → Scripts** shows dials, connect rate, gatekeeper-pass rate, DM
+conversation rate and trial rate per version, with four fixed threshold flags:
+
+| Flag | When |
+|---|---|
+| Insufficient data — keep testing | under 25 calls |
+| Review this script — high failure at gatekeeper | pass rate under 15% after 50+ calls |
+| Review opener — low conversion once past gatekeeper | DM conversations under 20% of owner-reaches after 50+ calls |
+| Review offer/close | fewer than 1 trial per 20 DM conversations, after 10+ conversations |
+
+Under 25 calls, **only** the first flag can fire. A 0% pass rate off ten calls
+must not turn a banner red — that is how a script gets retired before it ever
+had a chance.
+
+These are raw counts against fixed numbers. No model, no significance test, and
+the flags say "review this", never "change this". A script is only ever swapped
+by a person.
 
 ## When is a lead free to hand out?
 

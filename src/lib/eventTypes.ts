@@ -46,6 +46,17 @@ export const EVENT_TYPES = [
   "lead.added_to_packet",
   "lead.removed_from_packet",
 
+  // workshop packets — the link an owner receives mid-call. Named
+  // "workshop.*" rather than "packet.*" because `packets` above means a
+  // caller's batch of leads, and one word for two things is how a history
+  // page becomes unreadable.
+  "workshop.sent",
+  "workshop.send_failed",
+  "workshop.link_copied",
+  "workshop.opened",
+  "workshop.trial_requested",
+  "workshop.acknowledged",
+
   // calls
   "call.logged",
   "call.outcome_recorded",

@@ -25,6 +25,11 @@ export const ADMIN_SESSION_DAYS = 30;
 const OPEN_ROUTES = [
   "/dial", // the caller app itself
   "/admin-login", // the passphrase form has to render
+  // The packet page a business owner opens from a text message. Public by
+  // design: there is no account to sign into, and the unguessable token in the
+  // URL is the whole access control. Gating it would mean sending prospects a
+  // link to a passphrase prompt.
+  "/workshop",
 ];
 
 /** These match as a literal prefix. */
@@ -33,6 +38,7 @@ const OPEN_PREFIXES = [
   "/api/dial/", // next lead, log outcome
   "/api/worker/", // the background engine; has its own WORKER_SECRET
   "/api/admin/", // the passphrase form has to be able to post somewhere
+  "/api/workshop/", // the public packet page reads and submits through this
   "/_next/", // framework assets
   "/favicon", // favicon.ico and friends
 ];

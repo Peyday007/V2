@@ -9,6 +9,7 @@ import { normalizePhone } from "@/lib/normalize";
 import { processCompletedCall } from "@/lib/callIntelligence";
 import { linkRecordingToCall } from "@/lib/recordingStore";
 import { reviewCall } from "@/lib/callReview";
+import { isScriptVersion } from "@/lib/gatekeeperScripts";
 
 type Values = Record<string, string>;
 
@@ -145,6 +146,11 @@ export async function POST(req: NextRequest) {
       owner_known_before: ownerKnownBefore,
       enrichment_confidence: lead.enrichment_confidence ?? null,
       script_variant: typeof body.script_variant === "string" ? body.script_variant : "owner_first_v1",
+      // Which gatekeeper opener (A/B/C) was running, or null when the caller
+      // is not in the test. Validated rather than passed through: an unchecked
+      // string here would land a fourth variant in the comparison and the
+      // column's own constraint would reject the whole call.
+      script_version: isScriptVersion(body.script_version) ? body.script_version : null,
     })
     .select()
     .single();

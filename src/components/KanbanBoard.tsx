@@ -13,6 +13,8 @@ import { DELIVERY_STAGES } from "@/lib/constants";
 import { MACHINE_STATUS_LABELS, MachineStatus, IN_FLIGHT } from "@/lib/machineStatus";
 import { useLeads, Lead, ContactLite } from "@/hooks/useLeads";
 import EventHistory from "@/components/EventHistory";
+import TrialAlerts from "@/components/TrialAlerts";
+import PacketPanel from "@/components/PacketPanel";
 
 type Pipeline = "sales" | "delivery";
 
@@ -188,6 +190,11 @@ function SalesBoard({
           + New Lead
         </button>
       </div>
+
+      {/* An owner who agreed to a trial is waiting on a person right now. It
+          goes above everything, including errors, because everything else on
+          this board can wait an hour and this cannot. */}
+      <TrialAlerts />
 
       {showDiag && (
         <DiagnosticsPanel
@@ -806,6 +813,15 @@ function LeadModal({
         </div>
         {lead && (
           <div style={{ marginTop: 16 }}>
+            <div style={{ marginBottom: 14 }}>
+              <PacketPanel
+                leadId={lead.id}
+                businessName={lead.business_name}
+                endpoint="/api/workshop-packets"
+                senderName="the office"
+                compact
+              />
+            </div>
             <a
               href={`/admin/leads/${lead.id}`}
               className="btn"

@@ -36,8 +36,15 @@ import {
   spokeWithRoleFor,
   type SpeakingWith,
 } from "@/lib/dialerFocus";
+import {
+  SCRIPT_VERSIONS,
+  applyScript,
+  buildScript,
+  type ScriptVersion,
+} from "@/lib/gatekeeperScripts";
 import OutcomeModal from "@/components/OutcomeModal";
 import LiveAssistant from "@/components/LiveAssistant";
+import PacketPanel from "@/components/PacketPanel";
 
 type Lead = {
   id: string;
@@ -162,6 +169,11 @@ export default function DialPage() {
   // how the conversation went.
   const [showContactFeedback, setShowContactFeedback] = useState(false);
   const [contactNote, setContactNote] = useState("");
+  // Which gatekeeper opener this caller is running. Sticky across leads on
+  // purpose: a version picked per-call would be picked at random, and the
+  // comparison would measure nothing but the caller's mood.
+  const [scriptVersion, setScriptVersion] = useState<ScriptVersion | null>(null);
+  const [showPacket, setShowPacket] = useState(false);
 
   // Measured, not asked for. The caller never types a duration; the clock
   // starts when the lead appears and stops when the outcome is saved.
@@ -196,6 +208,7 @@ export default function DialPage() {
     setShowDetails(false);
     setShowContactFeedback(false);
     setContactNote("");
+    setShowPacket(false);
     setRaised([]);
     setSkipping(false);
     setSkipReason("");
@@ -259,6 +272,9 @@ export default function DialPage() {
         call_stage: stage,
         spoke_with_role: spokeWithRoleFor(speakingWith),
         recording_id: recordingId,
+        // Null when the caller has not opted into the test. Recording an
+        // untagged call as a fourth variant would poison the comparison.
+        script_version: scriptVersion,
       }),
     });
     if (!res.ok) {
@@ -399,7 +415,21 @@ export default function DialPage() {
   };
 
   const guide = guidedCall(intelLead, speakingWith);
-  const currentLine = guide.lines[Math.min(lineIndex, guide.lines.length - 1)];
+
+  // The gatekeeper script under test replaces the opener and the pushback
+  // line, and only until the owner is on the phone. Everything after that is
+  // the same for all three versions, so a difference in the numbers can only
+  // have come from the opener.
+  const activeScript = scriptVersion
+    ? buildScript(scriptVersion, {
+        ownerName: lead.decision_maker_name || lead.owner_name,
+        businessName: lead.business_name,
+        callerName: data.caller,
+        reviewCount: lead.review_count,
+      })
+    : null;
+  const lines = applyScript(guide.lines, activeScript, speakingWith === "owner");
+  const currentLine = lines[Math.min(lineIndex, lines.length - 1)];
   const lastObjection = raised[raised.length - 1]?.key ?? null;
   const stage = inferStage({
     speakingWith,
@@ -655,6 +685,44 @@ export default function DialPage() {
                 {SPEAKING_WITH_LABEL[w]}
               </button>
             ))}
+
+            <div style={{ flex: 1 }} />
+
+            {/* Which gatekeeper opener you are running. Stays put between
+                leads — flipping it per call would make the comparison
+                meaningless. Off by default, so nobody is silently enrolled. */}
+            <span className="faint">Script:</span>
+            {(["off", ...SCRIPT_VERSIONS] as const).map((v) => {
+              const on = v === "off" ? scriptVersion === null : scriptVersion === v;
+              return (
+                <button
+                  key={v}
+                  onClick={() => {
+                    setScriptVersion(v === "off" ? null : (v as ScriptVersion));
+                    setLineIndex(0);
+                  }}
+                  title={
+                    v === "off"
+                      ? "Not part of the test. The call is logged without a version."
+                      : buildScript(v as ScriptVersion, {
+                          businessName: lead.business_name,
+                        }).premise
+                  }
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 3,
+                    fontSize: "0.72rem",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    border: `1px solid ${on ? "var(--amber)" : "var(--border-strong)"}`,
+                    background: on ? "var(--amber-soft)" : "transparent",
+                    color: on ? "var(--amber)" : "var(--text-dim)",
+                  }}
+                >
+                  {v === "off" ? "off" : v}
+                </button>
+              );
+            })}
           </div>
 
           <p
@@ -685,8 +753,8 @@ export default function DialPage() {
             }}
           >
             <div className="faint" style={{ marginBottom: 7 }}>
-              {currentLine.heading} · {Math.min(lineIndex + 1, guide.lines.length)} of{" "}
-              {guide.lines.length}
+              {currentLine.heading} · {Math.min(lineIndex + 1, lines.length)} of{" "}
+              {lines.length}
             </div>
             <p style={{ fontSize: "1.3rem", lineHeight: 1.5, maxWidth: "62ch" }}>
               {currentLine.line}
@@ -695,7 +763,7 @@ export default function DialPage() {
             <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
               <button
                 className="btn"
-                onClick={() => setLineIndex((n) => (n + 1) % guide.lines.length)}
+                onClick={() => setLineIndex((n) => (n + 1) % lines.length)}
               >
                 Next line
               </button>
@@ -717,6 +785,13 @@ export default function DialPage() {
                 </button>
               )}
               <button
+                className={showPacket ? "btn" : "btn-ghost"}
+                onClick={() => setShowPacket(!showPacket)}
+                title="Text them the gap summary, the demo and the trial offer, right now"
+              >
+                Send packet
+              </button>
+              <button
                 className="btn-ghost"
                 onClick={() => setShowDetails(!showDetails)}
                 title="Research, previous calls, notes and what earlier callers learned"
@@ -726,6 +801,16 @@ export default function DialPage() {
               </button>
             </div>
           </div>
+
+          {showPacket && (
+            <div style={{ marginTop: 10 }}>
+              <PacketPanel
+                leadId={lead.id}
+                businessName={lead.business_name}
+                endpoint="/api/dial/packet"
+              />
+            </div>
+          )}
 
           {showContactFeedback && (
             <div

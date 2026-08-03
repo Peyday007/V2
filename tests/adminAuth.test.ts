@@ -27,6 +27,8 @@ describe("the caller app is never gated", () => {
   it("leaves the dialer's own endpoints open", () => {
     expect(isProtectedPath("/api/dial/next")).toBe(false);
     expect(isProtectedPath("/api/dial/outcome")).toBe(false);
+    // Sending an owner their packet happens mid-call, from the dialer.
+    expect(isProtectedPath("/api/dial/packet")).toBe(false);
   });
 
   it("leaves the background engine open — it has its own secret", () => {
@@ -99,6 +101,26 @@ describe("everything an admin sees is gated", () => {
   it("is not fooled by a path that merely starts like the caller app", () => {
     expect(isProtectedPath("/dialogue-admin")).toBe(true);
     expect(isProtectedPath("/api/dialsomething")).toBe(true);
+  });
+
+  /**
+   * The packet page is the app's only public surface. Two mistakes are
+   * possible and both are bad: gating it, which sends prospects a passphrase
+   * prompt, or opening one letter too many and publishing the admin list of
+   * every trial request with the owners' phone numbers on it.
+   */
+  it("the page a business owner opens is public", () => {
+    expect(isProtectedPath("/workshop/0123456789abcdef0123456789abcdef")).toBe(false);
+    expect(isProtectedPath("/api/workshop/0123456789abcdef0123456789abcdef")).toBe(false);
+  });
+
+  it("BUT the admin packet list next door to it is NOT", () => {
+    // /api/workshop-packets is one hyphen away from the public prefix
+    // /api/workshop/ and returns every owner's name and mobile.
+    expect(isProtectedPath("/api/workshop-packets")).toBe(true);
+    expect(isProtectedPath("/workshop-admin")).toBe(true);
+    expect(isProtectedPath("/api/script-stats")).toBe(true);
+    expect(isProtectedPath("/admin/scripts")).toBe(true);
   });
 });
 
