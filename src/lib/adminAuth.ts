@@ -30,6 +30,16 @@ const OPEN_ROUTES = [
   // URL is the whole access control. Gating it would mean sending prospects a
   // link to a passphrase prompt.
   "/workshop",
+  // Instantly posts replies, opens and unsubscribes here. It cannot present an
+  // admin cookie, so the route carries its own shared secret
+  // (INSTANTLY_WEBHOOK_SECRET) and accepts nothing at all when that is unset.
+  //
+  // Listed here rather than in OPEN_PREFIXES on purpose. Whole-segment
+  // matching opens /api/instantly/webhook and nothing else — the settings
+  // route at /api/instantly and the push route at /api/instantly/push both
+  // stay behind the passphrase, and a future /api/instantly/webhook-test would
+  // not be opened by accident.
+  "/api/instantly/webhook",
 ];
 
 /** These match as a literal prefix. */

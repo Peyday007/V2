@@ -876,6 +876,171 @@ a body containing `<script>` renders as the literal characters `<script>`.
 There is a test that pastes four real injection payloads through it and checks
 nothing executes.
 
+## Cold email, through Instantly
+
+The calling is the sharp end. Email is the other half, and Instantly is the
+tool that does it properly — warmed inboxes, spam handling, sequencing, an
+unsubscribe footer that works. None of that is worth rebuilding here.
+
+So the division of labour is written down, in the migration and in the code:
+
+- **Instantly sends.** This application does not send a single email and should
+  never grow the ability to. The copy, the follow-up steps and the schedule all
+  live in the Instantly sequence editor, where a person edits them.
+- **This application decides who.** It knows the owner's name, the review
+  count, whether there is a website, and what a caller heard on the phone last
+  Tuesday. That is the part Instantly has no way to know, and it is the part
+  that makes a cold email land.
+- **Replies come back here.** A reply is the most valuable event in the whole
+  system. It must not sit unread in a separate tab.
+
+Run `supabase/migrations/0029_instantly_email.sql`, set `INSTANTLY_API_KEY` and
+`INSTANTLY_WEBHOOK_SECRET` in Vercel, redeploy, then go to **Admin → Email**.
+
+### What gets pushed
+
+Not a finished email — **merge variables**. The sequence in Instantly
+references `{{personalization}}` and the custom variables by name, and this app
+fills them from the lead record.
+
+The honesty rule from the workshop page applies unchanged: **nothing is
+invented**. `composePersonalization` states one specific fact, chosen by how
+strong the evidence is —
+
+1. what the owner said on a call, quoted rather than paraphrased;
+2. a review count that shows the phone rings;
+3. no website on the listing, which makes the phone the only way in.
+
+If the record supports none of those it returns an **empty string**, and the
+sequence has to cope with that. A template that reads badly with an empty
+`{{personalization}}` is a template that will eventually go out saying nothing
+in the middle of a sentence. Every merge variable is a string for the same
+reason: a null arriving in a template renders as the word "null" in a
+prospect's inbox.
+
+Where a caller has already made a workshop packet for that business, the email
+links to the same page they would have texted, so a prospect who gets both sees
+one consistent thing. Pushing never *creates* a packet — a packet is something
+a caller makes during a conversation.
+
+### Who is excluded
+
+**The do-not-call list suppresses email too.** Somebody who asked not to be
+called did not ask to be emailed instead.
+
+The suppression runs one way only: an email unsubscribe does **not** stop the
+phone, because unsubscribing from a sequence is a statement about the inbox,
+not about the business. That asymmetry is deliberate and there is a test that
+asserts both halves of it against the real calling predicate.
+
+Also excluded: anyone who has unsubscribed, anyone whose address bounced,
+anyone binned, anyone with no address, and anyone already in a campaign. Two
+sequences landing in one inbox is the fastest way to burn a sending domain, so
+one thread per lead is enforced by a unique index as well as by the query.
+
+`max_push_per_run` defaults to 50. The cap is what makes a mistake cost a batch
+rather than a list — worth remembering, because the Instantly adapter has
+**not been run against a live account** and is written from documented request
+shapes. Push a batch of one first.
+
+A push that fails is written down as failed rather than skipped. A lead that
+silently never gets emailed and that nobody can find again is worse than a
+visible error.
+
+### Reading a reply
+
+`readReply` classifies the prospect's own words — quoted history stripped
+first, because our own email is sitting underneath theirs and it contains every
+interest phrase in the list. Reading the quoted original as the reply would
+classify literally every response as interested.
+
+The order of the checks **is** the safety property, and there is a mutation
+test proving each one is load-bearing:
+
+1. **Opt-outs first, matched loosely.** A false positive costs one lead. A
+   false negative costs a complaint, a spam report, and eventually the domain.
+   Those are not close.
+2. **Auto-replies before any human intent.** "Thanks for your email, I am away
+   until the 14th and will respond on my return" contains *thanks*, *respond*
+   and a promise of contact.
+3. **Refusals before interest.** "No thanks, we're all set" is a refusal, and
+   *thanks* appears in both.
+
+An opt-out or a refusal suppresses further email **immediately**, without
+waiting for anybody to read it. That is the only thing in the whole integration
+that acts on its own, and it only ever acts in the direction of sending less.
+Neither gets a drafted reply: there is no clever answer to "take me off your
+list", and attempting one is exactly what turns an unsubscribe into a
+complaint.
+
+### Drafts, and the one thing they never contain
+
+Everything else — interested, a question, a referral, a wrong-person reply —
+gets a **draft**, waiting on a person, shown on the board and on Admin → Email.
+
+**No draft ever names a price.** Prices, discounts and legal language are never
+produced automatically, so a reply asking about cost is answered with a
+conversation instead of a number — which is what a salesperson would do anyway.
+There is a test that asserts no draft contains a currency figure, for every
+intent, with an explicitly money-focused reply.
+
+An approver can rewrite the draft, and usually should. The edited text is what
+gets stored and what gets sent — never the original, because approving an edit
+and sending the machine's version is the worst combination of the two.
+
+**Approve** and **Mark as sent** are two separate buttons on purpose. Approving
+sends nothing. "Send through Instantly" uses an API path that is *particularly*
+unverified, so the reliable route is to copy the text into the Instantly inbox,
+send it there, and then mark it sent — and a failed API send leaves the draft
+approved-but-unsent with the error showing, never marked done.
+
+### Answering without a person
+
+Off, and it should stay off. It is the same judgement as the SMS path: a
+message that reaches a prospect in our name with nobody having read it is fine
+ninety-five times and unrecoverable the other five.
+
+If an administrator does turn it on, every one of these still holds:
+
+- only a clear **interested** or a plain **question** ever qualifies. A
+  referral or a wrong-person reply involves a third party and gets a human;
+- the reading must clear the confidence floor;
+- **anything mentioning money goes to a person regardless**, on top of the
+  drafting rule that already keeps figures out of the text;
+- the draft row is created `pending` and only moves to `sent` after a send that
+  actually happened. A failed automatic send leaves it pending, exactly where
+  somebody will find it.
+
+The optional model reading is merged in one direction only. It may find an
+opt-out the phrase rules missed, or downgrade an "interested" it does not
+believe. It may **never** overturn an opt-out or promote anything to
+interested. A model reading a hostile reply as enthusiasm is a plausible
+failure; a model reading enthusiasm as "remove me" costs one lead. Only the
+second is allowed to happen.
+
+### The webhook
+
+`/api/instantly/webhook` is the only public write endpoint in the integration.
+
+It **fails closed**: with no `INSTANTLY_WEBHOOK_SECRET` set it accepts nothing.
+An unauthenticated endpoint that writes rows keyed by an email address is an
+invitation to unsubscribe somebody else's leads. The secret is compared in
+constant time, same as the admin cookie.
+
+It **never processes a delivery twice**. Instantly retries; a retried reply
+counted twice produces two drafts, and the second goes to a prospect who
+already had an answer. A unique index on `idempotency_key` enforces that, and
+the duplicate is answered 200 so the retries stop.
+
+It **never silently drops** an event it does not recognise. A vendor renaming
+`reply_received` shows up as a run of `other` rows on the page, with the raw
+payload kept, rather than as replies that never arrived.
+
+Only `/api/instantly/webhook` is public. The settings route, the push route and
+the drafts route all stay behind the admin passphrase, and there is a test that
+asserts exactly that boundary — including that a neighbour one character away
+stays gated.
+
 ## Gatekeeper scripts (A/B/C)
 
 Three openers, testing one thing each: **A** states the reason, **B** assumes

@@ -57,6 +57,22 @@ export const EVENT_TYPES = [
   "workshop.trial_requested",
   "workshop.acknowledged",
 
+  // cold email, via Instantly. Instantly sends; this app decides who, and
+  // reads what comes back. Named "email.*" so the phone history and the inbox
+  // history are legible side by side on one lead.
+  "email.pushed",
+  "email.push_failed",
+  "email.sent",
+  "email.opened",
+  "email.replied",
+  "email.bounced",
+  "email.unsubscribed",
+  "email.draft_created",
+  "email.draft_approved",
+  "email.draft_rejected",
+  "email.reply_sent",
+  "email.reply_send_failed",
+
   // team updates — one post, every caller sees the same words
   "update.posted",
   "update.edited",
@@ -127,6 +143,7 @@ export const ENTITY_TYPES = [
   "experiment",
   "coaching",
   "update",
+  "email_thread",
 ] as const;
 
 export type EntityType = (typeof ENTITY_TYPES)[number];
@@ -174,6 +191,7 @@ export function primaryEntityFor(type: string): EntityType | null {
     note: "call",
     import: "campaign",
     update: "update",
+    email: "email_thread",
   };
   return map[prefix] ?? null;
 }

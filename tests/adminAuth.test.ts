@@ -120,6 +120,24 @@ describe("everything an admin sees is gated", () => {
     expect(isProtectedPath("/api/workshop/0123456789abcdef0123456789abcdef")).toBe(false);
   });
 
+  /**
+   * The Instantly webhook is the only other public write surface, and it sits
+   * inside an otherwise-protected namespace — so the exact boundary matters
+   * more here than anywhere else in this list. It has its own shared secret;
+   * what must never happen is the settings route or the push route ending up
+   * outside the passphrase alongside it.
+   */
+  it("the Instantly webhook is public, and NOTHING else under /api/instantly is", () => {
+    expect(isProtectedPath("/api/instantly/webhook")).toBe(false);
+
+    expect(isProtectedPath("/api/instantly")).toBe(true);
+    expect(isProtectedPath("/api/instantly/push")).toBe(true);
+    expect(isProtectedPath("/api/instantly/drafts")).toBe(true);
+    expect(isProtectedPath("/admin/email")).toBe(true);
+    // Whole-segment matching, so a neighbour one character away stays gated.
+    expect(isProtectedPath("/api/instantly/webhook-test")).toBe(true);
+  });
+
   it("BUT the admin packet list next door to it is NOT", () => {
     // /api/workshop-packets is one hyphen away from the public prefix
     // /api/workshop/ and returns every owner's name and mobile.

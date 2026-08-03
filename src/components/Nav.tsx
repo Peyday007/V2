@@ -19,6 +19,7 @@ const links = [
   { href: "/admin/targets", label: "Targets" },
   { href: "/admin/timesheet", label: "Time" },
   { href: "/admin/campaigns", label: "Packets" },
+  { href: "/admin/email", label: "Email" },
   { href: "/admin/import", label: "Import" },
   { href: "/admin/suppressions", label: "Do Not Call" },
   { href: "/admin/updates", label: "Updates" },

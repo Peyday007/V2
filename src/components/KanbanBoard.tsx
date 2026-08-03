@@ -14,6 +14,7 @@ import { MACHINE_STATUS_LABELS, MachineStatus, IN_FLIGHT } from "@/lib/machineSt
 import { useLeads, Lead, ContactLite } from "@/hooks/useLeads";
 import EventHistory from "@/components/EventHistory";
 import TrialAlerts from "@/components/TrialAlerts";
+import ReplyAlerts from "@/components/ReplyAlerts";
 import BoardUpdates from "@/components/BoardUpdates";
 import PacketPanel from "@/components/PacketPanel";
 
@@ -196,6 +197,10 @@ function SalesBoard({
           goes above everything, including errors, because everything else on
           this board can wait an hour and this cannot. */}
       <TrialAlerts />
+
+      {/* Somebody answered a cold email. Quieter than a trial agreement, but
+          still a person waiting on a person. */}
+      <ReplyAlerts />
 
       {/* Say it once, everyone reads the same words. */}
       <BoardUpdates />
