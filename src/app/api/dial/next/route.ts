@@ -48,6 +48,44 @@ export async function GET() {
   });
   const callbackQueue = [...mine, ...orphaned];
 
+  /* ------------------- packets closed with work still in them -------------------
+   * A packet is only ever completed automatically when its pending count hits
+   * zero, so a NON-open packet that still has pending leads is a contradiction
+   * — the packet says finished, the rows say otherwise. It happened here: a
+   * bulk close-out marked rows done in packets it had no business touching,
+   * and the caller was left with a "completed" packet and 96 live leads.
+   *
+   * Reopen it. This heals a state that cannot be reached deliberately, and it
+   * is recorded as an event so it is visible rather than mysterious.
+   */
+  const { data: allPackets } = await db
+    .from("packets")
+    .select("id, name, status")
+    .eq("caller_id", callerId)
+    .order("created_at");
+
+  const closedWithWork: string[] = [];
+  for (const p of allPackets || []) {
+    if (p.status === "open") continue;
+    const { count } = await db
+      .from("packet_leads")
+      .select("*", { count: "exact", head: true })
+      .eq("packet_id", p.id)
+      .eq("status", "pending");
+    if ((count ?? 0) > 0) closedWithWork.push(p.id);
+  }
+
+  if (closedWithWork.length > 0) {
+    await db.from("packets").update({ status: "open" }).in("id", closedWithWork);
+    await logEvent("packet.assigned", "packet", closedWithWork[0], {
+      packet_ids: closedWithWork,
+      caller_id: callerId,
+      reason:
+        "Reopened automatically: the packet was marked completed while leads in it were still pending.",
+      reopened: true,
+    });
+  }
+
   const { data: packets } = await db
     .from("packets")
     .select("id, name")
@@ -102,7 +140,32 @@ export async function GET() {
   }
 
   if (candidates.length === 0) {
-    return NextResponse.json({ caller: caller.name, lead: null, remaining: 0 });
+    /*
+     * Say WHICH kind of nothing this is.
+     *
+     * This path returned a bare `remaining: 0` with no explanation, so a caller
+     * whose packet had been closed early saw the same "All done 🎉" as one who
+     * had genuinely finished. Never assigned, closed early and worked to the
+     * end are three different situations with three different fixes.
+     */
+    const totalPackets = (allPackets || []).length;
+    let explanation: string | null = null;
+
+    if (totalPackets === 0) {
+      explanation =
+        "You have not been given a packet yet. Ask your admin to build you one.";
+    } else if (packetIds.length === 0) {
+      explanation =
+        "Your packets are all closed and none of them have leads left. Ask your admin for a new one.";
+    }
+
+    return NextResponse.json({
+      caller: caller.name,
+      lead: null,
+      remaining: 0,
+      reopened: closedWithWork.length,
+      error: explanation,
+    });
   }
 
   /* -------------------- do-not-call, checked at the last moment --------------------
