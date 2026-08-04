@@ -631,7 +631,7 @@ function AgainstTheBar({ rows }: { rows: AbsoluteRead[] }) {
           published cold-calling ranges, mostly measured on software teams
           calling office workers — your connect and owner-reach rates should run
           higher than those, since the owner usually answers their own phone.{" "}
-          <a href="/admin/targets">Set your own</a> and every bar here becomes a
+          <a href="/admin/analytics">Set your own</a> and every bar here becomes a
           number you chose.
         </p>
       ) : (
@@ -759,14 +759,14 @@ function Profiles() {
             Every <strong>Bar</strong> below is a borrowed starting figure (marked
             ˚) rather than a number you chose. They are usable, but they were
             measured on other people&rsquo;s teams.{" "}
-            <a href="/admin/targets">Set your own</a> and they become real.
+            <a href="/admin/analytics">Set your own</a> and they become real.
           </p>
         </div>
       )}
       {targetsSet > 0 && targetsMissing.length > 0 && (
         <p className="faint" style={{ marginBottom: 16 }}>
           Still no target for {targetsMissing.join(", ").toLowerCase()} — those stay
-          team-relative only. <a href="/admin/targets">Targets</a>
+          team-relative only. <a href="/admin/analytics">Targets</a>
         </p>
       )}
 

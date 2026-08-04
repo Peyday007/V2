@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 
 // Admin console only. The caller dialer lives at /dial with its own chrome
 // and is intentionally NOT linked from here.
@@ -9,19 +10,27 @@ const links = [
   { href: "/", label: "Board" },
   { href: "/admin/sourcing", label: "Leads" },
   { href: "/admin/enrichment", label: "Enrichment" },
-  { href: "/metrics", label: "Metrics" },
+  // Analytics absorbed two neighbours. "Metrics" read one table and produced
+  // counts this page already had with more rigour; "Targets" held the bar with
+  // no number beside it. Splitting what-happened, is-that-good and what-should
+  // -it-be across three pages meant holding two in your head to read the third.
   { href: "/admin/analytics", label: "Analytics" },
-  { href: "/admin/followups", label: "Follow-ups" },
-  { href: "/admin/review", label: "Review" },
+  // Follow-ups, Review and Appointments were three queues of work waiting on a
+  // person. Finding out whether anything needed you cost three page loads, and
+  // the honest answer was usually "no" three times — so the check stopped
+  // happening. One page, one badge.
+  { href: "/admin/queue", label: "Needs you" },
   { href: "/admin/learning", label: "Learning" },
-  { href: "/admin/appointments", label: "Appointments" },
   { href: "/admin/callers", label: "Callers" },
-  { href: "/admin/targets", label: "Targets" },
   { href: "/admin/timesheet", label: "Time" },
   { href: "/admin/campaigns", label: "Packets" },
   { href: "/admin/email", label: "Email" },
   { href: "/admin/import", label: "Import" },
-  { href: "/admin/suppressions", label: "Do Not Call" },
+  // No "Do Not Call" entry. The list was a page you looked at and never acted
+  // on: suppression is enforced when a packet is built, topped up, imported,
+  // handed to a caller and logged against — five places, none of which read
+  // that page. The one thing it could uniquely do, adding a number by hand for
+  // a request that did not arrive on a call, moved onto the Leads page.
   { href: "/admin/updates", label: "Updates" },
   { href: "/admin/prompts", label: "Prompts" },
   { href: "/admin/scripts", label: "Scripts" },
@@ -31,6 +40,33 @@ const links = [
 
 export default function Nav({ protectedConsole }: { protectedConsole: boolean }) {
   const pathname = usePathname();
+  const [waiting, setWaiting] = useState(0);
+
+  /*
+   * How much is waiting on a person, polled quietly.
+   *
+   * A minute is plenty — these are a handful of items a day — and a failure
+   * leaves the badge at zero rather than putting an error in the navigation,
+   * which is not a place anybody can act on one.
+   */
+  useEffect(() => {
+    let live = true;
+    const read = async () => {
+      try {
+        const res = await fetch("/api/queue/counts");
+        const j = await res.json();
+        if (live) setWaiting(Number(j?.total) || 0);
+      } catch {
+        /* a missing badge is better than a broken nav */
+      }
+    };
+    read();
+    const id = setInterval(read, 60_000);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, [pathname]);
   return (
     <>
       {!protectedConsole && (
@@ -94,6 +130,10 @@ export default function Nav({ protectedConsole }: { protectedConsole: boolean })
       {links.map((l) => {
         const active =
           l.href === "/" ? pathname === "/" : pathname.startsWith(l.href);
+        // The only nav item that carries a number. It is the one that answers
+        // "does anything need me right now", and it is worth a glance rather
+        // than a visit.
+        const badge = l.href === "/admin/queue" && waiting > 0 ? waiting : null;
         return (
           <Link
             key={l.href}
@@ -113,6 +153,20 @@ export default function Nav({ protectedConsole }: { protectedConsole: boolean })
             }}
           >
             {l.label}
+            {badge !== null && (
+              <span
+                style={{
+                  marginLeft: 5,
+                  padding: "1px 5px",
+                  borderRadius: 8,
+                  background: "var(--amber)",
+                  color: "var(--bg)",
+                  fontSize: "0.68rem",
+                }}
+              >
+                {badge}
+              </span>
+            )}
           </Link>
         );
       })}

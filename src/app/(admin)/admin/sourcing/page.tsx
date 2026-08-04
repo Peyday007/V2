@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import DoNotCallAdd from "@/components/DoNotCallAdd";
 import Link from "next/link";
 import { MACHINE_STATUS_LABELS, MachineStatus } from "@/lib/machineStatus";
 import { INDUSTRIES, searchTermsFor } from "@/lib/industries";
@@ -208,11 +209,22 @@ export default function SourcingPage() {
           ⚡ Generate leads
         </button>
       </div>
-      <p className="faint" style={{ marginBottom: 22 }}>
+      <p className="faint" style={{ marginBottom: 10 }}>
         This page finds businesses and gets them ready for your callers.{" "}
         <strong>Nothing on this page can delete a lead or lose your data</strong> — the
         worst any button here does is make the engine repeat work it has already done.
       </p>
+
+      {/*
+        The one thing the retired "Do not call" page could do that nothing else
+        can. The list it showed was never load-bearing — suppression is enforced
+        in five independent places and none of them read that page — but a
+        written request has to have somewhere to go, and the number may not be
+        in the system at all.
+      */}
+      <div style={{ marginBottom: 22 }}>
+        <DoNotCallAdd />
+      </div>
 
       {error && (
         <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>

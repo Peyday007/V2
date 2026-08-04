@@ -43,7 +43,7 @@ function one<T>(rel: Rel<T>): T | null {
   return Array.isArray(rel) ? (rel[0] ?? null) : rel;
 }
 
-export default function AppointmentsPage() {
+export default function AppointmentsSection() {
   const [rows, setRows] = useState<Appointment[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -87,8 +87,8 @@ export default function AppointmentsPage() {
   const noShow = settled.filter((a) => a.attendance_status === "no_show").length;
 
   return (
-    <div style={{ maxWidth: 1000, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 6 }}>Appointments</h1>
+    <div>
+      <h2 style={{ marginBottom: 6 }}>Appointments</h2>
       <p className="faint" style={{ marginBottom: 20 }}>
         A booked appointment is not a held appointment. Marking what actually
         happened is the only way show-rate can ever be measured — nothing else
@@ -123,7 +123,7 @@ export default function AppointmentsPage() {
         </div>
       )}
 
-      <h2 style={{ marginBottom: 10 }}>Awaiting an outcome ({pending.length})</h2>
+      <h3 style={{ marginBottom: 10 }}>Awaiting an outcome ({pending.length})</h3>
       {pending.length === 0 ? (
         <p className="muted" style={{ marginBottom: 28 }}>
           Nothing waiting. Appointments appear here the moment a caller books one.
@@ -138,7 +138,7 @@ export default function AppointmentsPage() {
 
       {settled.length > 0 && (
         <>
-          <h2 style={{ marginBottom: 10 }}>Recorded</h2>
+          <h3 style={{ marginBottom: 10 }}>Recorded</h3>
           <div style={{ display: "grid", gap: 10 }}>
             {settled.map((a) => (
               <Row key={a.id} a={a} saving={saving === a.id} onMark={mark} settled />

@@ -42,7 +42,7 @@ const URGENCY_COLOR: Record<string, string> = {
   done: "var(--text-dim)",
 };
 
-export default function FollowupsPage() {
+export default function FollowupsSection() {
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -110,8 +110,8 @@ export default function FollowupsPage() {
 
   if (error) {
     return (
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <h1 style={{ marginBottom: 16 }}>Follow-ups</h1>
+      <div>
+        <h2 style={{ marginBottom: 16 }}>Follow-ups</h2>
         <div className="card" style={{ borderColor: "var(--red)", color: "var(--red)" }}>
           {error}
         </div>
@@ -124,8 +124,8 @@ export default function FollowupsPage() {
   const done = data.items.filter((i) => i.urgency === "done");
 
   return (
-    <div style={{ maxWidth: 950, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 6 }}>Follow-ups</h1>
+    <div>
+      <h2 style={{ marginBottom: 6 }}>Follow-ups</h2>
       <p className="faint" style={{ marginBottom: 18, lineHeight: 1.6 }}>
         A warm prospect goes cold in minutes. Anything a caller promised, or any
         call that ended in real interest, lands here with a draft already
@@ -159,7 +159,7 @@ export default function FollowupsPage() {
         />
       </div>
 
-      <h2 style={{ marginBottom: 10 }}>Waiting on someone ({open.length})</h2>
+      <h3 style={{ marginBottom: 10 }}>Waiting on someone ({open.length})</h3>
       {open.length === 0 ? (
         <p className="muted" style={{ marginBottom: 28 }}>
           Nothing outstanding. Follow-ups appear the moment a caller logs an
@@ -257,7 +257,7 @@ export default function FollowupsPage() {
 
       {done.length > 0 && (
         <>
-          <h2 style={{ marginBottom: 10 }}>Handled ({done.length})</h2>
+          <h3 style={{ marginBottom: 10 }}>Handled ({done.length})</h3>
           <table>
             <thead>
               <tr>

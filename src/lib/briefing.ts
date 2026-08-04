@@ -80,7 +80,7 @@ export type BriefingInput = {
   learned: LearnedFact;
   readyToCall: number;
   pendingInPackets: number;
-  /** Absolute bars, from /admin/targets. Empty means no bar is asserted. */
+  /** Absolute bars, from Analytics. Empty means no bar is asserted. */
   targets?: Target[];
   now?: Date;
 };

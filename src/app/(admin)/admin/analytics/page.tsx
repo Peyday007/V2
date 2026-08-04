@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import TeamNumbers from "@/components/analytics/TeamNumbers";
+import TargetsSection from "@/components/analytics/TargetsSection";
 import {
   CONFIDENCE_LABEL,
   MIN_DIRECTIONAL,
@@ -122,6 +124,21 @@ export default function AnalyticsPage() {
         ))}
       </div>
       <Briefing />
+
+      {/*
+        The raw counts, and the bar they are measured against.
+        These were two separate nav entries — "Metrics" and "Targets" — sitting
+        either side of this page. Metrics read one table and produced counts
+        that this page already had, with less rigour. Targets held the bar with
+        no number next to it. Splitting "what happened", "is that any good" and
+        "what should it be" across three pages meant holding two of them in
+        your head to read the third.
+      */}
+      <TeamNumbers />
+
+      <div className="card" style={{ marginBottom: 32 }}>
+        <TargetsSection />
+      </div>
 
       <h2 style={{ marginBottom: 6 }}>The numbers</h2>
       <p className="faint" style={{ marginBottom: 24 }}>

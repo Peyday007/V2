@@ -14,6 +14,51 @@ Cold-calling CRM for a small team selling AI Receptionist services to roofing co
 
 - **Do Not Call** (`/admin/suppressions`) — the suppression list, and a box to add a number by hand for a request that didn't come in on a call
 
+## The sections
+
+Sixteen, down from twenty-one. What was removed and why:
+
+| Gone | Where it went |
+|---|---|
+| **Metrics** | Into **Analytics**. It read one table and produced counts Analytics already had, with less rigour — and being older, it sat first in the nav. |
+| **Targets** | Into **Analytics**. It held the bar with no number beside it; splitting *what happened*, *is that any good* and *what should it be* across three pages meant holding two in your head to read the third. |
+| **Follow-ups**, **Review**, **Appointments** | Into **Needs you**. Three queues of work waiting on a person, so finding out whether anything needed you cost three page loads — and the honest answer was usually "no" three times, so the check stopped happening. |
+| **Do Not Call** | The list went; the enforcement did not. |
+
+### Needs you
+
+One page, one badge on the nav. The three queues stay whole rather than
+blending into a single list — a callback due at four and an AI reading that
+could not be settled need different things from you, and a merged list would
+sort them against each other as though they were comparable. What is shared is
+the *answer to the question*: is there anything.
+
+It opens on whichever section actually has work. A page that opens collapsed
+makes you click three times to learn there is nothing to do, which is the
+problem it exists to solve.
+
+`/api/queue/counts` is three counting queries returning no rows, so the badge
+can be live without loading three pages behind it. Each count degrades
+independently: a badge reading 0 because a table is missing is exactly as wrong
+as one reading 0 because there is nothing to do, and `error` carries the
+difference.
+
+### Do not call
+
+**The list was a page you looked at and never acted on.** Suppression is
+enforced in five independent places — building a packet, topping one up,
+importing, handing a lead to a caller, and logging an outcome — and none of
+them ever read that page. A caller marking "do not call" already adds to it by
+itself, as does the post-call review.
+
+The one thing the page could uniquely do was add a number by hand, for a
+request that did not arrive on a call: an email, a letter, a voicemail, from a
+number that may not be in the system at all. Deleting that would have made the
+answer to "please stop calling me" *run some SQL*, so it moved onto the
+**Leads** page as a one-button panel. It still suppresses on the number rather
+than the record, because the same business is routinely in the database twice
+under two trades.
+
 ## Who can see what
 
 The admin console is behind one shared passphrase. Set `ADMIN_PASSWORD` in

@@ -195,7 +195,7 @@ export type TrialInput = {
   benchmark: Benchmark;
   /** Calls on which the candidate recorded something durable. */
   intelCaptureCount?: number;
-  /** Absolute bars, from /admin/targets. Empty means no bar is asserted. */
+  /** Absolute bars, from Analytics. Empty means no bar is asserted. */
   targets?: Target[];
 };
 

@@ -336,7 +336,7 @@ export type ProfileInput = {
   teamCallsPerDay?: number | null;
   /** Total caller-days behind that team average, so it is not read off noise. */
   teamCallerDays?: number;
-  /** Absolute bars, from /admin/targets. Empty means no bar is asserted. */
+  /** Absolute bars, from Analytics. Empty means no bar is asserted. */
   targets?: Target[];
 };
 

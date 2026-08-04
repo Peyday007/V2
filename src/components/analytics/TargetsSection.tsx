@@ -12,7 +12,7 @@ type Payload = {
   error: string | null;
 };
 
-export default function TargetsPage() {
+export default function TargetsSection() {
   const [data, setData] = useState<Payload | null>(null);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -73,7 +73,7 @@ export default function TargetsPage() {
 
   return (
     <div style={{ maxWidth: 880, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 6 }}>Targets</h1>
+      <h2 style={{ marginTop: 0, marginBottom: 6 }}>Your targets</h2>
       <p className="faint" style={{ marginBottom: 14, lineHeight: 1.6 }}>
         Everything else in this platform compares a caller against{" "}
         <strong>the rest of your team</strong>. That answers &ldquo;who is

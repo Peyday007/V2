@@ -67,7 +67,7 @@ function show(v: unknown): string {
   return String(v);
 }
 
-export default function ReviewPage() {
+export default function ReviewSection() {
   const [data, setData] = useState<Payload | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
@@ -119,8 +119,8 @@ export default function ReviewPage() {
   const blocked = data.blocked ?? [];
 
   return (
-    <div style={{ maxWidth: 980, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 6 }}>Review</h1>
+    <div>
+      <h2 style={{ marginBottom: 6 }}>Review</h2>
       <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
         The AI reads every call and its reading is <strong>applied</strong> — nobody
         confirms it. This page is only what it could not settle on its own.
@@ -147,7 +147,7 @@ export default function ReviewPage() {
       {/* ------------------------ things it refused to do ------------------- */}
       {blocked.length > 0 && (
         <div style={{ marginBottom: 26 }}>
-          <h2 style={{ marginBottom: 6 }}>Waiting on you ({blocked.length})</h2>
+          <h3 style={{ marginBottom: 6 }}>Waiting on you ({blocked.length})</h3>
           <p className="faint" style={{ marginBottom: 10, lineHeight: 1.55 }}>
             The model asked to do these and was refused. They are on the
             never-automatic list — no confidence score makes them safe — so they
@@ -190,7 +190,7 @@ export default function ReviewPage() {
       )}
 
       {/* ------------------------------ the queue --------------------------- */}
-      <h2 style={{ marginBottom: 10 }}>Calls to look at ({queue.length})</h2>
+      <h3 style={{ marginBottom: 10 }}>Calls to look at ({queue.length})</h3>
       {queue.length === 0 ? (
         <p className="muted">
           Nothing needs a look. Every call this week was read and applied on its own.

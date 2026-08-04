@@ -360,7 +360,7 @@ export default function RecordingSettingsPage() {
               do-not-call, changing a price or the script, messaging a prospect,
               or judging a caller. Those are consequence problems, not confidence
               problems, and they appear on the{" "}
-              <a href="/admin/review">Review</a> page instead.
+              <a href="/admin/queue">Needs you</a> page instead.
             </p>
           </div>
 

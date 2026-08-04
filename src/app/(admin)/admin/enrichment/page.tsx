@@ -183,7 +183,7 @@ export default function EnrichmentPage() {
       const j = await res.json();
       // Every field defaulted here as well as on the server. A page that reads
       // a field off a partial payload is a white screen, which is how this
-      // class of bug showed up on /admin/review.
+      // class of bug showed up on the review queue.
       setData({
         report: j.report ?? null,
         settings: j.settings ?? null,
