@@ -17,6 +17,7 @@ import { anthropic, TRANSCRIPT_ANALYSIS_MODEL } from "./anthropic";
 import { recordEvent } from "./events";
 import {
   decideAuthority,
+  needsAPerson,
   type AuthorityDecision,
   type AuthoritySettings,
 } from "./aiAuthority";
@@ -154,7 +155,16 @@ export async function reviewCall(callId: string): Promise<ReviewOutcome> {
     settings,
   });
 
-  // No transcript at all is worth surfacing exactly once, not silently.
+  /*
+   * "No transcript" is recorded, not escalated.
+   *
+   * It is true and it explains why the reading came from the outcome form, so
+   * it stays on the row. But it is a fact about a SETTING — recording is off,
+   * or the state forbids it — and with recording off it is true of every call
+   * ever made. Treating it as a review reason filled the queue with thirty
+   * items that said "there was nothing to read" and asked a human whether the
+   * reading was right. See needsAPerson in aiAuthority.ts.
+   */
   const reasons = [...decision.reasons];
   if (!read && segments.length === 0) reasons.push("no_transcript");
 
@@ -192,7 +202,9 @@ async function applyDecision(
         applied_at: new Date().toISOString(),
         held_fields: decision.held,
         disagreements: decision.disagreements,
-        needs_review: extra.reasons.length > 0,
+        // Not `reasons.length > 0`: a reason that only describes the setup is
+        // not a job for anybody. See SYSTEM_STATE_REASONS.
+        needs_review: needsAPerson(extra.reasons),
         review_reasons: extra.reasons,
         // The transcript reading, kept beside the applied one so accuracy
         // stays measurable after the fact.

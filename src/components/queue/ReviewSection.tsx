@@ -44,6 +44,8 @@ type Payload = {
   load?: string | null;
   weekTotal?: number | null;
   weekEscalated?: number | null;
+  /** Readings that came from the outcome form because there was no recording. */
+  nothingToRead?: number | null;
   error?: string | null;
 };
 
@@ -133,6 +135,30 @@ export default function ReviewSection() {
         is any good.
       </p>
 
+      {/*
+        Said once, at the top, instead of on thirty rows.
+        With recording off there is no transcript on ANY call, so "there was
+        nothing to read" is a fact about a setting, not a job for anybody. It
+        used to be a review reason, which meant every call ever made turned
+        into a queue item offering a choice about a reading that was never
+        made.
+      */}
+      {(data.nothingToRead ?? 0) > 0 && (
+        <div
+          className="card"
+          style={{ borderColor: "var(--amber-dim)", marginBottom: 16, lineHeight: 1.6 }}
+        >
+          <strong style={{ color: "var(--amber)" }}>
+            {data.nothingToRead} call{data.nothingToRead === 1 ? " has" : "s have"} no recording to
+            read.
+          </strong>{" "}
+          Their readings came from the outcome form the caller filled in, which is weaker but not
+          wrong. This is not work — it is what happens when recording is off, or when the business
+          is in one of the fourteen states where recording needs everyone&rsquo;s consent.{" "}
+          <a href="/admin/recording">Recording settings</a>
+        </div>
+      )}
+
       {data.error && (
         <div className="card" style={{ borderColor: "var(--red)", color: "var(--red)", marginBottom: 16 }}>
           {data.error}
@@ -207,7 +233,10 @@ export default function ReviewSection() {
                   <strong>{lead?.business_name ?? "Unknown business"}</strong>
                   {caller?.name && <span className="tag-dim">{caller.name}</span>}
                   <span className="tag-dim">{new Date(r.created_at).toLocaleString()}</span>
-                  {r.transcript_confidence !== null && (
+                  {/* typeof, not !== null: an absent field is undefined, and
+                      Math.round(undefined * 100) renders as "NaN%" rather than
+                      as nothing. */}
+                  {typeof r.transcript_confidence === "number" && (
                     <span className="tag-dim">
                       confidence {Math.round(r.transcript_confidence * 100)}%
                     </span>

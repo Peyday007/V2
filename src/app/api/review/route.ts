@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { needsAPerson } from "@/lib/aiAuthority";
 import { reviewLoad } from "@/lib/aiAuthority";
 
 export const dynamic = "force-dynamic";
@@ -83,8 +84,24 @@ async function queue() {
     );
   }
 
+  /*
+   * Drop the rows whose only reason is that there was nothing to read.
+   *
+   * Filtered here in JS rather than in the query. The predicate is "has at
+   * least one reason that is not a system-state one", which in PostgREST means
+   * a negated array-containment operator — and this route has already been
+   * broken once by trusting an embed I could not test. A hundred rows filtered
+   * in memory is free and provably right.
+   *
+   * The count endpoint applies the SAME predicate, so the badge and the list
+   * cannot disagree. That is the failure this queue produced last week.
+   */
+  const all = data || [];
+  const actionable = all.filter((r) => needsAPerson(r.review_reasons || []));
+  const nothingToRead = all.length - actionable.length;
+
   // Names for the callers actually in this page of results.
-  const callerIds = [...new Set((data || []).map((r) => r.caller_id).filter(Boolean))];
+  const callerIds = [...new Set(actionable.map((r) => r.caller_id).filter(Boolean))];
   const names = new Map<string, string>();
   if (callerIds.length > 0) {
     const { data: people } = await db
@@ -96,7 +113,7 @@ async function queue() {
 
   // Shaped exactly as the embed used to be, so the page needs no change and
   // an older cached client keeps working.
-  const rows = (data || []).map((r) => ({
+  const rows = actionable.map((r) => ({
     ...r,
     callers: r.caller_id && names.has(String(r.caller_id))
       ? { name: names.get(String(r.caller_id))! }
@@ -125,6 +142,13 @@ async function queue() {
     payload({
       queue: rows,
       blocked: blocked || [],
+      /*
+       * How many calls had no recording to read, so the page can say it once
+       * instead of thirty times. This is the honest version of what those rows
+       * were trying to tell you: not "here is work", but "you are not
+       * recording, so every reading is coming from the outcome form".
+       */
+      nothingToRead,
       load: reviewLoad(total ?? 0, escalated ?? 0),
       weekTotal: total ?? 0,
       weekEscalated: escalated ?? 0,

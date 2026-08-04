@@ -167,6 +167,36 @@ export const ESCALATION_LABEL: Record<EscalationReason, string> = {
   no_transcript: "There was no transcript to read",
 };
 
+/*
+ * The reasons that are a JOB FOR A PERSON, as opposed to a fact about the
+ * system.
+ *
+ * `no_transcript` is the odd one out and it broke the review queue. With
+ * recording switched off — which is the normal state, and the only lawful
+ * state in the fourteen all-party consent states — EVERY call has no
+ * transcript. So every call got flagged, and the queue filled with items that
+ * said "there was nothing to read" and offered a human the choice of "read it
+ * right" or "got it wrong" about a reading that was never made. Thirty in a
+ * day, and it would have been three hundred by the end of the week.
+ *
+ * It is still recorded on the call, because it is true and it explains why the
+ * reading came from the outcome form. It just is not work. What it actually
+ * means — "you are not recording, so nothing can be read from calls" — is one
+ * fact about a setting, and it belongs at the top of the page once rather than
+ * on every row forever.
+ */
+export const SYSTEM_STATE_REASONS: EscalationReason[] = ["no_transcript"];
+
+/** Does this call actually need a human, or is it just describing the setup? */
+export function needsAPerson(reasons: readonly string[]): boolean {
+  return reasons.some((r) => !(SYSTEM_STATE_REASONS as readonly string[]).includes(r));
+}
+
+/** The reasons worth showing as work, with the system-state ones removed. */
+export function actionableReasons(reasons: readonly string[]): string[] {
+  return reasons.filter((r) => !(SYSTEM_STATE_REASONS as readonly string[]).includes(r));
+}
+
 export type AuthorityDecision = {
   /** What gets written to the call record without anyone being asked. */
   applied: CallAnalysisResult;

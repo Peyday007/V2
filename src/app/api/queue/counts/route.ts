@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { needsAPerson } from "@/lib/aiAuthority";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,29 @@ async function count(run: () => Countable): Promise<{ n: number; error: string |
   }
 }
 
+/**
+ * Count the readings that actually need somebody, by reading their reasons.
+ *
+ * A count query cannot express "has at least one reason that is not a
+ * system-state one" without a negated array-containment operator, and this
+ * area has been broken once already by trusting PostgREST behaviour I could
+ * not test locally. The rows are few — they are the escalations — so they are
+ * fetched and filtered in memory, which is provably right.
+ */
+async function reasonsNeedingAPerson(
+  db: ReturnType<typeof supabaseAdmin>
+): Promise<{ count: number | null; error: { message: string } | null }> {
+  const { data, error } = await db
+    .from("call_analysis")
+    .select("review_reasons")
+    .eq("needs_review", true)
+    .is("reviewed_at", null)
+    .limit(2000);
+  if (error) return { count: null, error };
+  const n = (data || []).filter((r) => needsAPerson(r.review_reasons || [])).length;
+  return { count: n, error: null };
+}
+
 export async function GET() {
   const db = supabaseAdmin();
 
@@ -44,14 +68,19 @@ export async function GET() {
         .select("*", { count: "exact", head: true })
         .in("status", ["drafted", "approved"])
     ),
-    // The AI applies its own reading; these are the ones it could not settle.
-    count(() =>
-      db
-        .from("call_analysis")
-        .select("*", { count: "exact", head: true })
-        .eq("needs_review", true)
-        .is("reviewed_at", null)
-    ),
+    /*
+     * The AI applies its own reading; these are the ones it could not settle.
+     *
+     * Reasons are read rather than counted, because a row whose only reason is
+     * "there was no transcript" is not work — with recording off that is every
+     * call, and the badge said 30 while every one of them offered a human the
+     * choice of "read it right" or "got it wrong" about a reading that was
+     * never made.
+     *
+     * The list route applies the SAME predicate. Two places deciding what
+     * counts as work is how the badge and the page disagreed last week.
+     */
+    count(() => reasonsNeedingAPerson(db)),
     count(() =>
       db.from("blocked_actions").select("*", { count: "exact", head: true }).eq("status", "pending")
     ),

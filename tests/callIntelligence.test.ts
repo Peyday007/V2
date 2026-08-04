@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  needsAPerson,
+  actionableReasons,
+  ESCALATION_LABEL,
+  SYSTEM_STATE_REASONS,
+} from "../src/lib/aiAuthority";
+import {
   suggestionsFor,
   primarySuggestion,
   suggestedOutcomeFor,
@@ -689,5 +695,61 @@ describe("speaker labelling admits uncertainty", () => {
   it("treats an unrecognised label as unknown", () => {
     expect(resolveSpeaker("agent", 0.99).speaker).toBe("unknown");
     expect(resolveSpeaker(null, null).speaker).toBe("unknown");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* what is work, and what is just how the system is set up                    */
+/* -------------------------------------------------------------------------- */
+
+describe("A REASON THAT DESCRIBES THE SETUP IS NOT A JOB FOR ANYBODY", () => {
+  /*
+   * This reached production. With recording off — the normal state, and the
+   * only lawful one in the fourteen all-party consent states — every call has
+   * no transcript. "no_transcript" was a review reason, so every call ever
+   * made landed in the queue saying "there was nothing to read" and offering a
+   * human the choice of "read it right" or "got it wrong" about a reading that
+   * was never made. Thirty in a day.
+   */
+  it("no_transcript on its own does not need a person", () => {
+    expect(needsAPerson(["no_transcript"])).toBe(false);
+    expect(needsAPerson([])).toBe(false);
+  });
+
+  it("but anything real does", () => {
+    for (const reason of [
+      "low_confidence",
+      "material_disagreement",
+      "do_not_call_heard",
+      "dnc_reversal_attempted",
+      "complaint_heard",
+      "spot_check",
+    ]) {
+      expect(needsAPerson([reason]), reason).toBe(true);
+    }
+  });
+
+  it("and a real reason ALONGSIDE no_transcript still needs a person", () => {
+    // The dangerous over-correction: filtering the row out because it mentions
+    // no_transcript would hide a genuine escalation.
+    expect(needsAPerson(["no_transcript", "do_not_call_heard"])).toBe(true);
+    expect(needsAPerson(["no_transcript", "spot_check"])).toBe(true);
+  });
+
+  it("the reason is still recorded — it explains where the reading came from", () => {
+    // Dropping it entirely would lose the answer to "why is this from the
+    // form rather than the recording".
+    expect(ESCALATION_LABEL.no_transcript).toBeTruthy();
+    expect(SYSTEM_STATE_REASONS).toContain("no_transcript");
+  });
+
+  it("actionableReasons strips only the system-state ones", () => {
+    expect(actionableReasons(["no_transcript", "low_confidence"])).toEqual(["low_confidence"]);
+    expect(actionableReasons(["no_transcript"])).toEqual([]);
+  });
+
+  it("an unknown future reason is treated as real, not silently dropped", () => {
+    // Fail toward showing a person too much rather than too little.
+    expect(needsAPerson(["some_reason_added_later"])).toBe(true);
   });
 });
