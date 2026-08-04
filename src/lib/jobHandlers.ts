@@ -21,6 +21,7 @@ import { loadSettings } from "./instantlyStore";
 import { activeLeadCount } from "./instantly/client";
 import { countEligible, pushEligibleLeads } from "./emailPush";
 import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
+import { syncSendingAccounts } from "./capacitySync";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -1358,6 +1359,42 @@ const refillEmailCampaign: Handler = async () => {
   console.log(`[refill] ${decision.reason} — pushed ${outcome.pushed}, failed ${outcome.failed}`);
 };
 
+/**
+ * Read the inboxes, and let them grow.
+ *
+ * Runs on the tick, cheap, and mostly decides nothing. Two separate switches
+ * behind it: smart_capacity_enabled only ever READS Instantly and recomputes
+ * the cap, while auto_adjust_limits_enabled is the one that writes a setting
+ * into somebody else's account. The second is off by default and stays off
+ * until it is deliberately turned on.
+ */
+const syncSendingAccountsJob: Handler = async () => {
+  const { settings, error } = await loadSettings();
+  if (error) {
+    console.log(`[capacity] skipped: ${error}`);
+    return;
+  }
+  // Nothing to do at all unless one of the two is on. Reading the account list
+  // on every tick for no reason is a request nobody asked for.
+  if (!settings.smart_capacity_enabled && !settings.auto_adjust_limits_enabled) return;
+
+  const outcome = await syncSendingAccounts({
+    adjust: settings.auto_adjust_limits_enabled,
+    actor: "worker",
+  });
+
+  if (!outcome.ok) {
+    console.log(`[capacity] ${outcome.error}`);
+    return;
+  }
+  console.log(
+    `[capacity] ${outcome.accounts} inboxes, ${outcome.dailySends} sends/day, ` +
+      `${outcome.leadsPerDay} leads/day` +
+      (outcome.changed ? `, ${outcome.changed} limits changed` : "") +
+      (outcome.failed ? `, ${outcome.failed} refused` : "")
+  );
+};
+
 export const HANDLERS: Record<JobType, Handler> = {
   plan_search_tasks: planSearchTasks,
   execute_places_search: executePlacesSearch,
@@ -1369,4 +1406,5 @@ export const HANDLERS: Record<JobType, Handler> = {
   enrich_owner_contact: enrichOwnerContact,
   auto_assign_packets: autoAssignPackets,
   refill_email_campaign: refillEmailCampaign,
+  sync_sending_accounts: syncSendingAccountsJob,
 };

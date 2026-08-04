@@ -107,6 +107,86 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/**
+ * Read the sending-account list.
+ *
+ * Tolerant about key names for the same reason as the webhook parser: this
+ * feeds a number that decides how much gets sent, and a field that silently
+ * reads as undefined would come back as a capacity of zero — which looks
+ * exactly like "you have no inboxes" rather than like a parsing bug.
+ *
+ * An account whose daily limit cannot be read is returned with a limit of 0
+ * rather than a guessed default. Zero drops it out of the capacity total,
+ * which is the safe direction; a guessed 50 would have the planner sending
+ * against inboxes it knows nothing about.
+ */
+export function normaliseAccounts(body: unknown): SendingAccountRow[] {
+  const container = body as { items?: unknown; data?: unknown } | unknown[];
+  const list = Array.isArray(container)
+    ? container
+    : Array.isArray((container as { items?: unknown })?.items)
+      ? (container as { items: unknown[] }).items
+      : Array.isArray((container as { data?: unknown })?.data)
+        ? (container as { data: unknown[] }).data
+        : [];
+
+  const out: SendingAccountRow[] = [];
+  for (const entry of list) {
+    const o = entry as Record<string, unknown>;
+    const email = firstString(o, ["email", "eaccount", "account", "from_email"]);
+    if (!email) continue;
+
+    out.push({
+      email: email.toLowerCase(),
+      dailyLimit: firstNumber(o, ["daily_limit", "dailyLimit", "campaign_daily_limit"]) ?? 0,
+      warmupScore: firstNumber(o, ["stat_warmup_score", "warmup_score", "warmupScore"]),
+      warmupStatus: firstString(o, ["warmup_status", "warmupStatus"]),
+      // Instantly reports status as 1 for active. A missing status is treated
+      // as active, because the alternative is silently ignoring every inbox
+      // when they rename the field.
+      active: isActive(o),
+      createdAt: firstString(o, ["timestamp_created", "created_at", "createdAt"]),
+    });
+  }
+  return out;
+}
+
+export type SendingAccountRow = {
+  email: string;
+  dailyLimit: number;
+  warmupScore: number | null;
+  warmupStatus: string | null;
+  active: boolean;
+  createdAt: string | null;
+};
+
+function isActive(o: Record<string, unknown>): boolean {
+  const status = o.status ?? o.account_status;
+  if (typeof status === "number") return status === 1;
+  if (typeof status === "string") {
+    return !/paused|disabled|inactive|error|disconnected/i.test(status);
+  }
+  if (typeof o.is_active === "boolean") return o.is_active;
+  return true;
+}
+
+function firstString(o: Record<string, unknown>, keys: string[]): string | null {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+function firstNumber(o: Record<string, unknown>, keys: string[]): number | null {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  }
+  return null;
+}
+
 /** The body of a lead push. Pure, so a test can assert what would be sent. */
 export function pushBody(campaignId: string, subject: PushSubject): Record<string, unknown> {
   return {

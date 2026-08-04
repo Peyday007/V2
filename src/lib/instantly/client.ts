@@ -1,11 +1,24 @@
 import "server-only";
 import type { Campaign, InstantlyCapability, PushResult, PushSubject } from "./types";
-import { explainStatus, normaliseCampaigns, pushBody, toInstantlySequence } from "./mapping";
+import {
+  explainStatus,
+  normaliseAccounts,
+  normaliseCampaigns,
+  pushBody,
+  toInstantlySequence,
+  type SendingAccountRow,
+} from "./mapping";
 
 // The pure request/response mapping lives in ./mapping so it can be unit
 // tested — this file imports server-only, which a test cannot load. Re-exported
 // here so callers still have one import for the adapter.
-export { explainStatus, normaliseCampaigns, pushBody, toInstantlySequence } from "./mapping";
+export {
+  explainStatus,
+  normaliseAccounts,
+  normaliseCampaigns,
+  pushBody,
+  toInstantlySequence,
+} from "./mapping";
 
 // Talking to Instantly.
 //
@@ -254,4 +267,53 @@ export async function activeLeadCount(campaignId: string): Promise<number | null
     if (typeof v === "number" && Number.isFinite(v)) return v;
   }
   return null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* the sending accounts                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every inbox in the workspace, with what it is currently allowed to send.
+ *
+ * This is the number the whole capacity plan rests on, so a failure here has
+ * to be a failure — never an empty list. An empty list reads as "no capacity",
+ * which would stop the programme dead and look like a configuration problem
+ * rather than a request that did not come back.
+ */
+export async function listAccounts(): Promise<
+  { ok: true; accounts: SendingAccountRow[] } | { ok: false; error: string }
+> {
+  const res = await call("/accounts?limit=100", { method: "GET" });
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true, accounts: normaliseAccounts(res.body) };
+}
+
+/**
+ * Change what one inbox may send in a day.
+ *
+ * The only call in this codebase that writes a setting into somebody else's
+ * account, so it is worth being explicit about what protects it: the decision
+ * of whether and how far to move is made in sendingCapacity.ts, which is pure
+ * and tested, and every change is written to account_limit_changes with its
+ * reason before this is called. This function does not decide anything.
+ */
+export async function setAccountDailyLimit(
+  email: string,
+  dailyLimit: number
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const capability = instantlyCapability();
+  if (!capability.available) return { ok: false, error: capability.reason };
+  if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 500) {
+    // A guard against a caller, not against the policy: the policy already
+    // bounds this. Belt and braces on the one call that changes an account.
+    return { ok: false, error: `Refusing to set a daily limit of ${dailyLimit}.` };
+  }
+
+  const res = await call(`/accounts/${encodeURIComponent(email)}`, {
+    method: "PATCH",
+    body: { daily_limit: dailyLimit },
+  });
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true };
 }

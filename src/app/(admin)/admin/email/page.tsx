@@ -22,6 +22,33 @@ type Settings = {
   target_active_leads: number;
   daily_push_cap: number;
   last_auto_push_at: string | null;
+  smart_capacity_enabled: boolean;
+  auto_adjust_limits_enabled: boolean;
+  account_limit_ceiling: number;
+  computed_daily_sends: number | null;
+  computed_leads_per_day: number | null;
+  last_capacity_sync_at: string | null;
+};
+
+type Capacity = {
+  available: boolean;
+  error: string | null;
+  accounts: {
+    email: string;
+    dailyLimit: number;
+    warmupScore: number | null;
+    active: boolean;
+    excluded: boolean;
+    last_change_reason: string | null;
+  }[];
+  capacity?: { dailySends: number; usableSends: number; accountsCounted: number; accountsIgnored: number; reason: string };
+  smart?: { leadsPerDay: number; sequenceSteps: number; reason: string };
+  sequenceSteps?: number;
+  ceiling?: number;
+  daysToCeiling?: number;
+  changes: { email: string; from: number; to: number; direction: string; reason: string }[];
+  holds: { email: string; reason: string }[];
+  history: { email: string; limit_before: number; limit_after: number; direction: string; reason: string; applied: boolean; error: string | null; created_at: string }[];
 };
 
 type Sequence = {
@@ -49,6 +76,7 @@ type Status = {
   pushed: number;
   awaitingHuman: number;
   autoPushAvailable: boolean;
+  capacityAvailable: boolean;
   addressSources: { websiteEmail: boolean; directEmail: boolean };
   pushedToday: number;
 };
@@ -83,17 +111,22 @@ export default function EmailPage() {
   const [writing, setWriting] = useState(false);
   const [problems, setProblems] = useState<{ step: number | null; problem: string }[]>([]);
   const [openSequence, setOpenSequence] = useState<string | null>(null);
+  const [capacity, setCapacity] = useState<Capacity | null>(null);
+  const [confirmExternal, setConfirmExternal] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [s, d, q] = await Promise.all([
+      const [s, d, q, c] = await Promise.all([
         fetch("/api/instantly").then((r) => r.json()),
         fetch("/api/instantly/drafts?status=pending").then((r) => r.json()),
         fetch("/api/instantly/sequence").then((r) => r.json()),
+        fetch("/api/instantly/capacity").then((r) => r.json()),
       ]);
       setStatus(s);
       setDrafts(d.drafts ?? []);
       setSequences(q.sequences ?? []);
+      setCapacity(c);
       if (d.error) setErr(d.error);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -214,6 +247,30 @@ export default function EmailPage() {
     }
     if (j.warning) setErr(j.warning);
     else if (action === "publish") setMsg("Published. New leads pushed from now on get this sequence.");
+    load();
+  }
+
+  async function syncAccounts(adjust: boolean) {
+    setSyncing(true);
+    setErr("");
+    setMsg("");
+    const res = await fetch("/api/instantly/capacity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ adjust, acknowledge_external: adjust }),
+    });
+    const j = await res.json().catch(() => ({}));
+    setSyncing(false);
+    if (!res.ok || j.error) {
+      setErr(j.error || "Could not read the inboxes.");
+      return;
+    }
+    setMsg(
+      adjust
+        ? `${j.changed} limit${j.changed === 1 ? "" : "s"} changed${j.failed ? `, ${j.failed} refused` : ""}. ` +
+          `${j.dailySends} sends a day across ${j.accounts} inboxes — ${j.leadsPerDay} new leads a day.`
+        : `${j.accounts} inboxes can send ${j.dailySends} a day between them — that is ${j.leadsPerDay} new leads a day.`
+    );
     load();
   }
 
@@ -418,6 +475,204 @@ export default function EmailPage() {
         )}
       </div>
 
+      {/* ------------------------- the inboxes themselves --------------------- */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <h2 style={{ marginTop: 0, marginBottom: 10 }}>The inboxes</h2>
+        {!status.capacityAvailable || capacity?.available === false ? (
+          <p style={{ color: "var(--red)", lineHeight: 1.6, marginTop: 0 }}>
+            {capacity?.error ||
+              "Run supabase/migrations/0031_sending_capacity.sql to switch this on."}
+          </p>
+        ) : (
+          <>
+            <p style={{ lineHeight: 1.7, marginTop: 0 }}>
+              {capacity?.capacity ? (
+                <>
+                  <strong style={{ color: "var(--amber)", fontSize: "1.4rem" }}>
+                    {capacity.smart?.leadsPerDay ?? 0}
+                  </strong>{" "}
+                  new leads a day is what your inboxes can actually carry.{" "}
+                  {capacity.smart?.reason}
+                </>
+              ) : (
+                "Nothing read from Instantly yet — press Check the inboxes."
+              )}
+            </p>
+            <p className="faint" style={{ lineHeight: 1.7 }}>
+              Pushing a lead is not sending an email. A lead entering a{" "}
+              {capacity?.sequenceSteps ?? 3}-step sequence sends{" "}
+              {capacity?.sequenceSteps ?? 3} emails over the following weeks, so once the pipeline
+              fills, daily sends = new leads &times; steps. That is why a cap typed in by hand is
+              almost always wrong in one direction or the other.
+            </p>
+
+            {(capacity?.accounts?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 12, marginBottom: 12, overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
+                  <thead>
+                    <tr className="faint" style={{ textAlign: "left" }}>
+                      <th style={{ padding: "4px 8px 4px 0" }}>Inbox</th>
+                      <th style={{ padding: "4px 8px" }}>Now</th>
+                      <th style={{ padding: "4px 8px" }}>Health</th>
+                      <th style={{ padding: "4px 8px" }}>What happens next</th>
+                      <th style={{ padding: "4px 0" }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {capacity!.accounts.map((a) => {
+                      const change = capacity!.changes.find((c) => c.email === a.email);
+                      const hold = capacity!.holds.find((h) => h.email === a.email);
+                      return (
+                        <tr key={a.email} style={{ borderTop: "1px solid var(--border)" }}>
+                          <td style={{ padding: "6px 8px 6px 0", opacity: a.excluded ? 0.5 : 1 }}>
+                            {a.email}
+                            {!a.active && <span className="faint"> · inactive</span>}
+                          </td>
+                          <td style={{ padding: "6px 8px", fontWeight: 700 }}>{a.dailyLimit}</td>
+                          <td style={{ padding: "6px 8px" }} className="faint">
+                            {a.warmupScore === null ? "—" : a.warmupScore}
+                          </td>
+                          <td style={{ padding: "6px 8px", lineHeight: 1.5 }}>
+                            {a.excluded ? (
+                              <span className="faint">Left alone.</span>
+                            ) : change ? (
+                              <span style={{ color: "var(--amber)" }}>
+                                {change.from} &rarr; {change.to}. {change.reason}
+                              </span>
+                            ) : (
+                              <span className="faint">{hold?.reason ?? "No change."}</span>
+                            )}
+                          </td>
+                          <td style={{ padding: "6px 0", textAlign: "right" }}>
+                            <button
+                              className="btn-ghost"
+                              style={{ padding: "2px 8px", fontSize: "0.68rem" }}
+                              disabled={busy}
+                              onClick={async () => {
+                                await fetch("/api/instantly/capacity", {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ email: a.email, excluded: !a.excluded }),
+                                });
+                                load();
+                              }}
+                            >
+                              {a.excluded ? "Manage it" : "Leave alone"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+              <button className="btn-ghost" disabled={syncing} onClick={() => syncAccounts(false)}>
+                {syncing ? "Reading…" : "Check the inboxes"}
+              </button>
+              {(capacity?.changes?.length ?? 0) > 0 && (
+                <button className="btn" disabled={syncing} onClick={() => syncAccounts(true)}>
+                  Apply {capacity!.changes.length} change
+                  {capacity!.changes.length === 1 ? "" : "s"} now
+                </button>
+              )}
+              {s.last_capacity_sync_at && (
+                <span className="faint" style={{ alignSelf: "center" }}>
+                  Last read {new Date(s.last_capacity_sync_at).toLocaleString()}
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={s.smart_capacity_enabled}
+                  disabled={busy}
+                  onChange={(e) => save({ smart_capacity_enabled: e.target.checked })}
+                />
+                <span>Work the daily cap out from the inboxes, not from a number I typed</span>
+              </label>
+
+              <label>
+                <div className="faint" style={{ marginBottom: 4 }}>
+                  Never raise an inbox past this. Above about 100 a day the mailbox providers
+                  treat an address as a bulk sender however well it is warmed.
+                </div>
+                <input
+                  type="number"
+                  min={10}
+                  max={200}
+                  defaultValue={s.account_limit_ceiling}
+                  disabled={busy}
+                  onBlur={(e) => {
+                    const n = Number(e.target.value);
+                    if (n !== s.account_limit_ceiling) save({ account_limit_ceiling: n });
+                  }}
+                />
+              </label>
+
+              <p className="faint" style={{ lineHeight: 1.7, margin: 0 }}>
+                Raises go up half again at a time, capped at +20, two days apart — so an inbox
+                at 30 reaches 90 in about four steps. It is not being cautious for the sake of
+                it: mailbox providers score the <em>rate</em> of change as well as the volume,
+                and an address that triples its output overnight looks exactly like a
+                compromised one. An inbox under three weeks old, below 80 health, or bouncing is
+                never raised. One that is bouncing over 3% gets <em>halved</em>, immediately,
+                cooldown or not.
+                {capacity?.daysToCeiling
+                  ? ` At this pace everything reaches ${capacity.ceiling} in about ${capacity.daysToCeiling} days.`
+                  : ""}
+              </p>
+
+              {!s.auto_adjust_limits_enabled && (
+                <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={confirmExternal}
+                    onChange={(e) => setConfirmExternal(e.target.checked)}
+                  />
+                  <span className="faint">
+                    I understand this edits the sending limits on my Instantly accounts.
+                  </span>
+                </label>
+              )}
+              <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={s.auto_adjust_limits_enabled}
+                  disabled={busy || (!s.auto_adjust_limits_enabled && !confirmExternal)}
+                  onChange={(e) =>
+                    save({
+                      auto_adjust_limits_enabled: e.target.checked,
+                      acknowledge_external: true,
+                    })
+                  }
+                />
+                <span>Raise the limits for me as the inboxes warm up</span>
+              </label>
+            </div>
+
+            {(capacity?.history?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                <div className="faint" style={{ marginBottom: 8 }}>
+                  Every change, with the reason:
+                </div>
+                {capacity!.history.slice(0, 8).map((h, i) => (
+                  <div key={i} className="faint" style={{ lineHeight: 1.6, fontSize: "0.78rem" }}>
+                    {new Date(h.created_at).toLocaleDateString()} · {h.email} {h.limit_before}
+                    &rarr;{h.limit_after}
+                    {h.applied ? "" : ` · NOT APPLIED${h.error ? `: ${h.error}` : ""}`} · {h.reason}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {/* --------------------------- keeping it fed --------------------------- */}
       <div className="card" style={{ marginBottom: 20 }}>
         <h2 style={{ marginTop: 0, marginBottom: 10 }}>Keeping it fed</h2>
@@ -462,13 +717,16 @@ export default function EmailPage() {
               <label>
                 <div className="faint" style={{ marginBottom: 4 }}>
                   Never push more than this in one day.
+                  {s.smart_capacity_enabled &&
+                    " Worked out from your inboxes — untick smart capacity above to set it by hand."}
                 </div>
                 <input
                   type="number"
                   min={1}
                   max={1000}
+                  key={`cap-${s.daily_push_cap}`}
                   defaultValue={s.daily_push_cap}
-                  disabled={busy}
+                  disabled={busy || s.smart_capacity_enabled}
                   onBlur={(e) => {
                     const n = Number(e.target.value);
                     if (n !== s.daily_push_cap) save({ daily_push_cap: n });

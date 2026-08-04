@@ -23,6 +23,15 @@ export type InstantlySettings = {
   pushed_today: number;
   pushed_today_date: string | null;
   active_sequence_id: string | null;
+
+  /* --- sending capacity, all from migration 0031 --- */
+  smart_capacity_enabled: boolean;
+  auto_adjust_limits_enabled: boolean;
+  account_limit_ceiling: number;
+  capacity_headroom: number;
+  last_capacity_sync_at: string | null;
+  computed_daily_sends: number | null;
+  computed_leads_per_day: number | null;
 };
 
 const BASE_COLUMNS =
@@ -31,7 +40,10 @@ const BASE_COLUMNS =
 const AUTOPUSH_COLUMNS =
   "auto_push_enabled, target_active_leads, daily_push_cap, last_auto_push_at, pushed_today, pushed_today_date, active_sequence_id";
 
-export const SETTINGS_COLUMNS = `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}`;
+const CAPACITY_COLUMNS =
+  "smart_capacity_enabled, auto_adjust_limits_enabled, account_limit_ceiling, capacity_headroom, last_capacity_sync_at, computed_daily_sends, computed_leads_per_day";
+
+export const SETTINGS_COLUMNS = `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}`;
 
 /**
  * What the settings are before anybody has saved any.
@@ -54,14 +66,22 @@ export const SETTINGS_DEFAULTS: InstantlySettings = {
   pushed_today: 0,
   pushed_today_date: null,
   active_sequence_id: null,
+  smart_capacity_enabled: false,
+  auto_adjust_limits_enabled: false,
+  account_limit_ceiling: 90,
+  capacity_headroom: 0.85,
+  last_capacity_sync_at: null,
+  computed_daily_sends: null,
+  computed_leads_per_day: null,
 };
 
 /** Points at the migration rather than repeating a Postgres error verbatim. */
 export function migrationHint(message: string): string | null {
   if (/relation .* does not exist|column .* does not exist|schema cache/i.test(message)) {
     return (
-      "The email tables are not there yet. Run supabase/migrations/0029_instantly_email.sql " +
-      `and 0030_email_autonomy.sql in the Supabase SQL Editor, then reload this page. (${message})`
+      "The email tables are not there yet. Run supabase/migrations/0029_instantly_email.sql, " +
+      `0030_email_autonomy.sql and 0031_sending_capacity.sql in the Supabase SQL Editor, ` +
+      `then reload this page. (${message})`
     );
   }
   return null;
@@ -73,6 +93,8 @@ export type SettingsLoad = {
   error: string | null;
   /** False when 0030 has not been run, so the page can say which part is missing. */
   autoPushAvailable: boolean;
+  /** False when 0031 has not been run. */
+  capacityAvailable: boolean;
 };
 
 /**
@@ -94,8 +116,21 @@ export async function loadSettings(): Promise<SettingsLoad> {
     db.from("instantly_settings").select(columns).eq("id", true).maybeSingle();
 
   try {
+    /*
+     * Down the ladder one migration at a time, rather than all-or-nothing.
+     *
+     * Each tier drops the columns from one migration. A database with 0029 but
+     * not 0031 loses the capacity controls and keeps everything else, instead
+     * of the Email page failing outright — the same failure that took the
+     * packet pipeline down, and the same fix.
+     */
     let autoPushAvailable = true;
+    let capacityAvailable = true;
     let res = await read(SETTINGS_COLUMNS);
+    if (res.error && isMissingColumnError(res.error)) {
+      capacityAvailable = false;
+      res = await read(`${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}`);
+    }
     if (res.error && isMissingColumnError(res.error)) {
       autoPushAvailable = false;
       res = await read(BASE_COLUMNS);
@@ -105,9 +140,12 @@ export async function loadSettings(): Promise<SettingsLoad> {
         settings: SETTINGS_DEFAULTS,
         error: migrationHint(res.error.message) || res.error.message,
         autoPushAvailable: false,
+        capacityAvailable: false,
       };
     }
-    if (!res.data) return { settings: SETTINGS_DEFAULTS, error: null, autoPushAvailable };
+    if (!res.data) {
+      return { settings: SETTINGS_DEFAULTS, error: null, autoPushAvailable, capacityAvailable };
+    }
 
     const data = res.data as unknown as Partial<InstantlySettings>;
     return {
@@ -127,13 +165,28 @@ export async function loadSettings(): Promise<SettingsLoad> {
         pushed_today: Number(data.pushed_today ?? 0),
         pushed_today_date: data.pushed_today_date ?? null,
         active_sequence_id: data.active_sequence_id ?? null,
+        smart_capacity_enabled: !!data.smart_capacity_enabled,
+        auto_adjust_limits_enabled: !!data.auto_adjust_limits_enabled,
+        account_limit_ceiling: Number(
+          data.account_limit_ceiling ?? SETTINGS_DEFAULTS.account_limit_ceiling
+        ),
+        capacity_headroom: Number(data.capacity_headroom ?? SETTINGS_DEFAULTS.capacity_headroom),
+        last_capacity_sync_at: data.last_capacity_sync_at ?? null,
+        computed_daily_sends: data.computed_daily_sends ?? null,
+        computed_leads_per_day: data.computed_leads_per_day ?? null,
       },
       error: null,
       autoPushAvailable,
+      capacityAvailable,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { settings: SETTINGS_DEFAULTS, error: migrationHint(msg) || msg, autoPushAvailable: false };
+    return {
+      settings: SETTINGS_DEFAULTS,
+      error: migrationHint(msg) || msg,
+      autoPushAvailable: false,
+      capacityAvailable: false,
+    };
   }
 }
 

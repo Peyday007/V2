@@ -39,6 +39,24 @@ async function runTick() {
    * retry and backoff machinery as everything else, and shows up in the same
    * job history when it misbehaves.
    */
+  /*
+   * Re-read the sending inboxes, hourly.
+   *
+   * The idempotency key is the hour rather than the minute: account limits do
+   * not move minute to minute, the ramp has a two-day cooldown anyway, and
+   * asking Instantly for the account list every sixty seconds is a request
+   * nobody needs. The handler no-ops entirely unless one of the two capacity
+   * switches is on.
+   */
+  await enqueue({
+    type: "sync_sending_accounts",
+    idempotencyKey: `sync_sending_accounts:${new Date().toISOString().slice(0, 13)}`,
+    // Ahead of the refill (200) — claim_jobs orders by priority ascending, and
+    // the refill should read a cap that was computed from the CURRENT limits,
+    // not yesterday.
+    priority: 190,
+  }).catch(() => {});
+
   await enqueue({
     type: "refill_email_campaign",
     idempotencyKey: `refill_email_campaign:${new Date().toISOString().slice(0, 16)}`,

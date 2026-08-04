@@ -23,7 +23,7 @@ export const dynamic = "force-dynamic";
  * the lead-state counts on the recording settings page.
  */
 export async function GET() {
-  const { settings, error, autoPushAvailable } = await loadSettings();
+  const { settings, error, autoPushAvailable, capacityAvailable } = await loadSettings();
   const capability = instantlyCapability();
 
   // How many leads could actually be emailed. Never allowed to fail the page.
@@ -78,6 +78,7 @@ export async function GET() {
     pushed,
     awaitingHuman,
     autoPushAvailable,
+    capacityAvailable,
     /*
      * Which sources of an address this database actually has.
      *
@@ -158,6 +159,60 @@ export async function PUT(req: NextRequest) {
     patch.auto_reply_enabled = body.auto_reply_enabled;
   }
 
+  /* --------------------------- sending capacity --------------------------- */
+
+  if (typeof body.smart_capacity_enabled === "boolean") {
+    /*
+     * Safe to turn on without ceremony: it only ever READS the accounts and
+     * recomputes the cap from them. A number derived from what the inboxes can
+     * actually carry is strictly better informed than one typed months ago.
+     */
+    patch.smart_capacity_enabled = body.smart_capacity_enabled;
+  }
+
+  if (body.account_limit_ceiling !== undefined) {
+    const n = Number(body.account_limit_ceiling);
+    if (!Number.isInteger(n) || n < 10 || n > 200) {
+      return NextResponse.json(
+        {
+          error:
+            "A ceiling between 10 and 200 a day per inbox. Above roughly 100 the mailbox providers start treating an address as a bulk sender however well it is warmed.",
+        },
+        { status: 400 }
+      );
+    }
+    patch.account_limit_ceiling = n;
+  }
+
+  if (body.capacity_headroom !== undefined) {
+    const f = Number(body.capacity_headroom);
+    if (!Number.isFinite(f) || f < 0.1 || f > 1) {
+      return NextResponse.json(
+        { error: "Headroom is a share between 0.1 and 1 — 0.85 means plan against 85% of capacity." },
+        { status: 400 }
+      );
+    }
+    patch.capacity_headroom = f;
+  }
+
+  if (typeof body.auto_adjust_limits_enabled === "boolean") {
+    /*
+     * This one DOES need ceremony. It is the only setting in the system that
+     * writes into an external account, and somebody switching it on should
+     * know that is what they are doing.
+     */
+    if (body.auto_adjust_limits_enabled === true && body.acknowledge_external !== true) {
+      return NextResponse.json(
+        {
+          error:
+            "This changes the daily sending limits on your Instantly accounts for you. Confirm you intend that.",
+        },
+        { status: 400 }
+      );
+    }
+    patch.auto_adjust_limits_enabled = body.auto_adjust_limits_enabled;
+  }
+
   /* ------------------------- the automatic top-up ------------------------- */
 
   if (body.target_active_leads !== undefined) {
@@ -172,6 +227,19 @@ export async function PUT(req: NextRequest) {
   }
 
   if (body.daily_push_cap !== undefined) {
+    // Refused rather than silently ignored while smart capacity owns this
+    // number: a field that accepts a value and then overwrites it on the next
+    // sync is worse than one that says no.
+    const current = await loadSettings();
+    if (current.settings.smart_capacity_enabled && body.smart_capacity_enabled !== false) {
+      return NextResponse.json(
+        {
+          error:
+            "The daily cap is being worked out from what your inboxes can carry. Switch smart capacity off first if you want to set it by hand.",
+        },
+        { status: 400 }
+      );
+    }
     const n = Number(body.daily_push_cap);
     if (!Number.isInteger(n) || n < 1 || n > 1000) {
       return NextResponse.json(

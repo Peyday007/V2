@@ -14,7 +14,11 @@ export type JobType =
   // Keeps the Instantly campaign topped up without anybody pressing a button.
   // Only does anything when an administrator has switched auto_push_enabled
   // on; otherwise it reads the settings, decides "no", and completes.
-  | "refill_email_campaign";
+  | "refill_email_campaign"
+  // Reads the sending inboxes, recomputes how many leads a day they can carry,
+  // and — only when an administrator switched that on — nudges warmed-up
+  // accounts toward their ceiling.
+  | "sync_sending_accounts";
 
 /** Exponential backoff with a ceiling: 30s, 60s, 120s, 240s… max 15 min. */
 export function backoffSeconds(attempts: number): number {

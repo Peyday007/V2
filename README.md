@@ -1122,6 +1122,76 @@ Instantly rate-limits the lookup, nothing is pushed. Reading a failed count as
 "the campaign is empty" would push a full batch into a campaign that is already
 full — every day, on every failure, until somebody noticed the send volume.
 
+### Letting the inboxes decide how much gets sent
+
+The daily push cap started as a number somebody typed into a box, and a typed
+number is almost always wrong in one direction or the other. **Admin → Email →
+The inboxes** replaces it with one derived from what the sending accounts can
+actually carry.
+
+The arithmetic is the part worth reading, because it is the bit people get
+wrong. **Pushing a lead is not sending an email.** A lead entering a 4-step
+sequence sends four emails over the following weeks. Once the pipeline fills:
+
+```
+daily sends = new leads per day × steps      →      leads = capacity ÷ steps
+```
+
+Ten inboxes at 90/day is 900 sends, 765 after headroom, ÷ 4 steps = **191 new
+leads a day**. A hand-set 100 wastes nearly half the inboxes; a hand-set 400
+quietly queues into tomorrow forever.
+
+Headroom is 85% by default — the accounts also carry replies, retries and the
+odd manual send, and planning to use every slot means the first busy day spills
+over. An inbox that is inactive or below 75 health is left **out of the total
+entirely**, not counted at a discount: capacity you cannot safely use is not
+capacity, and including it produces a plan that overruns the accounts that are
+fine.
+
+With smart capacity on, the daily cap field goes read-only and says why.
+Setting it by hand is *refused* rather than silently ignored — a field that
+accepts a value and then overwrites it on the next sync is worse than one that
+says no.
+
+### Raising the limits by itself
+
+Accounts sitting at 30/day that have been warm for months can carry 90, and
+nobody wants to change fourteen of them by hand. **"Raise the limits for me as
+the inboxes warm up"** does it.
+
+This is the only thing in the whole system that writes a setting into an
+external account, which is why it is the most bounded:
+
+- **Half again at a time, capped at +20, two days apart.** 30 reaches the 90
+  ceiling in four steps — 30, 45, 65, 85, 90 — about eight days. Not caution
+  for its own sake: mailbox providers score the *rate* of change as well as the
+  volume, and an address that triples its output overnight looks exactly like a
+  compromised one.
+- **Never** on an inbox under three weeks old, below 80 warmup score, inside
+  its cooldown, or marked "leave alone". The escape hatch is per-account,
+  because somebody will always have one inbox that is special for a reason the
+  software cannot know, and the answer to that must not be switching the whole
+  feature off.
+- **It also comes down.** Over 3% bounces and the limit is halved immediately —
+  checked *first*, before the cooldown, the age and the health gates, because
+  an account that is bouncing is doing damage now and "it's in cooldown" is not
+  an answer to that. Under 20 sends the rate is ignored, or one bounce in five
+  would sawtooth every new inbox down to nothing.
+
+Bounces are attributed per inbox from our own event log (`from_email` on an
+email event *is* the sending account) over a fourteen-day window — first-hand,
+rather than waiting for Instantly's score to lag.
+
+**Every change is written to `account_limit_changes` before the call is made**,
+with the before, the after, and the reason in words. Log first, act second: the
+other order means the only changes with a record are the ones that worked,
+which is exactly backwards from what you want when something has gone wrong. A
+change Instantly refused leaves a row saying so.
+
+The page shows what *would* happen before anything does — "Check the inboxes"
+runs the same pure planner the worker runs, with adjusting off. A preview that
+runs different code from the thing it previews is worth nothing.
+
 ### The webhook
 
 `/api/instantly/webhook` is the only public write endpoint in the integration.
