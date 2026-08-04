@@ -2,6 +2,7 @@
 // stops as soon as one returns a high-confidence finding.
 
 import type { EmailCandidate } from "../extractEmails";
+import type { SiteSignals } from "../siteSignals";
 
 export type SourceFinding = {
   name: string;
@@ -34,6 +35,11 @@ export type SourceResult = {
    * always the page that shows their address.
    */
   emails?: EmailCandidate[];
+  /**
+   * What the crawled pages say about how this business gets work: mobile,
+   * booking, schema, security, freshness. Only the website source fills it in.
+   */
+  signals?: SiteSignals;
   /** Set when the source could not run (no key, blocked, error). */
   skipped?: string;
 };

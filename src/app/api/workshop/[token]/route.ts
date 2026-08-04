@@ -33,7 +33,7 @@ async function packetByToken(token: string) {
   const { data } = await supabaseAdmin()
     .from("workshop_packets")
     .select(
-      "id, lead_id, token, status, owner_name, owner_phone, owner_email, trial_requested_at, leads(business_name, city, state, website, rating, review_count, answering_setup)"
+      "id, lead_id, token, status, owner_name, owner_phone, owner_email, trial_requested_at, leads(business_name, city, state, website, rating, review_count, answering_setup, diagnostic_findings)"
     )
     .eq("token", token)
     .maybeSingle();
@@ -54,6 +54,12 @@ type LeadBits = {
   rating: number | null;
   review_count: number | null;
   answering_setup: string | null;
+  /**
+   * The findings, cached by the diagnostic. Present for any lead enriched
+   * since migration 0032; absent for older ones, which fall back to the three
+   * original checks in computeGaps.
+   */
+  diagnostic_findings?: { key: string; headline: string; detail: string; basis: string[] }[] | null;
 };
 
 export async function GET(
@@ -96,26 +102,31 @@ export async function GET(
     });
   }
 
+  /*
+   * One input for both, so the page cannot show findings that the
+   * recommendations do not answer.
+   *
+   * `findings` is the diagnosis when one exists. Note what is NOT passed:
+   * nothing from affordability.ts. The size estimate is internal, it never
+   * reaches this response, and there is a test asserting no budget figure or
+   * band word appears in any owner-facing string.
+   */
+  const gapInput = {
+    businessName: lead.business_name,
+    city: lead.city,
+    website: lead.website,
+    rating: lead.rating,
+    reviewCount: lead.review_count,
+    answeringSetup: lead.answering_setup,
+    findings: lead.diagnostic_findings ?? undefined,
+  };
+
   return NextResponse.json({
     businessName: lead.business_name,
     city: lead.city,
     state: lead.state,
-    gaps: computeGaps({
-      businessName: lead.business_name,
-      city: lead.city,
-      website: lead.website,
-      rating: lead.rating,
-      reviewCount: lead.review_count,
-      answeringSetup: lead.answering_setup,
-    }),
-    recommendations: buildRecommendations({
-      businessName: lead.business_name,
-      city: lead.city,
-      website: lead.website,
-      rating: lead.rating,
-      reviewCount: lead.review_count,
-      answeringSetup: lead.answering_setup,
-    }),
+    gaps: computeGaps(gapInput),
+    recommendations: buildRecommendations(gapInput),
     // Prefilled into the form. These are values this owner supplied or that a
     // caller recorded about them — nothing about any other business.
     contact: {

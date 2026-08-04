@@ -42,6 +42,14 @@ export type ComposeInput = {
    * so a prospect who gets both sees one consistent thing.
    */
   workshopLink?: string | null;
+  /**
+   * The strongest thing the diagnostic found. When present this IS the
+   * personalization — it is a specific, checkable fact about them, which is
+   * strictly better than the review-count line it replaces.
+   */
+  diagnosticHook?: string | null;
+  /** Everything the diagnosis found, for the merge variables. */
+  findings?: { key: string; headline: string; detail: string; basis: string[] }[];
 };
 
 /** Split a stored full name into the parts Instantly merges separately. */
@@ -77,6 +85,16 @@ export function splitName(full: string | null | undefined): {
  */
 export function composePersonalization(input: ComposeInput): string {
   const setup = (input.answeringSetup || "").trim();
+
+  /*
+   * A diagnostic finding outranks everything except the owner's own words.
+   *
+   * "You come up 19th for plumbers in Dallas" is a specific, checkable fact
+   * about them. "You have 132 reviews" is also true but says nothing they do
+   * not know, and it was the best this could do before the diagnosis existed.
+   */
+  const hook = (input.diagnosticHook || "").trim();
+  if (!setup && hook) return lowerFirst(hook);
   if (setup) {
     return `you mentioned "${trimQuote(setup)}" when we spoke`;
   }
@@ -98,6 +116,10 @@ export function composePersonalization(input: ComposeInput): string {
 }
 
 /** Keep a quoted line short enough to sit inside a sentence. */
+function lowerFirst(s: string): string {
+  return s ? s.charAt(0).toLowerCase() + s.slice(1) : s;
+}
+
 function trimQuote(text: string, limit = 120): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit - 1).trimEnd()}…` : flat;
@@ -114,22 +136,17 @@ function trimQuote(text: string, limit = 120): string {
  */
 export function composeVariables(input: ComposeInput): Record<string, string> {
   const { firstName } = splitName(input.ownerName);
-  const gaps = computeGaps({
+  const gapInput = {
     businessName: input.businessName,
     city: input.city,
     website: input.website,
     rating: input.rating,
     reviewCount: input.reviewCount,
     answeringSetup: input.answeringSetup,
-  });
-  const recs = buildRecommendations({
-    businessName: input.businessName,
-    city: input.city,
-    website: input.website,
-    rating: input.rating,
-    reviewCount: input.reviewCount,
-    answeringSetup: input.answeringSetup,
-  });
+    findings: input.findings,
+  };
+  const gaps = computeGaps(gapInput);
+  const recs = buildRecommendations(gapInput);
 
   return {
     owner_first_name: firstName || "",
@@ -205,6 +222,7 @@ export function gapsFor(input: ComposeInput): Gap[] {
     rating: input.rating,
     reviewCount: input.reviewCount,
     answeringSetup: input.answeringSetup,
+    findings: input.findings,
   });
 }
 

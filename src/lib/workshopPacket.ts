@@ -131,6 +131,15 @@ export type GapInput = {
   reviewCount?: number | null;
   /** What the owner themselves said on the call. The strongest line available. */
   answeringSetup?: string | null;
+  /**
+   * The diagnosis, when one has been run.
+   *
+   * This is now the main path. computeGaps below is the fallback for a lead
+   * that predates the diagnostic or whose site could not be crawled — it uses
+   * only rating, review count and has-a-website, which is exactly why every
+   * packet used to say the same thing.
+   */
+  findings?: { key: string; headline: string; detail: string; basis: string[] }[];
 };
 
 export type Gap = {
@@ -153,6 +162,23 @@ export const BUSY_REVIEW_COUNT = 25;
  * checked. Three at most, because a wall of bullets reads as a template.
  */
 export function computeGaps(input: GapInput): Gap[] {
+  /*
+   * A real diagnosis wins outright.
+   *
+   * It is built from the same honesty rule — nothing from a null — but from
+   * far more signals: where they rank, whether the site works on a phone,
+   * whether search engines can read it, whether the reviews are thin. The
+   * three checks below are what is left when none of that was collected.
+   */
+  if (input.findings && input.findings.length > 0) {
+    return input.findings.slice(0, 4).map((f) => ({
+      key: f.key,
+      headline: f.headline,
+      detail: f.detail,
+      basis: f.basis.join(", "),
+    }));
+  }
+
   const gaps: Gap[] = [];
   const name = input.businessName;
 
@@ -235,6 +261,35 @@ export type Recommendation = {
 };
 
 /**
+ * What we would do about each finding, in the owner's language.
+ *
+ * Keyed on the finding rather than generated, so the offer for "you are not
+ * mobile-friendly" is always the same offer and a caller is never surprised by
+ * what the page promised on their behalf.
+ */
+const RECOMMENDATION_TITLE: Record<string, string> = {
+  stated_setup: "Replace what you described on the call",
+  busy_phone: "Pick up after hours and at weekends",
+  emergency_claim: "Make the 24/7 promise real",
+  no_click_to_call: "Make your number tappable",
+  buried_in_search: "Get you further up the local results",
+  ranks_well: "Stop losing the callers you already earn",
+  no_schema: "Tell search engines who you are",
+  no_meta: "Control what people read before they ring",
+  no_website: "Give people somewhere to land",
+  no_https: "Get the browser warning off your site",
+  not_mobile: "Make the site work on a phone",
+  no_form: "Give people a way in that is not a phone call",
+  stale_site: "Bring the site up to date",
+  thin_reviews: "Get the reviews you have earned",
+  weak_rating: "Get the happy customers heard",
+  strong_rating: "Make the reputation pay",
+  reviews_not_shown: "Put your reviews where people decide",
+  already_books_online: "Cover the callers your booking form misses",
+  existing_provider: "Fix what the current setup drops",
+};
+
+/**
  * The recommendations on the owner's page.
  *
  * These are an OFFER — what would be set up if they said yes — not a set of
@@ -249,6 +304,23 @@ export type Recommendation = {
  */
 export function buildRecommendations(input: GapInput): Recommendation[] {
   const out: Recommendation[] = [];
+
+  /*
+   * Where a diagnosis exists, the recommendations answer IT rather than
+   * reciting the generic four. A business whose problem is that nobody can
+   * find them should not be reading three paragraphs about after-hours calls.
+   */
+  if (input.findings && input.findings.length > 0) {
+    for (const f of input.findings.slice(0, 4)) {
+      out.push({
+        key: `fix_${f.key}`,
+        title: RECOMMENDATION_TITLE[f.key] ?? "Fix what we found",
+        detail: f.detail,
+        basis: f.basis.join(", "),
+      });
+    }
+    return out;
+  }
   const reviews = input.reviewCount;
   const busy = typeof reviews === "number" && reviews >= BUSY_REVIEW_COUNT;
 

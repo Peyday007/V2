@@ -17,6 +17,8 @@ import { supabaseAdmin } from "./supabaseAdmin";
 import { recordEvent } from "./events";
 import { SOURCES, STOP_CONFIDENCE } from "./sources";
 import { bestEmail, matchesOwnerName, type EmailCandidate } from "./extractEmails";
+import type { SiteSignals } from "./siteSignals";
+import { runDiagnostic } from "./diagnosticStore";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   selectDecisionMaker,
@@ -135,10 +137,16 @@ type LeadRow = {
 /** Collect candidates from the public-source waterfall already in the app. */
 async function identifyOwner(
   lead: LeadRow
-): Promise<{ candidates: Candidate[]; sourcesUsed: string[]; emails: EmailCandidate[] }> {
+): Promise<{
+  candidates: Candidate[];
+  sourcesUsed: string[];
+  emails: EmailCandidate[];
+  signals: SiteSignals | null;
+}> {
   const candidates: Candidate[] = [];
   const sourcesUsed: string[] = [];
   const emails: EmailCandidate[] = [];
+  let signals: SiteSignals | null = null;
 
   // Anything a caller already told us outranks anything scraped.
   if (lead.owner_name) {
@@ -171,6 +179,10 @@ async function identifyOwner(
       // Addresses are kept even from a source that skipped on the name: a
       // crawl that found an email and no owner is still a lead we can email.
       if (result.emails?.length) emails.push(...result.emails);
+      // Kept even from a source that skipped on the name, for the same reason
+      // as the emails: a crawl that read the site and found no owner still
+      // learned what the site does and does not do.
+      if (result.signals) signals = result.signals;
       if (result.skipped) continue;
       for (const f of result.findings) {
         candidates.push({
@@ -189,7 +201,7 @@ async function identifyOwner(
     }
   }
 
-  return { candidates, sourcesUsed, emails };
+  return { candidates, sourcesUsed, emails, signals };
 }
 
 /**
@@ -328,7 +340,8 @@ export async function enrichLeadForOwner(
     .eq("id", leadId);
 
   /* ------------------------- stage 1: the person ------------------------- */
-  const { candidates, sourcesUsed, emails: seenEmails } = await identifyOwner(row);
+  const { candidates, sourcesUsed, emails: seenEmails, signals: siteSignals } =
+    await identifyOwner(row);
   const matchCtx: MatchContext = {
     businessName: row.business_name,
     domain: row.domain,
@@ -346,6 +359,19 @@ export async function enrichLeadForOwner(
    * EVERY path happens before the branching starts, not in each arm of it.
    */
   await persistWebsiteEmail(db, leadId, row, seenEmails, selection.chosen ? selection.name : null);
+
+  /*
+   * Diagnose while the crawl is still in hand.
+   *
+   * Above every branch below, for the same reason the email is: this must
+   * happen on EVERY path. A lead with no identifiable owner still has a
+   * website that is not mobile-friendly and a map rank of nineteen, and those
+   * are the two things a caller would actually open with.
+   *
+   * Never throws — a diagnosis is an improvement on top of enrichment, not a
+   * precondition for it.
+   */
+  await runDiagnostic(leadId, siteSignals ?? undefined);
 
   for (const c of candidates) {
     await db.from("enrichment_evidence").insert({

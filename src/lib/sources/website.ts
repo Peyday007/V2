@@ -2,6 +2,7 @@ import "server-only";
 import { crawlSite } from "../crawler";
 import { extractPeople, discoverPeoplePages, CANDIDATE_PATHS } from "../extractPeople";
 import { extractEmails, type EmailCandidate } from "../extractEmails";
+import { readSite, type SiteSignals } from "../siteSignals";
 import type { EnrichmentSource, SourceFinding } from "./types";
 
 /** The company's own site: free, fast, and where owner names usually live. */
@@ -50,9 +51,19 @@ export const websiteSource: EnrichmentSource = {
       emails.push(...extractEmails(page.html, { pageUrl: page.url, websiteDomain: ctx.domain || ctx.website }));
     }
 
+    /*
+     * What the site says about how they get work.
+     *
+     * Read from the same pages, for the same reason as the emails: the crawl
+     * has already happened, and the diagnostic was previously reduced to
+     * "missing calls" for every single business because nothing else was ever
+     * collected.
+     */
+    const signals = readSite(pages);
+
     // The owner's name is only known after the findings are ranked, which
     // happens upstream — so re-scoring against it is left to the caller. What
     // is returned here is every address seen, with its evidence.
-    return { findings, emails };
+    return { findings, emails, signals };
   },
 };

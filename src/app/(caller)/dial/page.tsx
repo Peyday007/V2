@@ -38,6 +38,7 @@ import {
 } from "@/lib/dialerFocus";
 import {
   SCRIPT_VERSIONS,
+  assignScript,
   applyScript,
   buildScript,
   type ScriptVersion,
@@ -50,6 +51,25 @@ import CallerUpdates from "@/components/CallerUpdates";
 type Lead = {
   id: string;
   business_name: string;
+  /** The strongest thing the diagnostic found, for the specific-hook script. */
+  diagnostic_hook?: string | null;
+  /** Everything it found, with a line a caller can actually say. */
+  diagnostic_findings?: {
+    key: string;
+    service: string;
+    headline: string;
+    detail: string;
+    talkTrack: string;
+  }[] | null;
+  /**
+   * How big this business looks and what it can carry. INTERNAL — it is shown
+   * to the caller and never to the owner. See src/lib/affordability.ts.
+   */
+  affordability_band?: string | null;
+  affordability_monthly_low?: number | null;
+  affordability_monthly_high?: number | null;
+  affordability_one_off_ceiling?: number | null;
+  affordability_confidence?: number | null;
   phone: string | null;
   website: string | null;
   address: string | null;
@@ -173,7 +193,10 @@ export default function DialPage() {
   // Which gatekeeper opener this caller is running. Sticky across leads on
   // purpose: a version picked per-call would be picked at random, and the
   // comparison would measure nothing but the caller's mood.
-  const [scriptVersion, setScriptVersion] = useState<ScriptVersion | null>(null);
+  // Whether this caller is in the experiment at all, and — rarely — a
+  // deliberate override of the lead's assigned variant.
+  const [scriptsOn, setScriptsOn] = useState(true);
+  const [scriptOverride, setScriptOverride] = useState<ScriptVersion | null>(null);
   const [showPacket, setShowPacket] = useState(false);
 
   // Measured, not asked for. The caller never types a duration; the clock
@@ -275,7 +298,9 @@ export default function DialPage() {
         recording_id: recordingId,
         // Null when the caller has not opted into the test. Recording an
         // untagged call as a fourth variant would poison the comparison.
-        script_version: scriptVersion,
+        script_version: scriptsOn ? runningVersion : null,
+        script_assigned: assignedVersion,
+        script_overridden: scriptsOn && scriptOverride !== null && scriptOverride !== assignedVersion,
       }),
     });
     if (!res.ok) {
@@ -460,12 +485,29 @@ export default function DialPage() {
   // line, and only until the owner is on the phone. Everything after that is
   // the same for all three versions, so a difference in the numbers can only
   // have come from the opener.
-  const activeScript = scriptVersion
-    ? buildScript(scriptVersion, {
+  /*
+   * The script is assigned FROM THE LEAD, not chosen by the caller.
+   *
+   * It used to be a toggle, which meant the person being measured picked the
+   * variant, on a lead they had already looked at. A caller who reaches for
+   * their favourite on the promising leads produces a beautiful result that
+   * means nothing. `assignScript` hashes the lead id, so the split is even,
+   * the same lead gets the same opener on a callback, and nobody is choosing.
+   *
+   * `scriptOverride` exists for the case where a caller has a reason to run a
+   * different one. It is recorded separately so those calls can be excluded
+   * from the comparison rather than quietly polluting it.
+   */
+  const assignedVersion = assignScript(lead.id);
+  const runningVersion = scriptOverride ?? assignedVersion;
+  const activeScript = scriptsOn
+    ? buildScript(runningVersion, {
         ownerName: lead.decision_maker_name || lead.owner_name,
         businessName: lead.business_name,
         callerName: data.caller,
+        city: lead.city,
         reviewCount: lead.review_count,
+        hook: lead.diagnostic_hook ?? null,
       })
     : null;
   const lines = applyScript(guide.lines, activeScript, speakingWith === "owner");
@@ -733,25 +775,38 @@ export default function DialPage() {
 
             <div style={{ flex: 1 }} />
 
-            {/* Which gatekeeper opener you are running. Stays put between
-                leads — flipping it per call would make the comparison
-                meaningless. Off by default, so nobody is silently enrolled. */}
-            <span className="faint">Script:</span>
+            {/* Which opener this LEAD was assigned. Not a choice — see the
+                note by assignScript above. The buttons are here so a caller
+                can see the others and, if they have a reason, deliberately
+                run one; that is recorded as an override so the comparison
+                can exclude it. */}
+            <span className="faint">
+              Script {scriptsOn ? runningVersion : "off"}
+              {scriptsOn && scriptOverride && scriptOverride !== assignedVersion
+                ? ` (was ${assignedVersion})`
+                : ""}
+            </span>
             {(["off", ...SCRIPT_VERSIONS] as const).map((v) => {
-              const on = v === "off" ? scriptVersion === null : scriptVersion === v;
+              const on = v === "off" ? !scriptsOn : scriptsOn && runningVersion === v;
+              const assigned = v === assignedVersion;
               return (
                 <button
                   key={v}
                   onClick={() => {
-                    setScriptVersion(v === "off" ? null : (v as ScriptVersion));
+                    if (v === "off") {
+                      setScriptsOn(false);
+                    } else {
+                      setScriptsOn(true);
+                      setScriptOverride(v === assignedVersion ? null : (v as ScriptVersion));
+                    }
                     setLineIndex(0);
                   }}
                   title={
                     v === "off"
                       ? "Not part of the test. The call is logged without a version."
-                      : buildScript(v as ScriptVersion, {
-                          businessName: lead.business_name,
-                        }).premise
+                      : `${assigned ? "Assigned to this lead. " : "Override. "}${
+                          buildScript(v as ScriptVersion, { businessName: lead.business_name }).premise
+                        }`
                   }
                   style={{
                     padding: "4px 10px",
@@ -759,9 +814,11 @@ export default function DialPage() {
                     fontSize: "0.72rem",
                     fontWeight: 700,
                     cursor: "pointer",
-                    border: `1px solid ${on ? "var(--amber)" : "var(--border-strong)"}`,
+                    border: `1px solid ${
+                      on ? "var(--amber)" : assigned ? "var(--amber-dim)" : "var(--border-strong)"
+                    }`,
                     background: on ? "var(--amber-soft)" : "transparent",
-                    color: on ? "var(--amber)" : "var(--text-dim)",
+                    color: on ? "var(--amber)" : assigned ? "var(--amber-dim)" : "var(--text-dim)",
                   }}
                 >
                   {v === "off" ? "off" : v}
@@ -1166,6 +1223,45 @@ function LeadDetails({
 
   return (
     <div className="card" style={{ maxHeight: "calc(100vh - 250px)", overflowY: "auto" }}>
+      {/*
+        What is actually wrong with this business, and roughly what they can
+        carry. Both are for the caller and neither goes anywhere near the
+        owner's page — see the note in src/lib/affordability.ts.
+      */}
+      {(lead.diagnostic_findings?.length ?? 0) > 0 && (
+        <Section title="What to open with">
+          {lead.diagnostic_findings!.map((f) => (
+            <div key={f.key} style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: "0.86rem", fontWeight: 700, lineHeight: 1.4 }}>{f.headline}</div>
+              <div className="faint" style={{ fontSize: "0.79rem", lineHeight: 1.5 }}>
+                {f.talkTrack}
+              </div>
+            </div>
+          ))}
+          {lead.affordability_band && (
+            <div
+              style={{
+                marginTop: 10,
+                paddingTop: 8,
+                borderTop: "1px solid var(--border)",
+                fontSize: "0.79rem",
+                lineHeight: 1.5,
+              }}
+              className="faint"
+            >
+              Looks like a {lead.affordability_band.replace(/_/g, " ")} operation
+              {lead.affordability_monthly_low && lead.affordability_monthly_high
+                ? ` — think $${lead.affordability_monthly_low}-${lead.affordability_monthly_high} a month, not more`
+                : ""}
+              {typeof lead.affordability_confidence === "number" && lead.affordability_confidence < 0.5
+                ? ". Low confidence, so check it on the call before quoting."
+                : "."}{" "}
+              Never say any of this to them.
+            </div>
+          )}
+        </Section>
+      )}
+
       {dossier?.hasSubstance && (
         <Section title="Where you stand">
           <p style={{ fontSize: "0.9rem", lineHeight: 1.5 }}>{dossier.status}</p>

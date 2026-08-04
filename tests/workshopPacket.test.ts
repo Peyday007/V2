@@ -361,10 +361,14 @@ describe("the gatekeeper scripts", () => {
   });
 
   it("C DOES NOT INVENT A REVIEW COUNT it was never given", () => {
-    const s = buildScript("C", fill);
-    expect(s.opener).toMatch(/a lot of reviews/);
-    expect(s.opener).not.toMatch(/\d+ reviews/);
-    expect(buildScript("C", { ...fill, reviewCount: null }).opener).toMatch(/a lot of reviews/);
+    // The fallback wording changed when C started using a diagnostic hook,
+    // but the property it protects has not: with no count on the record, no
+    // count appears in the opener.
+    expect(buildScript("C", fill).opener).not.toMatch(/\d+ reviews/);
+    expect(buildScript("C", { ...fill, reviewCount: null }).opener).not.toMatch(/\d+ reviews/);
+    expect(buildScript("C", { ...fill, reviewCount: 0 }).opener).not.toMatch(/\d+ reviews/);
+    // And with one, it is used verbatim rather than rounded into a claim.
+    expect(buildScript("C", { ...fill, reviewCount: 132 }).opener).toContain("132 reviews");
   });
 
   it("falls back to 'the owner' rather than guessing a name", () => {
@@ -383,8 +387,11 @@ describe("the gatekeeper scripts", () => {
   });
 
   it("validates the version rather than trusting a request body", () => {
-    expect(isScriptVersion("A")).toBe(true);
-    expect(isScriptVersion("D")).toBe(false);
+    // The list is open-ended now, so this asserts against the list itself
+    // rather than against a letter that used to be past the end of it.
+    for (const v of SCRIPT_VERSIONS) expect(isScriptVersion(v), v).toBe(true);
+    expect(isScriptVersion("Z")).toBe(false);
+    expect(isScriptVersion("a")).toBe(false);
     expect(isScriptVersion("")).toBe(false);
     expect(isScriptVersion(null)).toBe(false);
     expect(isScriptVersion(1)).toBe(false);
@@ -578,9 +585,13 @@ describe("building the whole table", () => {
     expect(rows.find((r) => r.version === "B")!.trialsRequested).toBe(0);
   });
 
-  it("always returns all three versions, so a missing one is visible as zero", () => {
+  it("always returns EVERY version, so a missing one is visible as zero", () => {
+    // Sized from the variant list rather than pinned to three: adding a
+    // variant should not need this test edited, and a variant that never got
+    // dialled should show as a zero row rather than vanishing.
     const rows = buildScriptStats({ calls: [], trialLeadIds: [] });
-    expect(rows.map((r) => r.version)).toEqual(["A", "B", "C"]);
+    expect(rows.map((r) => r.version)).toEqual([...SCRIPT_VERSIONS]);
+    expect(rows.length).toBeGreaterThan(3);
     expect(rows.every((r) => r.dials === 0)).toBe(true);
   });
 });

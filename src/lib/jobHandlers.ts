@@ -373,7 +373,27 @@ const executePlacesSearch: Handler = async (job) => {
   let saved = 0;
   let duplicates = 0;
 
+  /*
+   * Where this business came in the results.
+   *
+   * The Places API returns businesses in rank order for the query, so the
+   * index here IS their map position for "<trade> in <city>" — the search
+   * their customers actually type. It was being thrown away, which is why the
+   * diagnostic could never say anything about being findable and every packet
+   * fell back to "you are missing calls".
+   *
+   * Offset by the page: a resumed pagination starts at 20, not at 1, and a
+   * rank of 3 that is really 23 would be a flattering lie.
+   */
+  // Derived from the task's own page number rather than passed through the
+  // job payload: the task row is already the thing that survives a retry, and
+  // a payload field would go missing on any path that re-enqueues without it.
+  const rankOffset = Math.max(0, ((task.page_number ?? 1) - 1) * 20);
+  let rankInPage = 0;
+
   for (const place of page.places) {
+    rankInPage += 1;
+    const mapRank = rankOffset + rankInPage;
     const name = place.displayName?.text?.trim();
     if (!name) continue;
 
@@ -506,6 +526,12 @@ const executePlacesSearch: Handler = async (job) => {
         source: "google_places",
         sourcing_campaign_id: campaignId,
         machine_status: "discovered",
+        // Their position for the query their customers type, with the
+        // denominator, because a rank with no denominator is not a fact.
+        map_rank: mapRank,
+        map_result_count: page.places.length + rankOffset,
+        map_rank_query: textQueryFor(task),
+        map_rank_at: new Date().toISOString(),
       })
       .select("id")
       .single();

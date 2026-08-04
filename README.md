@@ -1215,7 +1215,127 @@ the drafts route all stay behind the admin passphrase, and there is a test that
 asserts exactly that boundary — including that a neighbour one character away
 stays gated.
 
-## Gatekeeper scripts (A/B/C)
+## The diagnostic
+
+Every packet used to say the same thing: *you are missing calls.* True of
+everyone, provable about no one, and it gave a caller exactly one thing to
+talk about — so a business ranking twentieth with no mobile site heard the
+identical opening to one ranking second with a booking widget.
+
+The cause was not the copy. It was that a lead carried a rating, a review
+count and "has a website: yes/no", so that was the only claim the data could
+support. The crawler now reads the pages it was already fetching, and the
+Places search now records where the business came in its own results.
+
+### What gets collected
+
+From the crawl: HTTPS, a mobile viewport, an enquiry form (told apart from a
+search box), click-to-call, LocalBusiness schema, a page title and meta
+description, published hours, an emergency claim, whether reviews are shown,
+the copyright year, and any booking tool that leaves a fingerprint — Housecall
+Pro, Jobber, ServiceTitan, Calendly and friends.
+
+From the search: **map rank**. The Places API returns businesses in rank order
+for "<trade> in <city>", so their position in that response *is* their map
+position for the query their customers type. It was being thrown away. The page
+number offsets it, because a rank of 3 that is really 23 would be a flattering
+lie.
+
+### A null is never a claim
+
+Every site signal is **tri-state** — true, false, or *could not tell*.
+
+A booking widget injected by JavaScript never reaches the crawler. So "no
+booking widget found" is recorded as `null`, and no finding is ever built from
+a null. Telling an owner they have no online booking when we simply could not
+see it is the fastest way to lose the meeting the packet earned. The columns
+are nullable booleans and there is a test asserting the three states survive
+the database round trip, because a single `?? false` anywhere in the mapping
+layer would quietly turn every unknown into an accusation.
+
+### At least two different things to sell
+
+Findings carry a service line, and `topFindings` takes **the strongest from
+each** before filling by weight. Sorting purely by weight does not deliver what
+the brief asked for: a site with no HTTPS, no viewport, no form and a 2019
+copyright produces four findings that are all *your website is bad* — one
+sellable point wearing four hats.
+
+A few of the more useful ones:
+
+- **Buried in search.** "You come up 19th for plumbers in Dallas… that is page
+  2." A number about them, not a generality.
+- **Already ranks.** Top three gets the *opposite* treatment — the talk track
+  says do not pitch SEO, their leak is at the phone.
+- **Already books online.** Not a gap. Recorded so the caller knows what *not*
+  to sell, and it names the tool.
+- **Promises emergency cover.** Their own site says 24/7, which raises the
+  stakes on an unanswered call rather than lowering them.
+
+Each finding carries the field it came from and a **talk track** — one line a
+caller can say out loud, never shown to the owner. `diagnosticIsThin` flags a
+lead that yielded fewer than two angles, so nobody is surprised on the call.
+
+### Sizing the business
+
+`affordability.ts` estimates a **band**, never a figure: owner-operator, small
+team, established local, regional. Review volume is the base — it tracks job
+volume better than anything else public — moved by trade (roofing jobs are
+large, cleaning jobs are small), by evidence of spending money (schema, a paid
+booking tool, ranking first), and hard-overridden by anything the owner
+actually said about staff.
+
+A three-van plumber and a regional HVAC company stop getting quoted the same
+number. With no review count it returns **confidence zero and "not enough to
+size this one"** rather than guessing the middle — a caller who sees that asks
+on the call; one who sees a confident "small team" does not.
+
+**None of it reaches the owner.** Not the band, not the range, not a dollar
+figure. It appears on the caller's screen with *"Never say any of this to
+them"* under it. That is enforced by a test that renders every owner-facing
+string — packet gaps, recommendations, email personalization, every merge
+variable — and asserts no currency figure and no band word appears in any of
+them, plus a browser check on the rendered page.
+
+## Gatekeeper scripts, assigned not chosen
+
+Two things were wrong with the old A/B/C.
+
+**The caller picked the variant.** There was a toggle in the dialer, so the
+script under test was chosen by the person whose performance it measured, on a
+lead they had already looked at. A caller who reaches for their favourite on
+the promising leads and falls back on the rough ones produces a beautiful
+result that means nothing. That is selection bias and it is fatal.
+
+Assignment now comes **from the lead**, by hashing its id. Deterministic, so a
+callback uses the same opener as the first attempt; uniform, so the arms stay
+balanced without anybody managing them. FNV-1a rather than anything simpler
+because lead ids are sequential UUIDs — a hash that only sums characters maps
+whole families of them to the same arm, and there is a test asserting
+order-sensitivity for exactly that reason.
+
+A caller can still deliberately run a different one. It is recorded as an
+override so those calls can be excluded from the comparison rather than
+quietly polluting it.
+
+**There were only three.** Three was never a principle. There are now seven,
+and the list is open-ended — the stats table, the assignment and the admin page
+all size themselves from it:
+
+| | | tests |
+|---|---|---|
+| A | Stated reason | saying why you are calling |
+| B | Assumptive brevity | no reason at all |
+| C | Specific hook | something true about *them* — now fed by the diagnostic |
+| D | Permission first | disarming before asking |
+| E | Local and plural | social proof from nearby businesses |
+| F | Question first | engaging the gatekeeper rather than going around them |
+| G | Named cold call | admitting it, and asking for twenty seconds |
+
+Each differs in exactly one dimension, because a variant that changes three
+things cannot tell you which one worked. None of them guesses the owner's
+gender — there is a test.
+
 
 Three openers, testing one thing each: **A** states the reason, **B** assumes
 the right to be put through and gives no reason at all, **C** leads with
