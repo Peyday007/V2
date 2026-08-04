@@ -5,14 +5,12 @@ import { instantlyCapability, listCampaigns, webhookSecretConfigured } from "@/l
 import {
   loadSettings,
   migrationHint,
+  selectEmailLeads,
   SETTINGS_COLUMNS,
   type InstantlySettings,
 } from "@/lib/instantlyStore";
-import {
-  EMAIL_ELIGIBILITY_COLUMNS,
-  summarizeEmailAvailability,
-  type EmailLeadRow,
-} from "@/lib/emailEligibility";
+import { summarizeEmailAvailability } from "@/lib/emailEligibility";
+import { dailyCounterFor, todayString } from "@/lib/refillPlan";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +23,7 @@ export const dynamic = "force-dynamic";
  * the lead-state counts on the recording settings page.
  */
 export async function GET() {
-  const { settings, error } = await loadSettings();
+  const { settings, error, autoPushAvailable } = await loadSettings();
   const capability = instantlyCapability();
 
   // How many leads could actually be emailed. Never allowed to fail the page.
@@ -33,20 +31,16 @@ export async function GET() {
   let pushed = 0;
   let awaitingHuman = 0;
   let countsError: string | null = null;
+  let addressTier = 0;
   try {
     const db = supabaseAdmin();
-    const { data: rows, error: leadsErr } = await db
-      .from("leads")
-      .select(EMAIL_ELIGIBILITY_COLUMNS)
-      .is("archived_at", null)
-      .limit(50000);
-    if (leadsErr) {
-      // The two unsubscribe columns arrive with 0029. Before it is run this
-      // select fails outright — say which migration, do not show a bare error.
-      countsError = migrationHint(leadsErr.message) || leadsErr.message;
-    } else {
-      availability = summarizeEmailAvailability((rows || []) as EmailLeadRow[]);
-    }
+    // The shared reader, so this count and the push itself can never disagree
+    // about which leads exist. It steps down through the optional address
+    // columns rather than failing when a migration has not been run.
+    const leads = await selectEmailLeads();
+    if (leads.error) countsError = leads.error;
+    availability = summarizeEmailAvailability(leads.rows);
+    addressTier = leads.tier;
 
     const { count: threads } = await db
       .from("email_threads")
@@ -83,6 +77,23 @@ export async function GET() {
     availability,
     pushed,
     awaitingHuman,
+    autoPushAvailable,
+    /*
+     * Which sources of an address this database actually has.
+     *
+     * Worth surfacing rather than leaving as a mystery: with neither of these,
+     * every lead reads "no email address on record" and the programme has
+     * nobody to write to — which is exactly the state this page was in before
+     * the crawler started reading contact pages.
+     */
+    addressSources: {
+      websiteEmail: addressTier === 0 || addressTier === 2,
+      directEmail: addressTier === 0 || addressTier === 1,
+    },
+    pushedToday: dailyCounterFor(
+      { pushedToday: settings.pushed_today, pushedTodayDate: settings.pushed_today_date },
+      todayString()
+    ),
   });
 }
 
@@ -145,6 +156,63 @@ export async function PUT(req: NextRequest) {
       );
     }
     patch.auto_reply_enabled = body.auto_reply_enabled;
+  }
+
+  /* ------------------------- the automatic top-up ------------------------- */
+
+  if (body.target_active_leads !== undefined) {
+    const n = Number(body.target_active_leads);
+    if (!Number.isInteger(n) || n < 1 || n > 5000) {
+      return NextResponse.json(
+        { error: "Keep between 1 and 5000 leads alive in the campaign." },
+        { status: 400 }
+      );
+    }
+    patch.target_active_leads = n;
+  }
+
+  if (body.daily_push_cap !== undefined) {
+    const n = Number(body.daily_push_cap);
+    if (!Number.isInteger(n) || n < 1 || n > 1000) {
+      return NextResponse.json(
+        {
+          error:
+            "A daily cap between 1 and 1000. This is a deliverability limit, not a preference — a domain that goes from nothing to a thousand emails in an afternoon gets filtered, and it does not recover.",
+        },
+        { status: 400 }
+      );
+    }
+    patch.daily_push_cap = n;
+  }
+
+  if (typeof body.auto_push_enabled === "boolean") {
+    /*
+     * Switching this on hands over the decision to send. Same treatment as
+     * automatic replies: the caller has to say explicitly that they mean it,
+     * because a box ticked on the way past is not an administrator enabling
+     * autonomous sending, it is an accident.
+     */
+    if (body.auto_push_enabled === true) {
+      if (body.acknowledge_autonomous !== true) {
+        return NextResponse.json(
+          {
+            error:
+              "Turning this on means leads get emailed without you pressing anything. Confirm you intend that.",
+          },
+          { status: 400 }
+        );
+      }
+      const current = await loadSettings();
+      // A top-up with no sequence would send whatever happens to be in the
+      // Instantly campaign — possibly a half-written draft.
+      if (!current.settings.campaign_id) {
+        return NextResponse.json(
+          { error: "Pick a campaign before switching on automatic top-ups." },
+          { status: 400 }
+        );
+      }
+    }
+    patch.auto_push_enabled = body.auto_push_enabled;
   }
 
   // Switching the programme on with no campaign selected would push every

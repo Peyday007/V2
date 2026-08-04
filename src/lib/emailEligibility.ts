@@ -23,6 +23,11 @@ export type EmailLeadRow = {
   direct_email?: string | null;
   /** Whatever the earlier owner-intel pass found. */
   owner_email?: string | null;
+  /**
+   * Read off the business's own website by the enrichment crawl. For most
+   * leads this is the ONLY address there is — see chooseEmail.
+   */
+  website_email?: string | null;
   do_not_call?: boolean | null;
   archived_at?: string | null;
   email_unsubscribed_at?: string | null;
@@ -31,7 +36,7 @@ export type EmailLeadRow = {
 };
 
 /** Which field an address came from, kept so a claim can be traced. */
-export type EmailSource = "direct_email" | "owner_email";
+export type EmailSource = "direct_email" | "owner_email" | "website_email";
 
 export type ChosenEmail = { email: string; source: EmailSource } | null;
 
@@ -53,17 +58,27 @@ export function looksLikeEmail(value: string | null | undefined): boolean {
 /**
  * The best address on the record, and where it came from.
  *
- * direct_email first: it is the one a contact provider attached to a named
- * decision-maker, whereas owner_email may be the generic info@ off the
- * website. Both are used — a generic address still reaches the business — but
- * the better one goes first and the source is carried through so the admin
- * page can show which is which.
+ * The order is by how much is known about who is behind the address:
+ *
+ *   1. direct_email — a contact provider attached it to a named
+ *      decision-maker. Only ever present when a provider is configured.
+ *   2. owner_email — whatever the owner-intel pass or a caller recorded.
+ *   3. website_email — read off the business's own site by the crawl.
+ *
+ * The third one carries the whole programme in practice. With no contact
+ * provider configured, 993 of 1000 leads had no address at all, because the
+ * first two are only ever filled by paths that were not running. A generic
+ * info@ scraped from a contact page is not as good as a named decision-maker's
+ * inbox — but it reaches the business, and it is the difference between a cold
+ * email programme and an empty one.
  */
 export function chooseEmail(lead: EmailLeadRow): ChosenEmail {
   const direct = (lead.direct_email || "").trim().toLowerCase();
   if (looksLikeEmail(direct)) return { email: direct, source: "direct_email" };
   const owner = (lead.owner_email || "").trim().toLowerCase();
   if (looksLikeEmail(owner)) return { email: owner, source: "owner_email" };
+  const site = (lead.website_email || "").trim().toLowerCase();
+  if (looksLikeEmail(site)) return { email: site, source: "website_email" };
   return null;
 }
 
@@ -142,4 +157,24 @@ export function explainNonePushable(a: EmailAvailability): string {
  * column added by an unrun migration cannot take the whole page down.
  */
 export const EMAIL_ELIGIBILITY_COLUMNS =
-  "id, business_name, direct_email, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at";
+  "id, business_name, direct_email, owner_email, website_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at";
+
+/**
+ * The same list, minus the columns that arrive with a migration.
+ *
+ * `direct_email` comes with 0023 and `website_email` with 0030. Selecting a
+ * column from an unrun migration does not degrade — it fails the whole query,
+ * which is exactly how the lead pipeline went down once already: every packet
+ * query asked for enrichment columns that were not there, so "Add leads"
+ * 500'd, nothing was inserted, and the callers' dialer said "all done".
+ *
+ * So the reader walks down this ladder instead of assuming. A database missing
+ * a migration loses a source of addresses; it does not lose the page.
+ */
+export const EMAIL_ELIGIBILITY_TIERS: string[] = [
+  EMAIL_ELIGIBILITY_COLUMNS,
+  // no website_email (0030 unrun)
+  "id, business_name, direct_email, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
+  // no direct_email either (0023 unrun)
+  "id, business_name, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
+];

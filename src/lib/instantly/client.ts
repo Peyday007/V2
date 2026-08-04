@@ -1,11 +1,11 @@
 import "server-only";
 import type { Campaign, InstantlyCapability, PushResult, PushSubject } from "./types";
-import { explainStatus, normaliseCampaigns, pushBody } from "./mapping";
+import { explainStatus, normaliseCampaigns, pushBody, toInstantlySequence } from "./mapping";
 
 // The pure request/response mapping lives in ./mapping so it can be unit
 // tested — this file imports server-only, which a test cannot load. Re-exported
 // here so callers still have one import for the adapter.
-export { explainStatus, normaliseCampaigns, pushBody } from "./mapping";
+export { explainStatus, normaliseCampaigns, pushBody, toInstantlySequence } from "./mapping";
 
 // Talking to Instantly.
 //
@@ -193,4 +193,65 @@ export async function sendReply(input: {
   if (!res.ok) return { ok: false, error: res.error };
   const body = res.body as Record<string, unknown> | null;
   return { ok: true, id: body?.id ? String(body.id) : null };
+}
+
+/* -------------------------------------------------------------------------- */
+/* publishing a sequence                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Put a generated sequence into the campaign.
+ *
+ * UNVERIFIED, like the rest of this file, and the flow around it is built to
+ * survive that: a failure here leaves the sequence marked active in our own
+ * database with a "copy this into Instantly" view on the page, and says so.
+ * Nothing pretends the campaign was updated when it was not.
+ *
+ * This OVERWRITES the campaign's existing steps. That is the intent — one
+ * active sequence, so anybody can say what a lead pushed today will receive —
+ * but it is worth a sentence, because it means publishing discards whatever
+ * was typed into the Instantly editor by hand.
+ */
+export async function publishSequence(
+  campaignId: string,
+  steps: { step: number; delayDays: number; subject: string; body: string }[]
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const capability = instantlyCapability();
+  if (!capability.available) return { ok: false, error: capability.reason };
+  if (!campaignId) {
+    return { ok: false, error: "No Instantly campaign is selected, so there is nowhere to publish to." };
+  }
+  if (steps.length === 0) {
+    return { ok: false, error: "The sequence has no emails in it." };
+  }
+
+  const res = await call(`/campaigns/${encodeURIComponent(campaignId)}`, {
+    method: "PATCH",
+    body: { sequences: [toInstantlySequence(steps)] },
+  });
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true };
+}
+
+/**
+ * How many leads are still being worked in the campaign.
+ *
+ * The refill tops up to a target, and a target needs a current number. Returns
+ * null rather than 0 when it cannot tell — a refill that reads "0 active" from
+ * a failed request would push a full batch into a campaign that is already
+ * full, which is the one mistake this whole number exists to prevent.
+ */
+export async function activeLeadCount(campaignId: string): Promise<number | null> {
+  if (!campaignId || !instantlyCapability().available) return null;
+  const res = await call("/leads/list", {
+    method: "POST",
+    body: { campaign: campaignId, limit: 1 },
+  });
+  if (!res.ok) return null;
+  const body = res.body as Record<string, unknown> | null;
+  for (const key of ["total", "total_count", "count"]) {
+    const v = body?.[key];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
 }

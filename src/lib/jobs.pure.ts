@@ -10,7 +10,11 @@ export type JobType =
   | "queue_enrichment"
   | "enrich_lead"
   | "enrich_owner_contact"
-  | "auto_assign_packets";
+  | "auto_assign_packets"
+  // Keeps the Instantly campaign topped up without anybody pressing a button.
+  // Only does anything when an administrator has switched auto_push_enabled
+  // on; otherwise it reads the settings, decides "no", and completes.
+  | "refill_email_campaign";
 
 /** Exponential backoff with a ceiling: 30s, 60s, 120s, 240s… max 15 min. */
 export function backoffSeconds(attempts: number): number {

@@ -1018,6 +1018,110 @@ interested. A model reading a hostile reply as enthusiasm is a plausible
 failure; a model reading enthusiasm as "remove me" costs one lead. Only the
 second is allowed to happen.
 
+### Where the addresses come from
+
+The programme launched with 993 of 1000 leads reading "no email address on
+record". That was not a bug — **nothing in the application had ever looked for
+one**. Google Places returns a phone and a website, never an email, and the only
+other path was the paid contact-provider waterfall, which has no keys.
+
+The enrichment crawler was already fetching each business's contact and about
+pages to find the owner's name. It now also reads the address that is usually
+sitting on the same page. Free, same crawl, no second fetch.
+
+Three rules, all tested:
+
+- **Only what is on the page.** `firstname@domain.com` is a plausible guess and
+  a fabricated contact detail. A page that names the owner and shows no address
+  yields nothing.
+- **Never somebody else's.** A trade's site carries the web designer's address
+  in the footer, the review widget's, the booking software's. Those are
+  filtered by domain, along with no-reply and abuse boxes, and things that only
+  look like addresses (`logo@2x.png`, `react@18.2.0`).
+- **Attributed.** The source URL, the surrounding text and the retrieval date
+  are stored with it.
+
+`maria@acehvac.com` on a page that says "Maria Rivera, Owner" scores highest —
+matched against a name we *already hold*, never used to build one. An
+off-domain gmail is kept and scored down rather than dropped: a one-van
+operation with a .com site and a gmail inbox is common, and that gmail is the
+real one. Below 0.6 confidence nothing is stored at all — "none" is a good
+answer and "probably" is a bounce.
+
+The scraped address goes in its own column. `owner_email` is only filled when
+empty, so an address a caller typed in after speaking to somebody always wins.
+
+### Sequences it writes itself
+
+**Admin → Email** has a box you talk into. Say what you want the emails to do,
+who they are going to, what you have found works — in your own words. It writes
+the whole sequence: **how many emails, how many days apart, and what each one
+says.** You are not asked for a step count or a cadence, because being asked
+those is the hand-holding this was built to remove.
+
+It is not writing blind. The prompt carries three things a chat window would
+not have:
+
+- **the three gatekeeper scripts** the team actually opens with on the phone,
+  so the email sounds like the call it precedes;
+- **the recent team updates**, so a sequence cannot contradict what everyone
+  was told last week;
+- **real replies** from the reply log, which say more about what does not work
+  than any instruction.
+
+`src/lib/sequencePlan.ts` is the fence around that judgement — 2 to 6 emails,
+1 to 14 days apart, 45 days total, subjects short enough to survive a phone
+screen. It reports **every** problem at once, not the first, because the fix is
+one regeneration with the complaints fed back.
+
+Three things it refuses outright:
+
+- **Any price, discount, percentage, guarantee or contract term.** Rejected,
+  not stripped — a sequence with its pricing sentence quietly deleted reads
+  like it is missing a sentence, which it is. The percentage rule also catches
+  the invented statistic ("60% of callers never leave a message"), which is the
+  kind of line a writer produces confidently and nobody can source.
+- **A merge field we do not send.** `{{first_name}}` would appear literally in
+  somebody's inbox, which is the most obvious way to announce an email is
+  automated.
+- **A subject starting "Re:"**, which pretends to continue a conversation that
+  never happened.
+
+Writing is automatic. **Publishing is one press**, because publishing is what
+puts words in front of every prospect in the campaign for a month. If Instantly
+refuses the update, the sequence is marked active here and the page says the
+campaign out there is unchanged, with a Copy-all button — it never claims a
+publish that did not happen.
+
+One detail worth knowing about, since being wrong about it fails silently: the
+two systems count the gap from opposite ends. Ours hangs `delayDays` on the
+step that waits; Instantly hangs `delay` on the step *before*. `toInstantlySequence`
+moves it back one, and there is a test asserting the total elapsed time survives
+the translation.
+
+### Topping the campaign up on its own
+
+Switch on **"Top the campaign up without asking me"** and the button stops
+being your job. Every worker tick, `refill_email_campaign` reads how many leads
+are live in the campaign and tops it back to the target.
+
+Four ceilings apply and the tightest wins: the gap to the target, what is left
+of today's cap, how many leads are eligible, and the per-run cap. `planRefill`
+is pure and always returns a sentence, so "it pushed nothing" is never a
+mystery.
+
+The **daily cap is a deliverability limit, not a preference.** A domain that
+goes from nothing to a thousand emails in an afternoon gets filtered by the
+carriers and does not recover — every sequence after that lands in spam
+however good it is. The counter resets on a calendar day rather than 24 hours
+after the last push, because the latter drifts later every day and eventually
+sends in the middle of the night.
+
+The rule that matters most: **a count it could not read is not zero.** If
+Instantly rate-limits the lookup, nothing is pushed. Reading a failed count as
+"the campaign is empty" would push a full batch into a campaign that is already
+full — every day, on every failure, until somebody noticed the send volume.
+
 ### The webhook
 
 `/api/instantly/webhook` is the only public write endpoint in the integration.

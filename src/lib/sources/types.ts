@@ -1,6 +1,8 @@
 // A pluggable decision-maker source. The waterfall runs these in order and
 // stops as soon as one returns a high-confidence finding.
 
+import type { EmailCandidate } from "../extractEmails";
+
 export type SourceFinding = {
   name: string;
   title: string;
@@ -23,6 +25,15 @@ export type SourceContext = {
 export type SourceResult = {
   /** Every claim found, including weak and conflicting ones. */
   findings: SourceFinding[];
+  /**
+   * Email addresses seen on the pages this source read.
+   *
+   * Optional, and only the website source fills it in. It rides along on the
+   * crawl that was already happening to find the owner's name rather than
+   * costing a second fetch — the contact page that names the owner is almost
+   * always the page that shows their address.
+   */
+  emails?: EmailCandidate[];
   /** Set when the source could not run (no key, blocked, error). */
   skipped?: string;
 };

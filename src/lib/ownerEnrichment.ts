@@ -16,6 +16,8 @@ import "server-only";
 import { supabaseAdmin } from "./supabaseAdmin";
 import { recordEvent } from "./events";
 import { SOURCES, STOP_CONFIDENCE } from "./sources";
+import { bestEmail, matchesOwnerName, type EmailCandidate } from "./extractEmails";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   selectDecisionMaker,
   type Candidate,
@@ -133,9 +135,10 @@ type LeadRow = {
 /** Collect candidates from the public-source waterfall already in the app. */
 async function identifyOwner(
   lead: LeadRow
-): Promise<{ candidates: Candidate[]; sourcesUsed: string[] }> {
+): Promise<{ candidates: Candidate[]; sourcesUsed: string[]; emails: EmailCandidate[] }> {
   const candidates: Candidate[] = [];
   const sourcesUsed: string[] = [];
+  const emails: EmailCandidate[] = [];
 
   // Anything a caller already told us outranks anything scraped.
   if (lead.owner_name) {
@@ -165,6 +168,9 @@ async function identifyOwner(
     sourcesUsed.push(source.key);
     try {
       const result = await source.run(ctx);
+      // Addresses are kept even from a source that skipped on the name: a
+      // crawl that found an email and no owner is still a lead we can email.
+      if (result.emails?.length) emails.push(...result.emails);
       if (result.skipped) continue;
       for (const f of result.findings) {
         candidates.push({
@@ -183,7 +189,95 @@ async function identifyOwner(
     }
   }
 
-  return { candidates, sourcesUsed };
+  return { candidates, sourcesUsed, emails };
+}
+
+/**
+ * Write down the best email the crawl saw, with where it came from.
+ *
+ * Two rules, both of which are the standing ones written out for this case:
+ *
+ *   NOTHING IS OVERWRITTEN SILENTLY. The scraped address goes in its own
+ *   columns. `owner_email` is only filled when it is empty, so an address a
+ *   caller typed in after speaking to somebody always wins over one a regex
+ *   found in a footer.
+ *
+ *   ATTRIBUTION IS KEPT. The source URL and the retrieval date are stored
+ *   alongside the address, and the evidence row records the text it sat in.
+ *
+ * Never throws. This is a bonus on top of owner enrichment; a failure to
+ * record an email must not fail the enrichment run that found the owner.
+ */
+async function persistWebsiteEmail(
+  db: SupabaseClient,
+  leadId: string,
+  row: LeadRow,
+  seen: EmailCandidate[],
+  ownerName: string | null
+): Promise<void> {
+  if (seen.length === 0) return;
+  try {
+    // Re-score now that the owner's name is known: maria@ is worth much more
+    // than info@ once we know the owner is Maria, and that was not knowable
+    // while the pages were being read.
+    const rescored = ownerName
+      ? seen.map((c) =>
+          matchesOwnerName(c.email.slice(0, c.email.indexOf("@")), ownerName)
+            ? { ...c, kind: "personal" as const, confidence: Math.min(0.98, c.confidence + 0.2) }
+            : c
+        )
+      : seen;
+
+    const best = bestEmail(rescored);
+    if (!best) return;
+
+    const patch: Record<string, unknown> = {
+      website_email: best.email,
+      website_email_kind: best.kind,
+      website_email_source_url: best.sourceUrl,
+      website_email_confidence: best.confidence,
+      website_email_found_at: new Date().toISOString(),
+    };
+    // Only when there is nothing there already.
+    if (!row.owner_email) patch.owner_email = best.email;
+
+    await db.from("leads").update(patch).eq("id", leadId);
+
+    await db
+      .from("enrichment_evidence")
+      .insert({
+        lead_id: leadId,
+        source_type: "website",
+        source_url: best.sourceUrl,
+        field: "email",
+        value: best.email,
+        supporting_text: best.supportingText.slice(0, 900),
+        extraction_method: best.onDomain ? "mailto_on_domain" : "mailto_off_domain",
+        confidence: best.confidence,
+        is_conflicting: !!row.owner_email && row.owner_email !== best.email,
+      })
+      .then(undefined, () => {});
+
+    await recordEvent({
+      type: "lead.enriched",
+      entityType: "lead",
+      entityId: leadId,
+      leadId,
+      actorType: "worker",
+      source: "worker",
+      newValue: { email: best.email, kind: best.kind },
+      metadata: {
+        field: "email",
+        source_url: best.sourceUrl,
+        on_domain: best.onDomain,
+        kept_existing_owner_email: !!row.owner_email,
+      },
+      confidence: best.confidence,
+      verificationStatus: "unverified",
+    });
+  } catch (e) {
+    console.error("[enrich] could not record the website email:", e);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -234,7 +328,7 @@ export async function enrichLeadForOwner(
     .eq("id", leadId);
 
   /* ------------------------- stage 1: the person ------------------------- */
-  const { candidates, sourcesUsed } = await identifyOwner(row);
+  const { candidates, sourcesUsed, emails: seenEmails } = await identifyOwner(row);
   const matchCtx: MatchContext = {
     businessName: row.business_name,
     domain: row.domain,
@@ -242,6 +336,16 @@ export async function enrichLeadForOwner(
     state: row.state,
   };
   const selection = selectDecisionMaker(candidates, matchCtx);
+
+  /*
+   * Store the email before anything else can return.
+   *
+   * Deliberately here, above every branch below. An earlier version of this
+   * function had a path that returned without setting machine_status, and
+   * leads sat stuck forever because of it — so anything that must happen on
+   * EVERY path happens before the branching starts, not in each arm of it.
+   */
+  await persistWebsiteEmail(db, leadId, row, seenEmails, selection.chosen ? selection.name : null);
 
   for (const c of candidates) {
     await db.from("enrichment_evidence").insert({

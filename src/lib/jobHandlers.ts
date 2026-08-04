@@ -17,6 +17,10 @@ import { SOURCES, STOP_CONFIDENCE } from "./sources";
 import { logEvent, recordEvent } from "./events";
 import { decideSearching } from "./leadYield";
 import { enrichLeadForOwner } from "./ownerEnrichment";
+import { loadSettings } from "./instantlyStore";
+import { activeLeadCount } from "./instantly/client";
+import { countEligible, pushEligibleLeads } from "./emailPush";
+import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -1260,6 +1264,100 @@ const enrichOwnerContact: Handler = async (job) => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* keeping the email campaign fed                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Top the Instantly campaign up, without anybody asking.
+ *
+ * Runs on every worker tick and almost always decides to do nothing, which is
+ * the correct behaviour — the decision lives in planRefill and is pure, so the
+ * reason it declined is always a sentence rather than a silent return.
+ *
+ * Three ceilings apply and the tightest wins: how far the campaign is below
+ * its target, what is left of today's cap, and how many leads are eligible.
+ * The daily cap is the one that matters for deliverability: a domain that goes
+ * from nothing to a thousand emails in an afternoon gets filtered, and it does
+ * not recover.
+ *
+ * Never throws for a business reason. A campaign that is already full is not a
+ * failed job, and failing it would retry with backoff forever.
+ */
+const refillEmailCampaign: Handler = async () => {
+  const { settings, error } = await loadSettings();
+  if (error) {
+    // A missing table before 0029 is run lands here. Not a failure worth
+    // retrying every thirty seconds.
+    console.log(`[refill] skipped: ${error}`);
+    return;
+  }
+  if (!settings.auto_push_enabled || !settings.enabled) return;
+
+  const today = todayString();
+  const pushedToday = dailyCounterFor(
+    { pushedToday: settings.pushed_today, pushedTodayDate: settings.pushed_today_date },
+    today
+  );
+
+  const [active, eligible] = await Promise.all([
+    activeLeadCount(settings.campaign_id || ""),
+    countEligible(),
+  ]);
+
+  const decision = planRefill({
+    autoPushEnabled: settings.auto_push_enabled,
+    programmeEnabled: settings.enabled,
+    campaignId: settings.campaign_id,
+    activeInCampaign: active,
+    targetActive: settings.target_active_leads,
+    dailyCap: settings.daily_push_cap,
+    pushedToday,
+    eligible,
+    maxPerRun: settings.max_push_per_run,
+  });
+
+  if (decision.count === 0) {
+    console.log(`[refill] ${decision.reason}`);
+    return;
+  }
+
+  const outcome = await pushEligibleLeads(decision.count, "worker");
+  const db = supabaseAdmin();
+
+  await db
+    .from("instantly_settings")
+    .update({
+      last_auto_push_at: new Date().toISOString(),
+      // Counts what actually went, not what was planned. A batch that stopped
+      // early on a rate limit must not burn the day's allowance.
+      pushed_today: pushedToday + outcome.pushed,
+      pushed_today_date: today,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", true);
+
+  await recordEvent({
+    type: "email.pushed",
+    entityType: "email_thread",
+    entityId: "auto-refill",
+    actorType: "worker",
+    source: "worker",
+    newValue: { pushed: outcome.pushed, failed: outcome.failed },
+    metadata: {
+      automatic: true,
+      reason: decision.reason,
+      active_in_campaign: active,
+      target: settings.target_active_leads,
+      stopped_early: outcome.stoppedEarly,
+      blocked: outcome.blocked,
+    },
+    verificationStatus: "verified",
+  });
+
+  console.log(`[refill] ${decision.reason} — pushed ${outcome.pushed}, failed ${outcome.failed}`);
+};
+
 export const HANDLERS: Record<JobType, Handler> = {
   plan_search_tasks: planSearchTasks,
   execute_places_search: executePlacesSearch,
@@ -1270,4 +1368,5 @@ export const HANDLERS: Record<JobType, Handler> = {
   enrich_lead: enrichLead,
   enrich_owner_contact: enrichOwnerContact,
   auto_assign_packets: autoAssignPackets,
+  refill_email_campaign: refillEmailCampaign,
 };

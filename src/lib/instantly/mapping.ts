@@ -61,6 +61,52 @@ export function normaliseCampaigns(body: unknown): Campaign[] {
   return out;
 }
 
+/**
+ * Our sequence, in Instantly's shape.
+ *
+ * THE OFF-BY-ONE HERE IS THE WHOLE FUNCTION. The two systems count the gap
+ * from opposite ends:
+ *
+ *   ours       — `delayDays` on a step is the wait BEFORE it. Step 1 is 0.
+ *   Instantly  — `delay` on a step is the wait AFTER it, before the next one.
+ *
+ * So the wait that we hang on step N+1 has to be hung on step N going out.
+ * Getting this backwards does not fail: it produces a sequence that sends on
+ * the wrong days, silently, for as long as it runs. Hence a pure function with
+ * a test rather than an inline map inside the route.
+ */
+export function toInstantlySequence(
+  steps: { step: number; delayDays: number; subject: string; body: string }[]
+): { steps: { type: string; delay: number; variants: { subject: string; body: string }[] }[] } {
+  return {
+    steps: steps.map((s, i) => ({
+      type: "email",
+      // The wait after this one is the wait the NEXT one asked for. The last
+      // step has nothing following it, so it waits for nothing.
+      delay: i + 1 < steps.length ? steps[i + 1].delayDays : 0,
+      variants: [
+        {
+          subject: s.subject,
+          // Instantly renders HTML. Our bodies are plain text written to be
+          // read as plain text, so the line breaks have to survive the trip —
+          // otherwise every email arrives as one unbroken paragraph.
+          body: s.body
+            .split("\n")
+            .map((line) => (line.trim() === "" ? "<br>" : escapeHtml(line)))
+            .join("<br>"),
+        },
+      ],
+    })),
+  };
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 /** The body of a lead push. Pure, so a test can assert what would be sent. */
 export function pushBody(campaignId: string, subject: PushSubject): Record<string, unknown> {
   return {

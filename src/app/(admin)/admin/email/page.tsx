@@ -18,6 +18,23 @@ type Settings = {
   max_push_per_run: number;
   auto_reply_enabled: boolean;
   reply_confidence_floor: number;
+  auto_push_enabled: boolean;
+  target_active_leads: number;
+  daily_push_cap: number;
+  last_auto_push_at: string | null;
+};
+
+type Sequence = {
+  id: string;
+  name: string;
+  brief: string;
+  steps: { step: number; delayDays: number; subject: string; body: string; rationale: string }[];
+  status: string;
+  model: string | null;
+  context_summary: string | null;
+  cadence: string;
+  created_at: string;
+  published_at: string | null;
 };
 
 type Status = {
@@ -31,6 +48,9 @@ type Status = {
   availability: { available: number; total: number; reasons: { reason: string; count: number }[] };
   pushed: number;
   awaitingHuman: number;
+  autoPushAvailable: boolean;
+  addressSources: { websiteEmail: boolean; directEmail: boolean };
+  pushedToday: number;
 };
 
 type Draft = {
@@ -57,15 +77,23 @@ export default function EmailPage() {
   const [msg, setMsg] = useState("");
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [confirmAuto, setConfirmAuto] = useState(false);
+  const [confirmAutoPush, setConfirmAutoPush] = useState(false);
+  const [sequences, setSequences] = useState<Sequence[]>([]);
+  const [brief, setBrief] = useState("");
+  const [writing, setWriting] = useState(false);
+  const [problems, setProblems] = useState<{ step: number | null; problem: string }[]>([]);
+  const [openSequence, setOpenSequence] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [s, d] = await Promise.all([
+      const [s, d, q] = await Promise.all([
         fetch("/api/instantly").then((r) => r.json()),
         fetch("/api/instantly/drafts?status=pending").then((r) => r.json()),
+        fetch("/api/instantly/sequence").then((r) => r.json()),
       ]);
       setStatus(s);
       setDrafts(d.drafts ?? []);
+      setSequences(q.sequences ?? []);
       if (d.error) setErr(d.error);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -145,6 +173,50 @@ export default function EmailPage() {
     load();
   }
 
+  async function write() {
+    setWriting(true);
+    setErr("");
+    setMsg("");
+    setProblems([]);
+    const res = await fetch("/api/instantly/sequence", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brief }),
+    });
+    const j = await res.json().catch(() => ({}));
+    setWriting(false);
+    if (!res.ok || j.error) {
+      setErr(j.error || "Could not write that.");
+      setProblems(j.problems ?? []);
+      return;
+    }
+    setBrief("");
+    setOpenSequence(j.sequence?.id ?? null);
+    setMsg(`Written: ${j.sequence.name}. ${j.sequence.cadence} Read it, then publish it.`);
+    load();
+  }
+
+  async function decideSequence(id: string, action: "publish" | "archive") {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    const res = await fetch("/api/instantly/sequence", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, action }),
+    });
+    const j = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok || j.error) {
+      setErr(j.error || "Could not do that.");
+      setProblems(j.problems ?? []);
+      return;
+    }
+    if (j.warning) setErr(j.warning);
+    else if (action === "publish") setMsg("Published. New leads pushed from now on get this sequence.");
+    load();
+  }
+
   if (!status) return <p className="muted">Loading…</p>;
 
   const s = status.settings;
@@ -190,6 +262,21 @@ export default function EmailPage() {
           {m}
         </div>
       ))}
+      {problems.length > 0 && (
+        <div className="card" style={{ borderColor: "var(--red)", marginBottom: 16 }}>
+          <div style={{ color: "var(--red)", fontWeight: 700, marginBottom: 6 }}>
+            What was wrong with it:
+          </div>
+          <ul style={{ lineHeight: 1.6, margin: 0 }}>
+            {problems.map((p, i) => (
+              <li key={i}>
+                {p.step ? `Email ${p.step}: ` : ""}
+                {p.problem}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {msg && (
         <div
           className="card"
@@ -309,6 +396,14 @@ export default function EmailPage() {
           Anyone on the do-not-call list is excluded here too. Somebody who asked not to be
           called did not ask to be emailed instead.
         </p>
+        {!status.addressSources.websiteEmail && (
+          <p style={{ color: "var(--red)", lineHeight: 1.6 }}>
+            Addresses are not being collected yet. Run{" "}
+            <code>supabase/migrations/0030_email_autonomy.sql</code>, then generate or re-enrich
+            leads — the crawler reads each business&rsquo;s contact page and takes the address off
+            it. Until then the only addresses are ones a caller typed in by hand.
+          </p>
+        )}
         <button className="btn" onClick={push} disabled={busy || !canPush}>
           {busy ? "Working…" : `Push up to ${s.max_push_per_run} leads`}
         </button>
@@ -322,6 +417,234 @@ export default function EmailPage() {
           </span>
         )}
       </div>
+
+      {/* --------------------------- keeping it fed --------------------------- */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <h2 style={{ marginTop: 0, marginBottom: 10 }}>Keeping it fed</h2>
+        {!status.autoPushAvailable ? (
+          <p style={{ color: "var(--red)", lineHeight: 1.6, marginTop: 0 }}>
+            Run <code>supabase/migrations/0030_email_autonomy.sql</code> to switch this on.
+          </p>
+        ) : (
+          <>
+            <p style={{ lineHeight: 1.7, marginTop: 0 }}>
+              Switch this on and you stop pressing the button. The worker checks how many leads
+              are still live in the campaign and tops it back up to the target, on its own,
+              within the daily cap.
+            </p>
+            <p className="faint" style={{ lineHeight: 1.7 }}>
+              The daily cap is a deliverability limit, not a preference. A domain that goes from
+              nothing to a thousand emails in an afternoon gets filtered by the carriers, and it
+              does not recover — every sequence after that lands in spam however good it is. If
+              the campaign count cannot be read, nothing is pushed at all rather than pushing
+              blind.
+              {s.last_auto_push_at
+                ? ` Last top-up ${new Date(s.last_auto_push_at).toLocaleString()}. ${status.pushedToday} sent today.`
+                : " It has not run yet."}
+            </p>
+            <div style={{ display: "grid", gap: 12 }}>
+              <label>
+                <div className="faint" style={{ marginBottom: 4 }}>
+                  Keep this many leads alive in the campaign.
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={5000}
+                  defaultValue={s.target_active_leads}
+                  disabled={busy}
+                  onBlur={(e) => {
+                    const n = Number(e.target.value);
+                    if (n !== s.target_active_leads) save({ target_active_leads: n });
+                  }}
+                />
+              </label>
+              <label>
+                <div className="faint" style={{ marginBottom: 4 }}>
+                  Never push more than this in one day.
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  defaultValue={s.daily_push_cap}
+                  disabled={busy}
+                  onBlur={(e) => {
+                    const n = Number(e.target.value);
+                    if (n !== s.daily_push_cap) save({ daily_push_cap: n });
+                  }}
+                />
+              </label>
+              {!s.auto_push_enabled && (
+                <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={confirmAutoPush}
+                    onChange={(e) => setConfirmAutoPush(e.target.checked)}
+                  />
+                  <span className="faint">
+                    I understand leads will be emailed without me pressing anything.
+                  </span>
+                </label>
+              )}
+              <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={s.auto_push_enabled}
+                  disabled={busy || (!s.auto_push_enabled && !confirmAutoPush)}
+                  onChange={(e) =>
+                    save({ auto_push_enabled: e.target.checked, acknowledge_autonomous: true })
+                  }
+                />
+                <span>Top the campaign up without asking me</span>
+              </label>
+            </div>
+          </>
+        )}
+      </div>
+
+
+      {/* ------------------------------ the writer --------------------------- */}
+      <h2 style={{ marginBottom: 6 }}>What should these emails say?</h2>
+      <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
+        Talk normally. Say what you want the emails to do, who you are writing to, what you
+        have found works — whatever is in your head. It writes the whole sequence: how many
+        emails, how many days apart, and what each one says. It already knows the three
+        gatekeeper scripts the team uses on the phone, the recent team updates, and what
+        people have actually written back.
+      </p>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <textarea
+          rows={6}
+          placeholder={
+            "e.g. These are plumbers and HVAC guys who are on a job site all day. I want to lead with the fact that they are missing calls in the evening and losing the job to whoever picks up next. Keep it short, no corporate language. Push for a five minute call, not a demo."
+          }
+          value={brief}
+          maxLength={4000}
+          onChange={(e) => setBrief(e.target.value)}
+          style={{ fontFamily: "inherit", lineHeight: 1.6 }}
+        />
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+          <button className="btn" onClick={write} disabled={writing || !brief.trim()}>
+            {writing ? "Writing…" : "Write the sequence"}
+          </button>
+          <span className="faint">
+            It decides how many emails and the gaps between them. Nothing is sent — you read it
+            first, then publish.
+          </span>
+        </div>
+      </div>
+
+      {sequences.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          {sequences.map((q) => {
+            const open = openSequence === q.id;
+            const active = q.status === "active";
+            return (
+              <div
+                key={q.id}
+                className="card"
+                style={{
+                  marginBottom: 10,
+                  borderColor: active ? "var(--amber)" : "var(--border)",
+                  borderLeft: active ? "3px solid var(--amber)" : undefined,
+                }}
+              >
+                <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <strong style={{ color: active ? "var(--amber)" : undefined }}>{q.name}</strong>
+                  {active && <span className="faint">— live</span>}
+                  <span className="faint" style={{ flex: 1, minWidth: 0 }}>
+                    {q.cadence}
+                  </span>
+                  <button
+                    className="btn-ghost"
+                    style={{ padding: "3px 10px", fontSize: "0.7rem" }}
+                    onClick={() => setOpenSequence(open ? null : q.id)}
+                  >
+                    {open ? "Hide" : "Read it"}
+                  </button>
+                  {!active && (
+                    <button
+                      className="btn"
+                      style={{ padding: "3px 12px", fontSize: "0.7rem" }}
+                      disabled={busy}
+                      onClick={() => decideSequence(q.id, "publish")}
+                    >
+                      Publish
+                    </button>
+                  )}
+                </div>
+
+                {open && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="faint" style={{ marginBottom: 10, lineHeight: 1.55 }}>
+                      You asked for: &ldquo;{q.brief}&rdquo;
+                      {q.context_summary ? ` · written with ${q.context_summary}` : ""}
+                    </div>
+                    {q.steps.map((st) => (
+                      <div
+                        key={st.step}
+                        style={{
+                          borderTop: "1px solid var(--border)",
+                          paddingTop: 10,
+                          marginTop: 10,
+                        }}
+                      >
+                        <div className="faint" style={{ marginBottom: 4 }}>
+                          Email {st.step} ·{" "}
+                          {st.step === 1 ? "sent straight away" : `${st.delayDays} days later`}
+                          {st.rationale ? ` · ${st.rationale}` : ""}
+                        </div>
+                        <div style={{ fontWeight: 700, marginBottom: 6 }}>{st.subject}</div>
+                        <div
+                          style={{
+                            whiteSpace: "pre-wrap",
+                            lineHeight: 1.6,
+                            fontSize: "0.86rem",
+                            background: "var(--bg-inset)",
+                            padding: "10px 12px",
+                          }}
+                        >
+                          {st.body}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                      <button
+                        className="btn-ghost"
+                        style={{ padding: "3px 10px", fontSize: "0.7rem" }}
+                        onClick={() => {
+                          navigator.clipboard?.writeText(
+                            q.steps
+                              .map(
+                                (st) =>
+                                  `--- Email ${st.step} (${st.step === 1 ? "day 0" : `+${st.delayDays} days`}) ---\nSubject: ${st.subject}\n\n${st.body}`
+                              )
+                              .join("\n\n")
+                          );
+                          setMsg("Copied. You can paste these straight into the Instantly sequence editor.");
+                        }}
+                      >
+                        Copy all
+                      </button>
+                      {!active && (
+                        <button
+                          className="btn-ghost"
+                          style={{ padding: "3px 10px", fontSize: "0.7rem" }}
+                          disabled={busy}
+                          onClick={() => decideSequence(q.id, "archive")}
+                        >
+                          Bin it
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* ------------------------------- replies ----------------------------- */}
       <h2 id="replies" style={{ marginBottom: 6 }}>

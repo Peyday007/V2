@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { claimBatch, completeJob, failJob } from "@/lib/jobs";
+import { claimBatch, completeJob, enqueue, failJob } from "@/lib/jobs";
 import { HANDLERS } from "@/lib/jobHandlers";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +25,27 @@ async function runTick() {
   const worker = `w_${Math.random().toString(36).slice(2, 10)}`;
   const startedAt = Date.now();
   const processed: { type: string; ok: boolean; error?: string }[] = [];
+
+  /*
+   * Keep the email campaign fed.
+   *
+   * Queued at the top of every tick with a per-tick idempotency key, so a
+   * second worker running at the same time cannot double-push. The handler
+   * itself almost always decides to do nothing — it is off unless an
+   * administrator switched it on, and even then it only pushes when the
+   * campaign is actually below its target and the day's cap has room.
+   *
+   * Enqueued rather than called inline so it goes through the same claim,
+   * retry and backoff machinery as everything else, and shows up in the same
+   * job history when it misbehaves.
+   */
+  await enqueue({
+    type: "refill_email_campaign",
+    idempotencyKey: `refill_email_campaign:${new Date().toISOString().slice(0, 16)}`,
+    priority: 200, // behind lead sourcing; a top-up is never the urgent thing
+  }).catch(() => {
+    // A jobs table that will not accept this must not stop the tick.
+  });
 
   while (Date.now() - startedAt < TIME_BUDGET_MS) {
     const jobs = await claimBatch(BATCH_SIZE, worker);
