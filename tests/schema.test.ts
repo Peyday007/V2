@@ -284,3 +284,70 @@ describe("no query embeds an ambiguously-related table", () => {
     expect(reviewEmbeds.map((e) => e.target)).not.toContain("callers");
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* enumerated constraints vs the code that writes to them                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A check constraint is a list of allowed values in SQL. The code that decides
+ * what to write is a list of allowed values in TypeScript. Nothing keeps the
+ * two in step, and when they drift the failure is not a warning — Postgres
+ * rejects the INSERT and every other field on that row goes with it.
+ *
+ * That is not hypothetical. `calls_script_version_check` allowed A, B and C;
+ * SCRIPT_VERSIONS grew to A..G; and four callers in seven lost their entire
+ * outcome — notes, next step, duration — to an alert box about a tracking
+ * column. Nothing caught it because both halves were internally consistent.
+ *
+ * So the test reads both halves and asserts the SQL admits every value the
+ * code can produce.
+ */
+
+/** The definition of one named check constraint, last one wins. */
+function checkConstraint(name: string): string | null {
+  const sql = migrationSql();
+  const re = new RegExp(`constraint\\s+${name}\\s*\\n?\\s*check\\s*\\(([\\s\\S]*?)\\)\\s*;`, "gi");
+  let found: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) found = m[1];
+  return found;
+}
+
+describe("what the code may write, the database must accept", () => {
+  it("the script_version constraint exists and was widened", () => {
+    const def = checkConstraint("calls_script_version_check");
+    expect(def, "0034 should define calls_script_version_check").toBeTruthy();
+    // The list form is the trap: it is correct until somebody adds a variant.
+    expect(def).not.toMatch(/in\s*\(/i);
+  });
+
+  it("EVERY SCRIPT VERSION THE ASSIGNER CAN PRODUCE IS ACCEPTED BY THE COLUMN", () => {
+    const def = checkConstraint("calls_script_version_check") || "";
+    const shape = /~\s*'\^(\[[^\]]+\])\$'/.exec(def);
+    expect(shape, `could not read a shape out of: ${def}`).toBeTruthy();
+    const allowed = new RegExp(`^${shape![1]}$`);
+
+    const src = readFileSync(join(ROOT, "src", "lib", "gatekeeperScripts.ts"), "utf8");
+    const list = /SCRIPT_VERSIONS\s*=\s*\[([^\]]+)\]/.exec(src);
+    expect(list, "could not read SCRIPT_VERSIONS").toBeTruthy();
+    const versions = [...list![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(versions.length).toBeGreaterThan(3);
+
+    const rejected = versions.filter((v) => !allowed.test(v));
+    expect(
+      rejected,
+      `the database would reject ${rejected.join(", ")} and discard the whole call`
+    ).toEqual([]);
+  });
+
+  it("the outcome route never lets a refused tag discard the call", () => {
+    const route = readFileSync(
+      join(ROOT, "src", "app", "api", "dial", "outcome", "route.ts"),
+      "utf8"
+    );
+    // A check violation naming this column must be retried untagged, not returned.
+    expect(route).toMatch(/23514/);
+    expect(route).toMatch(/script_version:\s*null/);
+  });
+});

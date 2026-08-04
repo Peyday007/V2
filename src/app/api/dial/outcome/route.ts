@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
-import { eventChain } from "@/lib/events";
+import { eventChain, recordEvent } from "@/lib/events";
 import { missingRequired, DM_REACHED_OUTCOMES, OUTCOME_FORM_MAP } from "@/lib/outcomeForms";
 import { nextAttemptAt, localHourParts, timezoneForState } from "@/lib/callWindows";
 import { coerceStage, nextStageAfterOutcome } from "@/lib/stages";
@@ -116,9 +116,7 @@ export async function POST(req: NextRequest) {
   // back to it later would silently rewrite what we knew at dial time.
   const ownerKnownBefore = !!lead.owner_name;
 
-  const { data: call, error } = await db
-    .from("calls")
-    .insert({
+  const row = {
       lead_id,
       packet_id: packet_id || null,
       caller_id: callerId,
@@ -146,15 +144,70 @@ export async function POST(req: NextRequest) {
       owner_known_before: ownerKnownBefore,
       enrichment_confidence: lead.enrichment_confidence ?? null,
       script_variant: typeof body.script_variant === "string" ? body.script_variant : "owner_first_v1",
-      // Which gatekeeper opener (A/B/C) was running, or null when the caller
-      // is not in the test. Validated rather than passed through: an unchecked
-      // string here would land a fourth variant in the comparison and the
-      // column's own constraint would reject the whole call.
+      // Which gatekeeper opener was running, or null when the caller is not in
+      // the test. Validated against SCRIPT_VERSIONS rather than passed through,
+      // so a stale or invented letter never reaches the column.
       script_version: isScriptVersion(body.script_version) ? body.script_version : null,
-    })
-    .select()
-    .single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  };
+
+  let { data: call, error } = await db.from("calls").insert(row).select().single();
+
+  /*
+   * The tagging is never worth the call.
+   *
+   * This guard is here because the alternative actually happened. The variants
+   * grew from three to seven in TypeScript; the check constraint from 0024 did
+   * not; and every caller who drew D through G lost their entire outcome —
+   * notes, next step, duration, the lot — to an alert box about a column that
+   * exists only to compare openers. The work was gone and the comparison was
+   * not served either.
+   *
+   * 0034 widens the constraint and is the real fix. This is what makes the
+   * class of failure survivable rather than just this instance of it: if the
+   * column ever refuses a tag again — an unrun migration, a variant scheme
+   * nobody thought about — the call is written untagged instead of discarded.
+   *
+   * Deliberately narrow. Only 23514, the check violation, and only when the
+   * message names this column: a rejected outcome or a bad lead_id is a real
+   * error and must still surface. And it is NOT silent — the row is dropped
+   * from the experiment, so an event records that this call cannot be counted,
+   * rather than leaving a gap in the comparison that looks like chance.
+   */
+  const rejectedTag =
+    error?.code === "23514" && /script_version/.test(error.message || "");
+  if (rejectedTag) {
+    ({ data: call, error } = await db
+      .from("calls")
+      .insert({ ...row, script_version: null })
+      .select()
+      .single());
+    if (!error) {
+      await recordEvent({
+        type: "call.outcome_recorded",
+        entityType: "call",
+        entityId: call.id,
+        leadId: lead_id,
+        callId: call.id,
+        actorType: "system",
+        source: "api",
+        newValue: { script_version: null, attempted: row.script_version },
+        metadata: {
+          area: "gatekeeper_test",
+          reason:
+            "The database refused this script version, so the call was saved without it " +
+            "and is not counted in the opener comparison. Run supabase/migrations/0034_script_version_widen.sql.",
+        },
+        verificationStatus: "unverified",
+      });
+    }
+  }
+
+  if (error || !call) {
+    return NextResponse.json(
+      { error: error?.message || "The call could not be saved." },
+      { status: 500 }
+    );
+  }
 
   // One correlation id ties every fact learned on this call together.
   const chain = eventChain({
