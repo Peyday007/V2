@@ -36,10 +36,19 @@ export async function GET() {
     );
   }
   return NextResponse.json({
-    sequences: (data || []).map((s) => ({
-      ...s,
-      cadence: describeCadence((s.steps || []) as SequenceStep[]),
-    })),
+    sequences: (data || []).map((s) => {
+      const steps = (s.steps || []) as SequenceStep[];
+      return {
+        ...s,
+        cadence: describeCadence(steps),
+        // Whether the prospect is actually given anything to click. Surfaced
+        // rather than assumed, because a sequence edited by hand in Instantly
+        // after publishing can lose the link without anything noticing.
+        linksToPlan: steps.some((st) =>
+          `${st.subject}\n${st.body}`.includes("{{workshop_link}}")
+        ),
+      };
+    }),
     error: null,
   });
 }

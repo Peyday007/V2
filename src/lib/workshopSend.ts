@@ -303,3 +303,110 @@ export async function createAndSendPacket(input: SendInput): Promise<SendOutcome
     segments: result.segments,
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/* packets for a whole email batch                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Make sure every lead in this batch has a packet, and hand back the links.
+ *
+ * THIS REVERSES AN EARLIER DECISION, so the reasoning is worth writing down.
+ *
+ * The email push used to READ existing packets and never create one, on the
+ * grounds that a packet is something a caller makes during a conversation and
+ * minting one as a side effect would fill the board with businesses nobody had
+ * spoken to.
+ *
+ * That was wrong about the consequence. A freshly-created packet sits at
+ * `not_sent`, and nothing on the board surfaces those — the trial alert reads
+ * `trial_requested` and the admin list is a list. What it actually did was
+ * make {{workshop_link}} empty for every cold-emailed lead, because a lead
+ * being emailed by definition has not been spoken to yet. The variable was
+ * shipped, plumbed and permanently blank.
+ *
+ * So the email now mints its own. The prospect clicks a link and sees the same
+ * page a caller would have sent them: their own gaps, their own
+ * recommendations, the same offer.
+ *
+ * Two queries for the whole batch rather than three per lead — a two-hundred
+ * lead push through createAndSendPacket would be six hundred round trips.
+ *
+ * Suppression is already applied upstream: emailEligibility excludes anyone on
+ * the do-not-call list before a lead reaches a batch. That is the same bar
+ * canGenerateLink applies, and this function is never the first gate.
+ */
+export async function ensurePacketsFor(
+  leads: { id: string; ownerName?: string | null; ownerEmail?: string | null }[],
+  origin: string
+): Promise<Map<string, string>> {
+  const links = new Map<string, string>();
+  if (leads.length === 0 || !origin) return links;
+
+  const db = supabaseAdmin();
+  const ids = leads.map((l) => l.id);
+
+  try {
+    const { data: existing, error } = await db
+      .from("workshop_packets")
+      .select("lead_id, token")
+      .in("lead_id", ids);
+    // A missing table means migration 0024 has not been run. The email still
+    // goes; it just has no link in it.
+    if (error) return links;
+
+    const have = new Set<string>();
+    for (const p of existing || []) {
+      if (p.token) {
+        have.add(String(p.lead_id));
+        links.set(String(p.lead_id), packetUrl(origin, String(p.token)));
+      }
+    }
+
+    const missing = leads.filter((l) => !have.has(l.id));
+    if (missing.length === 0) return links;
+
+    const rows = missing.map((l) => ({
+      lead_id: l.id,
+      token: randomBytes(TOKEN_BYTES).toString("hex"),
+      status: "not_sent" as const,
+      // So the board and the dialer can tell a packet the sequence made from
+      // one a caller made on a call. A VA opening this lead later sees that
+      // the owner already has the link, which changes what they say.
+      delivery_method: "email" as const,
+      sent_by_name: "Email sequence",
+      owner_name: (l.ownerName || "").trim() || null,
+      owner_email: (l.ownerEmail || "").trim() || null,
+    }));
+
+    const { data: created } = await db
+      .from("workshop_packets")
+      .insert(rows)
+      .select("lead_id, token");
+
+    for (const p of created || []) {
+      if (p.token) links.set(String(p.lead_id), packetUrl(origin, String(p.token)));
+    }
+
+    /*
+     * A partial insert is possible: the one-packet-per-lead index rejects the
+     * whole statement if a caller created one for any of these leads between
+     * the read above and this write. Re-read rather than losing the batch —
+     * the constraint exists to guarantee one token per lead, and the right
+     * response to hitting it is to use the token that won.
+     */
+    if ((created?.length ?? 0) < missing.length) {
+      const { data: after } = await db
+        .from("workshop_packets")
+        .select("lead_id, token")
+        .in("lead_id", missing.map((l) => l.id));
+      for (const p of after || []) {
+        if (p.token) links.set(String(p.lead_id), packetUrl(origin, String(p.token)));
+      }
+    }
+  } catch {
+    // No link is a slightly plainer email, never a failed push.
+  }
+
+  return links;
+}

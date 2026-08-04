@@ -60,6 +60,7 @@ type Sequence = {
   model: string | null;
   context_summary: string | null;
   cadence: string;
+  linksToPlan?: boolean;
   created_at: string;
   published_at: string | null;
 };
@@ -771,6 +772,12 @@ export default function EmailPage() {
         gatekeeper scripts the team uses on the phone, the recent team updates, and what
         people have actually written back.
       </p>
+      <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
+        Every sequence links to <strong>the prospect&rsquo;s own page</strong> — what was found
+        about their business and what we&rsquo;d do about it, the same page a caller would text
+        them. One is created for each lead as it is pushed, and a sequence that never
+        references it is refused, because then there is nothing for them to click.
+      </p>
       <div className="card" style={{ marginBottom: 20 }}>
         <textarea
           rows={6}
@@ -813,6 +820,12 @@ export default function EmailPage() {
                   {active && <span className="faint">— live</span>}
                   <span className="faint" style={{ flex: 1, minWidth: 0 }}>
                     {q.cadence}
+                    {q.linksToPlan === false && (
+                      <span style={{ color: "var(--red)" }}>
+                        {" "}
+                        · no link to their plan
+                      </span>
+                    )}
                   </span>
                   <button
                     className="btn-ghost"

@@ -41,7 +41,12 @@ const plan = (steps: SequenceStep[]): SequencePlan => ({
 
 const good = plan([
   step(),
-  step({ step: 2, delayDays: 3, subject: "One more thing", body: "Most people will not leave a message." }),
+  step({
+    step: 2,
+    delayDays: 3,
+    subject: "One more thing",
+    body: "Most people will not leave a message.\n\nHere is what we found for {{business_name}}: {{workshop_link}}",
+  }),
   step({ step: 3, delayDays: 5, subject: "Last one", body: "Happy to leave it there if it is not for you." }),
 ]);
 
@@ -52,6 +57,32 @@ const good = plan([
 describe("a valid sequence passes", () => {
   it("no complaints about a sensible three-email run", () => {
     expect(validatePlan(good)).toEqual([]);
+  });
+});
+
+describe("AT LEAST ONE EMAIL MUST CARRY THE LINK", () => {
+  it("a sequence that never links to the prospect's page is refused", () => {
+    // Every pushed lead now gets a packet — their gaps, their
+    // recommendations, the same page a caller would have texted them — and
+    // {{workshop_link}} is how the sequence reaches it. A sequence that never
+    // references it sends the prospect nothing to look at, and the whole
+    // diagnostic pipeline behind it produces a variable that goes nowhere.
+    const noLink = plan([step(), step({ step: 2, delayDays: 3 })]);
+    const problems = validatePlan(noLink);
+    expect(problems.some((p) => /workshop_link/.test(p.problem))).toBe(true);
+  });
+
+  it("one is enough — it does not have to be in every email", () => {
+    expect(validatePlan(good)).toEqual([]);
+    expect(good.steps.filter((s) => s.body.includes("{{workshop_link}}")).length).toBe(1);
+  });
+
+  it("counts it in the subject too", () => {
+    const inSubject = plan([
+      step({ subject: "Your plan: {{workshop_link}}" }),
+      step({ step: 2, delayDays: 3 }),
+    ]);
+    expect(validatePlan(inSubject).some((p) => /workshop_link/.test(p.problem))).toBe(false);
   });
 });
 

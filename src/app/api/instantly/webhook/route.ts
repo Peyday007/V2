@@ -9,7 +9,7 @@ import { loadSettings, migrationHint, THREAD_COLUMNS, type ThreadRow } from "@/l
 import { readReply, shouldDraftReply, suppressesFurtherEmail } from "@/lib/replyIntent";
 import { buildDraft, mayAutoSend } from "@/lib/emailDraft";
 import { COMPANY_NAME, appOrigin } from "@/lib/workshopSend";
-import { packetUrl } from "@/lib/workshopPacket";
+import { advanceStatus, packetUrl, type PacketStatus } from "@/lib/workshopPacket";
 import { splitName } from "@/lib/emailCompose";
 
 export const dynamic = "force-dynamic";
@@ -214,6 +214,40 @@ export async function POST(req: NextRequest) {
       )
       .eq("id", thread.lead_id);
     return NextResponse.json({ ok: true, suppressed: event.type });
+  }
+
+  /* -------------------- the packet the email links to --------------------- */
+  /*
+   * The email carries a link to the prospect's own page, and that packet was
+   * created at `not_sent` when the lead was pushed. It becomes `sent` here,
+   * when Instantly confirms the email actually went out — not at push time,
+   * because pushing a lead into a campaign is not the same as a sequence
+   * having sent anything, and a packet marked sent that never left is the
+   * failure this whole integration is written to avoid.
+   *
+   * `advanceStatus` is forward-only, so a lead that already opened the page
+   * cannot be knocked back to `sent` by a later step of the sequence going
+   * out. Opening is worth more than sending and must not be overwritten.
+   */
+  if (event.type === "sent") {
+    try {
+      const { data: pkt } = await db
+        .from("workshop_packets")
+        .select("id, status")
+        .eq("lead_id", thread.lead_id)
+        .maybeSingle();
+      if (pkt) {
+        const next = advanceStatus(pkt.status as PacketStatus, "sent");
+        if (next !== pkt.status) {
+          await db
+            .from("workshop_packets")
+            .update({ status: next, sent_at: event.occurredAt, updated_at: new Date().toISOString() })
+            .eq("id", pkt.id);
+        }
+      }
+    } catch {
+      // The packet is a nicety on this path; the event is already recorded.
+    }
   }
 
   if (event.type !== "replied") {

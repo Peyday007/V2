@@ -13,8 +13,7 @@ import {
   type EmailLeadRow,
 } from "./emailEligibility";
 import { composePersonalization, composeVariables, splitName, type ComposeInput } from "./emailCompose";
-import { appOrigin } from "./workshopSend";
-import { packetUrl } from "./workshopPacket";
+import { appOrigin, ensurePacketsFor } from "./workshopSend";
 
 // Pushing leads into the campaign.
 //
@@ -167,24 +166,33 @@ export async function pushEligibleLeads(
   const batch = eligible.slice(0, cap);
 
   /*
-   * The workshop link, where a caller has already made one. Read only: minting
-   * a packet as a side effect of an email push would put rows on the board
-   * that nobody has spoken to.
+   * A packet for everyone in this batch, so the email has something to link to.
+   *
+   * This used to read existing packets only, on the reasoning that a packet is
+   * something a caller makes on a call. The consequence was that
+   * {{workshop_link}} was empty for every cold-emailed lead — a lead being
+   * cold-emailed has by definition not been spoken to — so the variable was
+   * plumbed all the way through and permanently blank.
+   *
+   * Now the prospect gets a link to the same page a caller would have texted
+   * them: their own gaps, their own recommendations, the same offer. The
+   * packet is created at `not_sent` and only moves to `sent` when Instantly
+   * confirms the email actually went (see the webhook), so the funnel on the
+   * board stays true.
    */
-  const links = new Map<string, string>();
+  let links = new Map<string, string>();
   try {
     const origin = await appOrigin();
-    if (origin) {
-      const { data: packets } = await db
-        .from("workshop_packets")
-        .select("lead_id, token")
-        .in("lead_id", batch.map((l) => l.id));
-      for (const p of packets || []) {
-        if (p.token) links.set(String(p.lead_id), packetUrl(origin, String(p.token)));
-      }
-    }
+    links = await ensurePacketsFor(
+      batch.map((l) => ({
+        id: l.id,
+        ownerName: (l.decision_maker_name || l.owner_name || "").trim() || null,
+        ownerEmail: chooseEmail(l)?.email ?? null,
+      })),
+      origin
+    );
   } catch {
-    // A missing link is a slightly less personal email, not a failure.
+    // A missing link is a slightly plainer email, not a failed push.
   }
 
   let pushed = 0;

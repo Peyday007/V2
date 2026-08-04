@@ -245,6 +245,26 @@ export function validatePlan(plan: SequencePlan): PlanProblem[] {
     }
   });
 
+  /*
+   * At least one email has to carry the link.
+   *
+   * Every pushed lead now gets a packet — their own gaps, their own
+   * recommendations, the same page a caller would have texted them — and the
+   * URL is handed to the sequence as {{workshop_link}}. A sequence that never
+   * references it sends the prospect nothing to look at, and the whole
+   * diagnostic pipeline behind it produces a variable that goes nowhere.
+   *
+   * A problem rather than a silent warning, because the writer retries on
+   * problems and this is exactly the kind of thing a retry fixes.
+   */
+  if (steps.length > 0 && !steps.some((s) => variablesUsed(`${s.subject}\n${s.body}`).includes("workshop_link"))) {
+    problems.push({
+      step: null,
+      problem:
+        "No email links to the prospect's page. Put {{workshop_link}} in at least one of them — it is the thing they click to see what you found.",
+    });
+  }
+
   if (total > MAX_TOTAL_DAYS) {
     problems.push({
       step: null,

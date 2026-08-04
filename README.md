@@ -963,10 +963,39 @@ in the middle of a sentence. Every merge variable is a string for the same
 reason: a null arriving in a template renders as the word "null" in a
 prospect's inbox.
 
-Where a caller has already made a workshop packet for that business, the email
-links to the same page they would have texted, so a prospect who gets both sees
-one consistent thing. Pushing never *creates* a packet — a packet is something
-a caller makes during a conversation.
+### The link to their plan
+
+**Every pushed lead gets a packet, and the email links to it.** The prospect
+clicks and sees the same page a caller would have texted them: their own gaps,
+their own recommendations, the same offer.
+
+This reverses an earlier decision, which is worth writing down. The push used
+to *read* existing packets and never create one, on the grounds that a packet
+is something a caller makes during a conversation and minting one would fill
+the board with businesses nobody had spoken to. That was wrong about the
+consequence — a fresh packet sits at `not_sent` and nothing on the board
+surfaces those. What it actually did was make `{{workshop_link}}` empty for
+every cold-emailed lead, because a lead being cold-emailed has by definition
+not been spoken to. The variable was shipped, plumbed and permanently blank.
+
+Two queries for a whole batch rather than three per lead. Suppression is
+already applied upstream, so a do-not-call lead never reaches the point of
+getting one. The packet is marked as made by the sequence rather than by a
+caller, so a VA opening that lead later can see the owner already has the link
+— which changes what they say.
+
+**The status only moves to `sent` when Instantly confirms the email went out**,
+not at push time. Pushing a lead into a campaign is not the same as a sequence
+having sent anything. `advanceStatus` is forward-only, so a prospect who has
+already opened the page cannot be knocked back to `sent` by a later step going
+out — opening is worth more than sending.
+
+**A sequence that never references `{{workshop_link}}` is refused.** Not a
+warning: the writer retries on problems, and a sequence with nothing to click
+wastes the entire diagnostic pipeline behind it. One email is enough, and it
+must be introduced the way a person would rather than dropped in as a bare URL.
+The Email page flags any sequence missing it, because one edited by hand in
+Instantly after publishing can lose the link without anything noticing.
 
 ### Who is excluded
 
