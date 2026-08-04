@@ -18,7 +18,11 @@ export type JobType =
   // Reads the sending inboxes, recomputes how many leads a day they can carry,
   // and — only when an administrator switched that on — nudges warmed-up
   // accounts toward their ceiling.
-  | "sync_sending_accounts";
+  | "sync_sending_accounts"
+  // Rebuilds what the house knows from every outcome across every channel.
+  // Nothing acts on a prior until it clears the sample floor, so this getting
+  // behind costs sharpness, never correctness.
+  | "recompute_house_knowledge";
 
 /** Exponential backoff with a ceiling: 30s, 60s, 120s, 240s… max 15 min. */
 export function backoffSeconds(attempts: number): number {

@@ -14,7 +14,10 @@ import {
   ASSIGNMENT_COLUMNS,
   isMissingColumnError,
   orderLeadsForAssignment,
+  orderWithLearning,
 } from "@/lib/enrichmentGrade";
+import { currentKnowledge, loadLearningSettings, logApplication } from "@/lib/houseKnowledgeStore";
+import { leadScore } from "@/lib/houseKnowledge";
 import type { CallFact } from "@/lib/analytics";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -223,7 +226,32 @@ export async function POST(req: NextRequest) {
    * caller's first hour is their best one, so the strongest records belong at
    * the front rather than wherever the import happened to put them.
    */
-  const eligible = orderLeadsForAssignment(passedSuppression);
+  /* ------------------------- best evidence, then best odds -------------------
+   * The quality order comes first — grade, number, confidence — and then what
+   * the house has learned tilts it. `orderWithLearning` divides by a bounded
+   * score, so the tilt breaks ties and makes short moves rather than
+   * reshuffling the packet: a well-evidenced lead with a good direct number
+   * still beats a hunch about its industry.
+   *
+   * With no evidence yet, every score is 1 and the order is exactly what it
+   * was before any of this existed.
+   */
+  const learning = await loadLearningSettings();
+  const knowledge = learning.applyLearning ? await currentKnowledge() : null;
+
+  let eligible = orderLeadsForAssignment(passedSuppression);
+  if (knowledge) {
+    const tilted = orderWithLearning(passedSuppression, (l) => leadScore(knowledge, l).score);
+    eligible = tilted.ordered;
+    if (tilted.moved.length > 0) {
+      await logApplication({
+        surface: "packet_order",
+        priorKey: "lead_score",
+        samples: knowledge.totalFacts,
+        detail: `Reordered ${tilted.moved.length} of ${passedSuppression.length} leads by what converts.`,
+      });
+    }
+  }
 
   /* --------------------------- play to their strengths ---------------------------
    * If this caller is MEASURABLY better in certain industries, put those leads

@@ -1,6 +1,8 @@
 import "server-only";
 import { anthropic } from "./anthropic";
 import { supabaseAdmin } from "./supabaseAdmin";
+import { currentKnowledge } from "./houseKnowledgeStore";
+import { briefingForWriter } from "./houseKnowledge";
 import { buildScript, SCRIPT_VERSIONS } from "./gatekeeperScripts";
 import {
   looksLikePlan,
@@ -81,6 +83,29 @@ async function gatherContext(): Promise<{ text: string; summary: string }> {
           updates.map((u) => `- ${u.title}: ${String(u.body).slice(0, 400)}`).join("\n")
       );
       summaryBits.push(`${updates.length} team updates`);
+    }
+  } catch {
+    // Context is an improvement, never a requirement.
+  }
+
+  /*
+   * What the phone learned, handed to the person writing the email.
+   *
+   * This is the ecosystem at its most literal: three hundred calls tell you
+   * which angle actually opens a conversation with a plumber, and there is no
+   * reason the cold email should have to rediscover that separately. Only
+   * applied priors make it in, so the writer is never told to lean on
+   * something with eleven observations behind it.
+   */
+  try {
+    const knowledge = await currentKnowledge();
+    const briefing = briefingForWriter(knowledge);
+    if (briefing.length > 0) {
+      parts.push(
+        `WHAT THIS BUSINESS HAS ACTUALLY LEARNED, from ${knowledge.totalFacts} recorded outcomes across calls, email and packets:\n` +
+          briefing.map((b) => `- ${b}`).join("\n")
+      );
+      summaryBits.push(`${briefing.length} learned priors`);
     }
   } catch {
     // Context is an improvement, never a requirement.

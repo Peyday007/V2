@@ -27,6 +27,7 @@
 // Pure. No database, no network.
 
 import type { SiteSignals } from "./siteSignals";
+import { angleMultiplier, type HouseKnowledge } from "./houseKnowledge";
 
 export type ServiceLine =
   | "ai_receptionist"
@@ -435,6 +436,45 @@ export function diagnose(input: DiagnosticInput): Finding[] {
  * any remaining slots by weight. A business with genuinely one problem still
  * gets one honest finding rather than three padded ones.
  */
+/**
+ * Reweight the findings by what actually converts here.
+ *
+ * The a-priori weights in `diagnose` are somebody's judgement about what
+ * matters. They are a reasonable starting point and they are not evidence.
+ * Once enough outcomes exist for an angle — in this industry if possible, in
+ * general otherwise — the multiplier tilts the ordering toward what works.
+ *
+ * Three things keep this from eating itself:
+ *
+ *   - the multiplier is CAPPED, so the starting judgement still shows through
+ *     and one strong quarter cannot bury an angle nobody has tried lately;
+ *   - it multiplies rather than replaces, so a finding with weak evidence and
+ *     a strong a-priori case still ranks above a finding with neither;
+ *   - an angle below the sample floor gets a multiplier of exactly 1. No
+ *     evidence means no opinion, not a small opinion.
+ *
+ * Returns the applications alongside, so the caller can write down where the
+ * learning actually changed something rather than leaving it invisible.
+ */
+export function applyKnowledge(
+  findings: Finding[],
+  knowledge: HouseKnowledge | null,
+  industry?: string | null
+): { findings: Finding[]; applications: { key: string; from: number; to: number; source: string }[] } {
+  if (!knowledge) return { findings, applications: [] };
+
+  const applications: { key: string; from: number; to: number; source: string }[] = [];
+  const adjusted = findings.map((f) => {
+    const { multiplier, source } = angleMultiplier(knowledge, f.service, industry);
+    if (multiplier === 1 || !source) return f;
+    const to = Number(Math.min(1, f.weight * multiplier).toFixed(3));
+    applications.push({ key: f.key, from: f.weight, to, source });
+    return { ...f, weight: to };
+  });
+
+  return { findings: adjusted.sort((a, b) => b.weight - a.weight), applications };
+}
+
 export function topFindings(findings: Finding[], limit = 4): Finding[] {
   const byService = new Map<ServiceLine, Finding>();
   for (const f of findings) {

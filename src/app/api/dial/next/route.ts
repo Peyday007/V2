@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getCallerId } from "@/lib/callerSession";
 import { anthropic, APPROACH_MODEL } from "@/lib/anthropic";
+import { assignScript, assignScriptWeighted } from "@/lib/gatekeeperScripts";
+import { currentKnowledge, loadLearningSettings } from "@/lib/houseKnowledgeStore";
 import { recommendApproach } from "@/lib/approach";
 import { buildSuppressionIndex, checkSuppressed } from "@/lib/suppression";
 import { buildDossier, type CallRow } from "@/lib/relationship";
@@ -444,9 +446,41 @@ export async function GET() {
     .eq("caller_id", callerId)
     .gte("created_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
 
+  /*
+   * Which opener this lead gets.
+   *
+   * Computed here rather than in the browser so the weights — which come from
+   * every call the house has ever made — do not have to be shipped to the
+   * client on every dial. The dialer receives the answer and the reason.
+   */
+  let scriptAssignment: { version: string; weighted: boolean; why: string } = {
+    version: assignScript(String(next.lead_id)),
+    weighted: false,
+    why: "Even split — not enough calls yet to favour any opener.",
+  };
+  try {
+    const learning = await loadLearningSettings();
+    if (learning.applyLearning) {
+      const knowledge = await currentKnowledge();
+      const weights = knowledge.scriptWeights || {};
+      const applied = knowledge.scriptLift.filter((p) => p.applied);
+      if (Object.keys(weights).length > 0 && applied.length > 0) {
+        scriptAssignment = {
+          version: assignScriptWeighted(String(next.lead_id), weights),
+          weighted: true,
+          why: `Weighted by ${applied.length} proven opener${applied.length === 1 ? "" : "s"}; every arm still keeps a share so the test never stops.`,
+        };
+      }
+    }
+  } catch {
+    // A failure here falls back to the even split, which is what the system
+    // did before any of this existed.
+  }
+
   return NextResponse.json({
     caller: caller.name,
     lead,
+    scriptAssignment,
     pendingCallback: pendingCallbacks?.[0] || null,
     doneToday: doneToday ?? 0,
     contacts: contacts || [],

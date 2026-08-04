@@ -48,6 +48,20 @@ async function runTick() {
    * nobody needs. The handler no-ops entirely unless one of the two capacity
    * switches is on.
    */
+  /*
+   * Rebuild what the house knows, a few times a day.
+   *
+   * The idempotency key buckets to six hours. It reads tens of thousands of
+   * rows and nothing downstream needs it minutes-fresh — every prior has a
+   * sample floor, so a snapshot from this morning differs from a new one by a
+   * handful of observations at most.
+   */
+  await enqueue({
+    type: "recompute_house_knowledge",
+    idempotencyKey: `recompute_house_knowledge:${new Date().toISOString().slice(0, 11)}${Math.floor(new Date().getUTCHours() / 6)}`,
+    priority: 220,
+  }).catch(() => {});
+
   await enqueue({
     type: "sync_sending_accounts",
     idempotencyKey: `sync_sending_accounts:${new Date().toISOString().slice(0, 13)}`,

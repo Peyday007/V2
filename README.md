@@ -1215,6 +1215,101 @@ the drafts route all stay behind the admin passphrase, and there is a test that
 asserts exactly that boundary — including that a neighbour one character away
 stays gated.
 
+## The ecosystem: what the house knows
+
+The system already learned things. It learned them in five places that never
+spoke to each other — analytics knew which hours connect, script stats knew
+which opener got past reception, caller profiles knew who was good at what,
+benchmarks knew whether the numbers were any good, and the experiment engine
+could run a test. **None of it fed back.** The diagnostic still ordered
+findings by weights someone typed in a priori, the packet was still ordered by
+enrichment grade alone, and the sequence writer was told the same thing on day
+one and day four hundred.
+
+`houseKnowledge.ts` is the connective tissue. Every outcome the business
+produces — a call, a reply, a packet that became a trial, a deal that closed —
+lands in one shape, and what comes out is a set of **priors that every tool
+consults at its decision point.**
+
+### What reads it
+
+| Tool | What changes |
+|---|---|
+| **The diagnostic** | Findings are reordered toward the angles that actually convert — per trade where there is enough evidence, in general otherwise |
+| **The packet** | Leads are ordered by quality *then* tilted by what converts |
+| **The opener split** | Traffic shifts toward openers that get past reception |
+| **The sequence writer** | Told, in plain language, what three hundred calls learned before it writes a single email |
+
+That last one is the ecosystem at its most literal: the phone finds out which
+angle opens a conversation with a plumber, and the cold email does not have to
+rediscover it separately.
+
+### Four rules, each with a mutation test behind it
+
+**1. Nothing is applied below the sample floor.** A prior with nine
+observations is a coincidence with an opinion. Thirty is the bar — the same
+number `analytics.ts` already uses for "directional", so the Learning page and
+the tools cannot disagree about whether something is known. A perfect nine
+against a 20% world produces a *five times* lift and still changes nothing, and
+the multiplier is **exactly 1** — no evidence means no opinion, not a small
+one.
+
+A big sample with a tiny difference is also ignored. A 2% edge over 500 calls
+is statistically real and not a reason to reorder anything.
+
+**2. Exploration never stops.** 20% of traffic stays exploratory forever, and
+zero is not an offered setting. A router that sends everything to today's
+winner cannot notice when the market moves, because the data it would need to
+see that is data it stopped collecting. Until something clears the floor the
+split is dead even — being clever with nine observations is how a good variant
+gets killed before it was ever measured.
+
+**3. It says what it does not know.** `blindSpots` is half the output:
+*"roofing (7), septic (3) — not enough to know whether they are worth sourcing.
+About 23 more would settle it."* A learning system that only reports its
+conclusions quietly stops improving, because nobody can see where the next
+improvement would come from. This turns "we should call more roofers" into a
+number.
+
+**4. It never moves a price, consent, or a person's job.** The size estimate is
+calibrated against real closed deals and the result is *reported* — "median
+closed at 1400, compare that with the band and move it by hand if it is wrong."
+Nothing in the applied priors carries a figure.
+
+### Counting honestly
+
+**A null outcome is excluded, not counted as a failure.** Treating
+unmeasurable as "no" would drag every rate toward zero in proportion to how
+much data was missing, which is exactly backwards.
+
+**Overridden calls are excluded from the script comparison.** A caller who
+deliberately picked a different opener did so because of something about that
+lead — the selection bias the random assignment exists to remove. Letting those
+rows back in through the learning layer would reintroduce it by the back door.
+
+**The tilt is bounded, and stated in places.** The evidence may move a lead at
+most two positions in a packet. Said as positions rather than as a multiplier
+on purpose: "the evidence can move a lead two places" is a sentence you can
+check, whereas a divisor produces knife-edges nobody can predict. A lead five
+places down cannot reach the front on the strength of its trade — whether it
+has a validated direct number still decides that.
+
+### Where it intervened
+
+Every application is written to `knowledge_applications` with the prior, the
+sample count and what changed. A learning system that cannot show you where it
+intervened is indistinguishable from one that does nothing — and from one that
+is quietly making things worse.
+
+Snapshots are append-only, so *"what did it believe when it made that call"*
+always has an answer. **Admin → Learning** shows the lot: what is being acted
+on, what it still cannot answer, how the openers are currently split, and where
+it changed something.
+
+Run `supabase/migrations/0033_house_knowledge.sql`. Until then every prior is
+inert and every tool uses its starting assumptions — which is exactly how the
+system behaved before any of this existed.
+
 ## The diagnostic
 
 Every packet used to say the same thing: *you are missing calls.* True of

@@ -203,6 +203,44 @@ export function assignScript(
 }
 
 /**
+ * The same assignment, but weighted by what the house has learned.
+ *
+ * An even split is the right thing to do while nothing is known, and the wrong
+ * thing to do once something is: continuing to send a seventh of the calls to
+ * an opener that demonstrably loses is paying for information you already
+ * have. So once an arm clears the sample floor the split shifts toward it.
+ *
+ * What does NOT happen is winner-takes-all. `weights` carries an exploration
+ * floor, so every arm keeps a share forever — a router that sends everything
+ * to today's winner cannot notice when the market moves, because the data it
+ * would need is data it stopped collecting.
+ *
+ * Still deterministic on the lead, so a callback opens the way the first call
+ * did. The weights change the shape of the split, not its stability.
+ */
+export function assignScriptWeighted(
+  leadId: string,
+  weights: Record<string, number>,
+  salt = "",
+  versions: readonly ScriptVersion[] = SCRIPT_VERSIONS
+): ScriptVersion {
+  const usable = Object.entries(weights).filter(([k]) => (versions as readonly string[]).includes(k));
+  if (usable.length === 0) return assignScript(leadId, salt, versions);
+
+  const hash = hashString(`${salt}:${leadId}`);
+  const point = (hash % 10000) / 10000;
+  const total = usable.reduce((sum, [, w]) => sum + w, 0);
+  if (total <= 0) return assignScript(leadId, salt, versions);
+
+  let running = 0;
+  for (const [version, weight] of usable) {
+    running += weight / total;
+    if (point < running) return version as ScriptVersion;
+  }
+  return usable[usable.length - 1][0] as ScriptVersion;
+}
+
+/**
  * How evenly a set of leads would actually be split.
  *
  * Exported because "it is a hash, it will be fine" is a claim worth checking

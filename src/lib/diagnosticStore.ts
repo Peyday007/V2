@@ -2,9 +2,18 @@ import "server-only";
 import { supabaseAdmin } from "./supabaseAdmin";
 import { recordEvent } from "./events";
 import { isMissingColumnError } from "./enrichmentGrade";
-import { diagnose, topFindings, sellableAngles, diagnosticIsThin, type Finding } from "./diagnostic";
+import {
+  diagnose,
+  topFindings,
+  sellableAngles,
+  diagnosticIsThin,
+  applyKnowledge,
+  type Finding,
+} from "./diagnostic";
+import type { HouseKnowledge } from "./houseKnowledge";
 import { estimateAffordability, type Affordability } from "./affordability";
 import { UNKNOWN_SIGNALS, type SiteSignals } from "./siteSignals";
+import { currentKnowledge, logApplication } from "./houseKnowledgeStore";
 
 // Writing the diagnosis down, and reading it back.
 //
@@ -114,10 +123,20 @@ export type DiagnosisResult = {
   angles: number;
   thin: boolean;
   affordability: Affordability;
+  /** Where the house knowledge changed the ordering, for the audit trail. */
+  applications: { key: string; from: number; to: number; source: string }[];
 };
 
-/** Run both engines over one lead row. Pure, given the row. */
-export function diagnoseRow(row: LeadRow): DiagnosisResult {
+/**
+ * Run both engines over one lead row. Pure, given the row and the knowledge.
+ *
+ * `knowledge` is what turns this from a fixed rule set into something that
+ * gets better: the same lead diagnosed today and in three months produces a
+ * different ORDER of findings, because by then the house knows which angles
+ * actually close in this trade. The findings themselves do not change — the
+ * evidence about the business is the evidence about the business.
+ */
+export function diagnoseRow(row: LeadRow, knowledge: HouseKnowledge | null = null): DiagnosisResult {
   const site = signalsFromRow(row);
   const findings = diagnose({
     businessName: String(row.business_name || "this business"),
@@ -134,7 +153,12 @@ export function diagnoseRow(row: LeadRow): DiagnosisResult {
     existingProvider: (row.existing_provider as string) ?? null,
   });
 
-  const shown = topFindings(findings, 4);
+  const { findings: tilted, applications } = applyKnowledge(
+    findings,
+    knowledge,
+    (row.industry as string) ?? null
+  );
+  const shown = topFindings(tilted, 4);
   const affordability = estimateAffordability({
     industry: (row.industry as string) ?? null,
     reviewCount: typeof row.review_count === "number" ? row.review_count : null,
@@ -148,11 +172,12 @@ export function diagnoseRow(row: LeadRow): DiagnosisResult {
   });
 
   return {
-    findings,
+    findings: tilted,
     shown,
     angles: sellableAngles(shown).length,
     thin: diagnosticIsThin(shown),
     affordability,
+    applications,
   };
 }
 
@@ -185,7 +210,25 @@ export async function runDiagnostic(
       ? { ...(data as unknown as LeadRow), ...signalsToPatch(freshSignals) }
       : (data as unknown as LeadRow);
 
-    const result = diagnoseRow(row);
+    /*
+     * The ecosystem loop, in one line.
+     *
+     * Everything the business has learned — from calls, from emails, from
+     * packets that turned into trials — comes back in here and reorders what
+     * this particular business is going to be told first.
+     */
+    const knowledge = await currentKnowledge();
+    const result = diagnoseRow(row, knowledge);
+
+    for (const a of result.applications) {
+      await logApplication({
+        surface: "diagnostic_order",
+        priorKey: a.key,
+        samples: 0,
+        detail: `Moved "${a.key}" from weight ${a.from} to ${a.to} — ${a.source}.`,
+        leadId,
+      });
+    }
 
     const patch: Record<string, unknown> = {
       diagnostic_findings: result.shown,

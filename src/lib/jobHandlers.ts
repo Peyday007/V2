@@ -22,6 +22,8 @@ import { activeLeadCount } from "./instantly/client";
 import { countEligible, pushEligibleLeads } from "./emailPush";
 import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
 import { syncSendingAccounts } from "./capacitySync";
+import { recomputeKnowledge } from "./houseKnowledgeStore";
+import { appliedPriors } from "./houseKnowledge";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -1421,6 +1423,23 @@ const syncSendingAccountsJob: Handler = async () => {
   );
 };
 
+/**
+ * Rebuild what the house knows.
+ *
+ * Runs a few times a day rather than on every tick: it reads tens of thousands
+ * of rows, and nothing downstream needs the knowledge to be minutes fresh —
+ * every prior has a sample floor, so a snapshot a few hours old differs from a
+ * new one by a handful of observations at most.
+ */
+const recomputeHouseKnowledge: Handler = async () => {
+  const knowledge = await recomputeKnowledge();
+  console.log(
+    `[knowledge] ${knowledge.totalFacts} outcomes, ` +
+      `${appliedPriors(knowledge).length} priors in use, ` +
+      `${knowledge.blindSpots.length} open questions`
+  );
+};
+
 export const HANDLERS: Record<JobType, Handler> = {
   plan_search_tasks: planSearchTasks,
   execute_places_search: executePlacesSearch,
@@ -1433,4 +1452,5 @@ export const HANDLERS: Record<JobType, Handler> = {
   auto_assign_packets: autoAssignPackets,
   refill_email_campaign: refillEmailCampaign,
   sync_sending_accounts: syncSendingAccountsJob,
+  recompute_house_knowledge: recomputeHouseKnowledge,
 };

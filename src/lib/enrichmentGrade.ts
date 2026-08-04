@@ -181,7 +181,74 @@ export type EnrichedLeadRow = {
   direct_phone_class?: string | null;
   decision_maker_confidence?: number | null;
   direct_phone_validated_at?: string | null;
+  /** For the learning tilt below. Both optional; absent means no tilt. */
+  industry?: string | null;
+  diagnostic_findings?: { service?: string }[] | null;
 };
+
+/**
+ * The same order, tilted by what actually converts.
+ *
+ * A caller's first hour is their best one, so which lead is at the top of the
+ * packet is a real decision. The evidence-based order goes on top of the
+ * quality order rather than replacing it: `leadScore` is bounded and
+ * multiplicative, so a well-evidenced lead with a bad number still loses to a
+ * good number, and a lead in a trade with no data is untouched.
+ *
+ * The scorer is injected rather than imported so this file stays pure and the
+ * caller decides whether learning is switched on at all.
+ */
+/** The most places the evidence may move a lead. Deliberately small. */
+export const MAX_LEARNING_SHIFT = 2;
+
+export function orderWithLearning<T extends EnrichedLeadRow>(
+  rows: T[],
+  score: (lead: { industry?: string | null; angles?: string[] | null }) => number
+): { ordered: T[]; moved: { id: string; from: number; to: number; score: number }[] } {
+  const baseline = orderLeadsForAssignment(rows);
+  const positionBefore = new Map(baseline.map((r, i) => [r.id, i]));
+
+  const scored = baseline.map((row, index) => {
+    const s = score({
+      industry: row.industry ?? null,
+      angles: (row.diagnostic_findings || [])
+        .map((f) => f?.service)
+        .filter((v): v is string => !!v),
+    });
+    /*
+     * The learning moves a lead a bounded number of PLACES, and no more.
+     *
+     * Stated as positions rather than as a multiplier on purpose: "the
+     * evidence can move a lead up to two places" is a sentence somebody can
+     * check, whereas a divisor produces knife-edges where a 2x score exactly
+     * ties with being one position further back, and nobody can predict when.
+     *
+     * The consequence is the one that matters: a lead five places down cannot
+     * reach the front on the strength of its trade. Whether it has a validated
+     * direct number still decides that, because that is what actually makes
+     * the caller's next hour productive.
+     */
+    return { row, rank: index + 1 - (s - 1) * MAX_LEARNING_SHIFT };
+  });
+
+  scored.sort((a, b) => a.rank - b.rank);
+  const ordered = scored.map((s) => s.row);
+
+  const moved: { id: string; from: number; to: number; score: number }[] = [];
+  ordered.forEach((row, to) => {
+    const from = positionBefore.get(row.id) ?? to;
+    if (from !== to) {
+      moved.push({
+        id: row.id,
+        from,
+        to,
+        score: Number((scored.find((s) => s.row.id === row.id)?.rank ?? 0).toFixed(3)),
+      });
+    }
+  });
+
+  return { ordered, moved };
+}
 
 /**
  * Order lead rows the way a caller should work them: the best-evidenced owner
