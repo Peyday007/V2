@@ -51,10 +51,25 @@ export async function GET() {
 async function queue() {
   const db = supabaseAdmin();
 
+  /*
+   * The caller's name is fetched separately, not embedded.
+   *
+   * `call_analysis` has TWO foreign keys to `callers` — `caller_id`, who made
+   * the call, and `confirmed_by`, whoever settled the reading afterwards — so
+   * `callers(name)` is ambiguous and PostgREST refuses the whole query with
+   * "more than one relationship was found". The count endpoint has no embed,
+   * so the badge said 30 while the list said 0, which is a horrible way to
+   * find out.
+   *
+   * A disambiguating hint would fix today's query and break again the moment
+   * anybody adds a third reference. Two plain selects and a map cannot be
+   * ambiguous at all, and tests/schema.test.ts now fails the build if any
+   * embed in the codebase becomes ambiguous.
+   */
   const { data, error } = await db
     .from("call_analysis")
     .select(
-      "id, call_id, lead_id, caller_id, authority, ai_confidence, transcript_confidence, applied_result, transcript_result, ai_result, held_fields, disagreements, review_reasons, needs_review, reviewed_at, review_verdict, created_at, leads(business_name), callers(name)"
+      "id, call_id, lead_id, caller_id, authority, ai_confidence, transcript_confidence, applied_result, transcript_result, ai_result, held_fields, disagreements, review_reasons, needs_review, reviewed_at, review_verdict, created_at, leads(business_name)"
     )
     .eq("needs_review", true)
     .is("reviewed_at", null)
@@ -67,6 +82,26 @@ async function queue() {
       { status: 200 }
     );
   }
+
+  // Names for the callers actually in this page of results.
+  const callerIds = [...new Set((data || []).map((r) => r.caller_id).filter(Boolean))];
+  const names = new Map<string, string>();
+  if (callerIds.length > 0) {
+    const { data: people } = await db
+      .from("callers")
+      .select("id, name")
+      .in("id", callerIds as string[]);
+    for (const c of people || []) names.set(String(c.id), String(c.name));
+  }
+
+  // Shaped exactly as the embed used to be, so the page needs no change and
+  // an older cached client keeps working.
+  const rows = (data || []).map((r) => ({
+    ...r,
+    callers: r.caller_id && names.has(String(r.caller_id))
+      ? { name: names.get(String(r.caller_id))! }
+      : null,
+  }));
 
   const since = new Date(Date.now() - 7 * 86400000).toISOString();
   const { count: total } = await db
@@ -88,7 +123,7 @@ async function queue() {
 
   return NextResponse.json(
     payload({
-      queue: data || [],
+      queue: rows,
       blocked: blocked || [],
       load: reviewLoad(total ?? 0, escalated ?? 0),
       weekTotal: total ?? 0,

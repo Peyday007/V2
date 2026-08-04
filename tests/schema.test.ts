@@ -146,3 +146,141 @@ describe("every column the app reads exists in the migrations", () => {
     expect([...new Set(missing)]).toEqual([]);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* ambiguous embeds                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which tables each table points at, and how many times.
+ *
+ * `call_analysis` references `callers` twice — `caller_id`, who made the call,
+ * and `confirmed_by`, whoever settled the reading afterwards. PostgREST cannot
+ * guess which one `callers(name)` means, so it refuses the ENTIRE query with
+ * "more than one relationship was found for 'call_analysis' and 'callers'".
+ *
+ * That reached production. The Needs-you badge read 30 because the counting
+ * query has no embed, and the list underneath read 0 because the list query
+ * failed — the two disagreeing was the only symptom, and neither number was
+ * obviously the wrong one.
+ *
+ * It does not fail the build, does not fail typecheck and does not throw. So
+ * it gets a test that reads the migrations.
+ */
+function foreignKeys(): Map<string, Map<string, string[]>> {
+  const sql = migrationSql();
+  const fks = new Map<string, Map<string, string[]>>();
+
+  const created = /create table (?:if not exists )?(\w+)\s*\(\n([\s\S]*?)\n\);/gi;
+  for (let m = created.exec(sql); m; m = created.exec(sql)) {
+    const [, source, body] = m;
+    for (const raw of body.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("--")) continue;
+      const ref = /^([a-z_][a-z0-9_]*)\s+[\s\S]*?references\s+([a-z_][a-z0-9_]*)\s*\(/i.exec(line);
+      if (!ref) continue;
+      const [, column, target] = ref;
+      if (!fks.has(source)) fks.set(source, new Map());
+      const byTarget = fks.get(source)!;
+      byTarget.set(target, [...(byTarget.get(target) || []), column]);
+    }
+  }
+
+  // ALTER TABLE ... ADD COLUMN x uuid references y(id)
+  const altered =
+    /alter table (\w+)\s+add column (?:if not exists )?([a-z_][a-z0-9_]*)[^;]*?references\s+([a-z_][a-z0-9_]*)\s*\(/gi;
+  for (let m = altered.exec(sql); m; m = altered.exec(sql)) {
+    const [, source, column, target] = m;
+    if (!fks.has(source)) fks.set(source, new Map());
+    const byTarget = fks.get(source)!;
+    byTarget.set(target, [...(byTarget.get(target) || []), column]);
+  }
+
+  return fks;
+}
+
+/**
+ * Every `.from("x").select("… y(…) …")` in the codebase.
+ *
+ * Scanned rather than regexed in one shot, because the obvious regex is wrong
+ * in a way that silently passes: `\.select\(([\s\S]*?)\)` is non-greedy and
+ * stops at the FIRST close paren, which in
+ * `select("id, leads(business_name), callers(name)")` is the one closing
+ * `leads(...)` — so the embed that actually breaks the query is never even
+ * looked at. This walks the argument with a depth counter instead.
+ */
+function selectArgument(text: string, from: number): string | null {
+  const at = text.indexOf(".select(", from);
+  if (at < 0) return null;
+  let depth = 0;
+  for (let i = at + ".select".length; i < text.length; i++) {
+    if (text[i] === "(") depth += 1;
+    else if (text[i] === ")") {
+      depth -= 1;
+      if (depth === 0) return text.slice(at + ".select(".length, i);
+    }
+  }
+  return null;
+}
+
+function embeds(): { file: string; source: string; target: string; hinted: boolean }[] {
+  const out: { file: string; source: string; target: string; hinted: boolean }[] = [];
+  const files = [
+    ...sourceFiles(join(ROOT, "src", "app")),
+    ...sourceFiles(join(ROOT, "src", "lib")),
+  ];
+
+  for (const file of files) {
+    const text = readFileSync(file, "utf8");
+    const from = /\.from\(\s*["'`](\w+)["'`]\s*\)/g;
+    for (let m = from.exec(text); m; m = from.exec(text)) {
+      const source = m[1];
+      // The select belongs to this from() only if no other from() intervenes.
+      const nextFrom = text.indexOf(".from(", m.index + 1);
+      const arg = selectArgument(text, m.index);
+      if (arg === null) continue;
+      const argAt = text.indexOf(".select(", m.index);
+      if (nextFrom >= 0 && argAt > nextFrom) continue;
+
+      // Embeds look like `target(cols)`; a hinted one is `target!fk(cols)`.
+      const embed = /([a-z_][a-z0-9_]*)\s*(![a-z_][a-z0-9_]*)?\s*\(/gi;
+      for (let e = embed.exec(arg); e; e = embed.exec(arg)) {
+        const [, target, hint] = e;
+        if (["exact", "count", "head"].includes(target)) continue;
+        out.push({ file: file.replace(ROOT + "/", ""), source, target, hinted: !!hint });
+      }
+    }
+  }
+  return out;
+}
+
+describe("no query embeds an ambiguously-related table", () => {
+  const fks = foreignKeys();
+
+  it("call_analysis really does reference callers twice — the case that caused this", () => {
+    expect(fks.get("call_analysis")?.get("callers")?.length).toBe(2);
+  });
+
+  it("NO SELECT EMBEDS A TABLE ITS SOURCE POINTS AT MORE THAN ONCE", () => {
+    const bad: string[] = [];
+    for (const e of embeds()) {
+      if (e.hinted) continue; // disambiguated on purpose
+      const columns = fks.get(e.source)?.get(e.target);
+      if (columns && columns.length > 1) {
+        bad.push(
+          `${e.file}: .from("${e.source}").select(… ${e.target}(…) …) — ` +
+            `${e.source} references ${e.target} via ${columns.join(" and ")}. ` +
+            `PostgREST refuses the whole query. Fetch it separately, or hint the column.`
+        );
+      }
+    }
+    expect(bad, bad.join("\n")).toEqual([]);
+  });
+
+  it("the review queue no longer embeds callers at all", () => {
+    const reviewEmbeds = embeds().filter(
+      (e) => e.file.includes("api/review") && e.source === "call_analysis"
+    );
+    expect(reviewEmbeds.map((e) => e.target)).not.toContain("callers");
+  });
+});

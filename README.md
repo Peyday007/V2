@@ -43,6 +43,28 @@ independently: a badge reading 0 because a table is missing is exactly as wrong
 as one reading 0 because there is nothing to do, and `error` carries the
 difference.
 
+**A note on why the badge and the list can disagree.** They did, once: the badge
+read 30 and the list read 0. `call_analysis` references `callers` twice —
+`caller_id`, who made the call, and `confirmed_by`, whoever settled the reading
+— so `callers(name)` is ambiguous and PostgREST refuses the *entire* query with
+"more than one relationship was found". The counting query has no embed, so it
+kept working, and the disagreement between the two numbers was the only
+symptom.
+
+It does not fail the build, does not fail typecheck and does not throw. So the
+review queue fetches caller names in a second plain query instead of embedding
+them — a disambiguating hint would fix today and break again the moment anyone
+adds a third reference — and `tests/schema.test.ts` now reads the migrations,
+counts the foreign keys between every pair of tables, and fails the build if any
+`.select()` in the codebase embeds a table its source points at more than once.
+
+That test needed a second attempt. The obvious regex for finding a select's
+argument is non-greedy and stops at the first close paren, which in
+`select("id, leads(business_name), callers(name)")` is the one closing
+`leads(...)` — so the embed that actually breaks the query was never looked at,
+and the test passed while the bug was still there. It walks the argument with a
+depth counter now, and reintroducing the embed genuinely fails it.
+
 ### Do not call
 
 **The list was a page you looked at and never acted on.** Suppression is
