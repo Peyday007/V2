@@ -72,6 +72,16 @@ export type HealthFacts = {
   sentLast24h: number;
   /** Replies in the last 7 days, so a live programme reads as live. */
   repliesLast7d: number;
+  /**
+   * What the automatic top-up last decided, and when.
+   *
+   * Null when 0037 has not run or the worker has not ticked since. This is the
+   * one that explains an empty campaign with everything else green: the
+   * top-up runs every minute and almost always decides to do nothing, and
+   * until now it said so only to a server log.
+   */
+  refillNote: string | null;
+  refillCheckedMinutesAgo: number | null;
 };
 
 export type HealthStep = {
@@ -213,6 +223,35 @@ export function emailHealth(f: HealthFacts): Health {
       state: "ok",
       detail: `Last ran ${f.workerMinutesAgo} minute${f.workerMinutesAgo === 1 ? "" : "s"} ago.`,
     });
+  }
+
+  /* --------------------------- the automatic top-up ---------------------- */
+  /*
+   * Only shown when it is switched on and has actually spoken. A note from a
+   * top-up nobody enabled is noise, and no note at all means 0037 has not run
+   * or the worker has not reached it yet — neither is a fault to report.
+   */
+  if (f.autoPushOn && f.refillNote) {
+    const pushing = /^Pushing /.test(f.refillNote);
+    steps.push({
+      label: "Automatic top-up",
+      state: pushing ? "ok" : "waiting",
+      detail:
+        `${f.refillNote}` +
+        (f.refillCheckedMinutesAgo !== null
+          ? ` (checked ${f.refillCheckedMinutesAgo} minute${f.refillCheckedMinutesAgo === 1 ? "" : "s"} ago)`
+          : ""),
+    });
+    /*
+     * One decision IS a fault: it cannot read the campaign and is therefore
+     * declining forever. Everything else it says is a normal quiet answer.
+     */
+    if (/Could not read how many leads are in the campaign/.test(f.refillNote)) {
+      stop(
+        "The automatic top-up cannot read how many leads are in the campaign, so it refuses to push — " +
+          "correctly, because pushing blind double-fills a campaign. Push by hand with the button below."
+      );
+    }
   }
 
   /* ------------------------- did anything actually go -------------------- */

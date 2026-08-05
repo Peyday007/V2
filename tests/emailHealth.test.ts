@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   emailHealth,
   campaignStatusLabel,
@@ -29,6 +30,8 @@ const healthy: HealthFacts = {
   autoPushOn: true,
   sentLast24h: 12,
   repliesLast7d: 3,
+  refillNote: null,
+  refillCheckedMinutesAgo: null,
 };
 
 describe("A STOPPED CAMPAIGN IS THE HEADLINE, NOT A STATUS CODE", () => {
@@ -188,5 +191,102 @@ describe("AN EMPTY CAMPAIGN IS NOT A BROKEN ONE", () => {
   it("does not claim it is ready when there is nobody to push", () => {
     const h = emailHealth({ ...healthy, sentLast24h: 0, pushedTotal: 0, sendable: 0 });
     expect(h.headline).toMatch(/No lead has an email address yet/);
+  });
+});
+
+/*
+ * The silence that kept the campaign empty.
+ *
+ * refillEmailCampaign runs every tick and almost always decides to do nothing
+ * — correctly. But "nothing" went to a server log and nowhere else, so a
+ * top-up declining sixty times an hour told nobody. The campaign was Active,
+ * 92 leads had addresses, auto-push was on, the worker was alive, and there
+ * was no way to find out why.
+ */
+describe("THE AUTOMATIC TOP-UP SAYS WHAT IT DECIDED", () => {
+  const CANNOT_READ =
+    "Could not read how many leads are in the campaign, so nothing was pushed. " +
+    "Pushing blind is how a campaign gets double-filled.";
+
+  it("treats an unreadable campaign count as a real stop", () => {
+    const h = emailHealth({
+      ...healthy,
+      sentLast24h: 0,
+      pushedTotal: 0,
+      refillNote: CANNOT_READ,
+      refillCheckedMinutesAgo: 1,
+    });
+    expect(h.headline).toMatch(/cannot read how many leads are in the campaign/);
+    expect(h.headline).toMatch(/Push by hand/);
+    const step = h.steps.find((s) => s.label === "Automatic top-up")!;
+    expect(step.state).toBe("waiting");
+    expect(step.detail).toMatch(/checked 1 minute ago/);
+  });
+
+  it("a quiet, ordinary decision is not a fault", () => {
+    const h = emailHealth({
+      ...healthy,
+      refillNote: "The campaign already holds 1000 of a target 1000.",
+      refillCheckedMinutesAgo: 2,
+    });
+    expect(h.blocker).toBeNull();
+    expect(h.steps.find((s) => s.label === "Automatic top-up")!.state).toBe("waiting");
+  });
+
+  it("reads a live push as working", () => {
+    const h = emailHealth({
+      ...healthy,
+      refillNote: "Pushing 49 — limited by the per-run cap.",
+      refillCheckedMinutesAgo: 1,
+    });
+    expect(h.steps.find((s) => s.label === "Automatic top-up")!.state).toBe("ok");
+  });
+
+  it("says nothing at all when the top-up is switched off", () => {
+    const h = emailHealth({ ...healthy, autoPushOn: false, refillNote: CANNOT_READ });
+    expect(h.steps.find((s) => s.label === "Automatic top-up")).toBeUndefined();
+    expect(h.blocker).toBeNull();
+  });
+
+  it("says nothing before 0037 has run or the worker has reached it", () => {
+    const h = emailHealth({ ...healthy, refillNote: null });
+    expect(h.steps.find((s) => s.label === "Automatic top-up")).toBeUndefined();
+  });
+});
+
+/*
+ * The handler must WRITE the decision down, not log it.
+ *
+ * Reverting to `console.log(reason); return;` passes every behavioural test in
+ * this file — the pure logic is fine, it just never receives a note. That is
+ * precisely how the silence lasted: nothing was wrong with the reasoning, only
+ * with where the reasoning went.
+ */
+describe("THE DECISION IS RECORDED, NOT LOGGED", () => {
+  const handlers = readFileSync(
+    new URL("../src/lib/jobHandlers.ts", import.meta.url),
+    "utf8"
+  );
+  // The refill handler, up to the end of its early return.
+  const refill = handlers.slice(
+    handlers.indexOf("const refillEmailCampaign"),
+    handlers.indexOf("const syncSendingAccountsJob")
+  );
+
+  it("writes the reason to instantly_settings on every decision", () => {
+    expect(refill).toMatch(/last_refill_note:\s*decision\.reason/);
+    expect(refill).toMatch(/last_refill_checked_at/);
+  });
+
+  it("records the count it read, so an unreadable campaign is visible as null", () => {
+    expect(refill).toMatch(/last_refill_active_count:\s*active/);
+  });
+
+  it("records BEFORE the early return, or a declined top-up stays silent", () => {
+    const write = refill.indexOf("last_refill_note");
+    const earlyReturn = refill.indexOf("if (decision.count === 0)");
+    expect(write).toBeGreaterThan(-1);
+    expect(earlyReturn).toBeGreaterThan(-1);
+    expect(write).toBeLessThan(earlyReturn);
   });
 });

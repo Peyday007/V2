@@ -1346,6 +1346,27 @@ const refillEmailCampaign: Handler = async () => {
     maxPerRun: settings.max_push_per_run,
   });
 
+  /*
+   * Write down what it decided, whether or not it did anything.
+   *
+   * A decision of "nothing" used to go to a server log and nowhere else, so a
+   * top-up declining sixty times an hour told nobody. The campaign was Active,
+   * 92 leads had addresses, auto-push was on and the worker was alive — and
+   * nothing explained why the campaign stayed empty.
+   *
+   * Overwritten rather than appended: an event per tick is 1,440 rows a day of
+   * "decided not to", and the useful answer is the current one.
+   */
+  const noteDb = supabaseAdmin();
+  await noteDb
+    .from("instantly_settings")
+    .update({
+      last_refill_note: decision.reason,
+      last_refill_checked_at: new Date().toISOString(),
+      last_refill_active_count: active,
+    })
+    .eq("id", true);
+
   if (decision.count === 0) {
     console.log(`[refill] ${decision.reason}`);
     return;

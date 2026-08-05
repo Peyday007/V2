@@ -121,6 +121,29 @@ export async function GET() {
     repliesLast7d = replies || 0;
   }, undefined);
 
+  /*
+   * What the automatic top-up last decided. Reads the columns 0037 adds, and
+   * degrades to null rather than failing when it has not been run.
+   */
+  let refillNote: string | null = null;
+  let refillCheckedMinutesAgo: number | null = null;
+  await safe(async () => {
+    const { data, error } = await db
+      .from("instantly_settings")
+      .select("last_refill_note, last_refill_checked_at")
+      .eq("id", true)
+      .maybeSingle();
+    if (error || !data) return;
+    refillNote = (data.last_refill_note as string | null) ?? null;
+    const at = data.last_refill_checked_at as string | null;
+    if (at) {
+      refillCheckedMinutesAgo = Math.max(
+        0,
+        Math.round((Date.now() - new Date(at).getTime()) / 60000)
+      );
+    }
+  }, undefined);
+
   let hasActiveSequence = false;
   await safe(async () => {
     const { count } = await db
@@ -145,6 +168,8 @@ export async function GET() {
     autoPushOn: !!settings?.auto_push_enabled,
     sentLast24h,
     repliesLast7d,
+    refillNote,
+    refillCheckedMinutesAgo,
   };
 
   return NextResponse.json({ health: emailHealth(facts), facts, error: null });
