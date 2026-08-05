@@ -19,6 +19,27 @@ const POLICIES = [
 ] as const;
 
 function migrationHint(message: string): string | null {
+  /*
+   * A value this application supports that the database has not been told
+   * about yet.
+   *
+   * 0019 constrained consent_policy to four values. 0026 added
+   * 'one_party_only'. Until it is run, choosing "Only record one-party states"
+   * is rejected by the constraint and the raw message reads
+   * `violates check constraint "cis_consent_policy_check"` — which tells a
+   * non-technical admin nothing at all, so the setting simply looks broken.
+   *
+   * Checked BEFORE the missing-table test because a constraint violation is
+   * neither a missing relation nor a missing column, and the old hint matched
+   * none of it.
+   */
+  if (/cis_consent_policy_check/i.test(message)) {
+    return (
+      "Your database has not been told about this option yet. Run " +
+      "supabase/migrations/0026_one_party_only_consent.sql in the Supabase SQL Editor, " +
+      "then pick it again. Nothing else needs changing."
+    );
+  }
   if (/relation .* does not exist|column .* does not exist|schema cache/i.test(message)) {
     return (
       "Recording is not set up yet. Run supabase/migrations/0019_call_intelligence.sql and " +

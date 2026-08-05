@@ -341,6 +341,47 @@ describe("what the code may write, the database must accept", () => {
     ).toEqual([]);
   });
 
+  /*
+   * The same failure as script_version, in a different column, found the same
+   * way: the code offered a value the database had never been told about.
+   *
+   * consent_policy was constrained to four values by 0019; ConsentPolicy in
+   * TypeScript has five. Choosing the fifth on the Recording page was rejected
+   * by the constraint, and the setting looked broken rather than unmigrated.
+   */
+  it("EVERY CONSENT POLICY THE APP OFFERS IS ACCEPTED BY THE COLUMN", () => {
+    const sql = migrationSql();
+    // The LAST definition wins — 0026 replaces 0019's.
+    const defs = [
+      ...sql.matchAll(
+        /constraint\s+cis_consent_policy_check\s*\n?\s*check\s*\(([\s\S]*?)\)\s*;/gi
+      ),
+    ];
+    expect(defs.length, "cis_consent_policy_check is never defined").toBeGreaterThan(0);
+    const allowed = [...defs[defs.length - 1][1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+    const src = readFileSync(join(ROOT, "src", "lib", "consent.ts"), "utf8");
+    const block = /export type ConsentPolicy =([\s\S]*?);/.exec(src);
+    expect(block, "could not read ConsentPolicy").toBeTruthy();
+    const policies = [...block![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(policies.length).toBeGreaterThan(4);
+
+    const rejected = policies.filter((p) => !allowed.includes(p));
+    expect(
+      rejected,
+      `the database would refuse ${rejected.join(", ")} — the setting would look broken`
+    ).toEqual([]);
+  });
+
+  it("the recording settings route names the migration when the value is refused", () => {
+    const route = readFileSync(
+      join(ROOT, "src", "app", "api", "recording-settings", "route.ts"),
+      "utf8"
+    );
+    expect(route).toMatch(/cis_consent_policy_check/);
+    expect(route).toMatch(/0026_one_party_only_consent/);
+  });
+
   it("the outcome route never lets a refused tag discard the call", () => {
     const route = readFileSync(
       join(ROOT, "src", "app", "api", "dial", "outcome", "route.ts"),
