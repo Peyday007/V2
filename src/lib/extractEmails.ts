@@ -222,15 +222,42 @@ export function extractEmails(
       : classifyLocalPart(local);
 
     /*
-     * An address on a DIFFERENT domain from the website is usually somebody
-     * else's — but not always: plenty of one-van operations run a .com site
-     * and a gmail address, and that gmail is the owner's real inbox. So it is
-     * kept and scored down rather than dropped, and the caller can decide.
+     * CONFIDENCE ANSWERS ONE QUESTION: does this address reach this business?
+     *
+     * It deliberately says nothing about WHO it reaches. That belongs in
+     * bestEmail's ranking, and mixing the two is what broke this.
+     *
+     * The bug, which cost the programme its best addresses: role accounts used
+     * to get +0.05 here and personal ones got nothing. Off-domain starts at
+     * 0.4, a mailto added 0.15, and the store floor is 0.6 — so
+     * `info@gmail.com` landed on exactly 0.60 and was kept, while
+     * `sam@gmail.com` on the same page landed on 0.55 and was thrown away.
+     * That 0.05 was the whole difference, and it discarded the owner's real
+     * inbox at precisely the businesses this sells to best: the one-van
+     * operators whose contact page is a gmail address.
+     *
+     * The comment that used to sit here said an off-domain address "is kept
+     * and scored down rather than dropped". The arithmetic did not do that.
+     * Now it does.
      */
     let confidence = onDomain ? 0.7 : 0.4;
-    if (fromMailto) confidence += 0.15;
+
+    /*
+     * A mailto: is markup somebody wrote on purpose so that strangers can
+     * write to them. That is a far stronger signal than the old +0.15 treated
+     * it as, and it is now enough on its own to carry an off-domain address
+     * over the floor (0.4 + 0.25 = 0.65).
+     *
+     * Loose body text deliberately does NOT get this: an address in a
+     * paragraph can be a customer's, quoted in a testimonial.
+     */
+    if (fromMailto) confidence += 0.25;
+
+    // We already know this person's name and this is their address. The
+    // strongest signal available without paying a provider — and it rescues an
+    // off-domain personal address that was only ever in body text.
     if (matchesOwnerName(local, opts.ownerName)) confidence += 0.2;
-    else if (kind === "role") confidence += 0.05;
+
     confidence = Math.min(0.98, Number(confidence.toFixed(2)));
 
     const existing = found.get(email);

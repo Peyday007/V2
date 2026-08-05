@@ -56,8 +56,10 @@ const CORE = [
  * reader steps down instead of assuming.
  */
 const COLUMN_TIERS = [
+  `${CORE}, direct_email, website_email, website_email_kind`,
   `${CORE}, direct_email, website_email`,
   `${CORE}, direct_email`,
+  `${CORE}, website_email, website_email_kind`,
   `${CORE}, website_email`,
   CORE,
 ];
@@ -195,6 +197,21 @@ export async function pushEligibleLeads(
     // A missing link is a slightly plainer email, not a failed push.
   }
 
+  /*
+   * Can the thread carry who it was aimed at?
+   *
+   * Probed once per run rather than assumed. An insert naming a column that
+   * does not exist fails WHOLESALE — the lead would be pushed to Instantly and
+   * then have no thread row, so nothing would ever match its replies and it
+   * could be pushed again tomorrow. Losing the measurement is an acceptable
+   * cost of an unrun migration; losing the thread is not.
+   */
+  const probe = await db.from("email_threads").select("email_audience").limit(1);
+  const recordAudience = !probe.error || !isMissingColumnError(probe.error);
+
+  const audienceColumns = (c: { source: string; audience: string }) =>
+    recordAudience ? { email_source: c.source, email_audience: c.audience } : {};
+
   let pushed = 0;
   let failed = 0;
   const failures: { business: string; error: string }[] = [];
@@ -245,6 +262,10 @@ export async function pushEligibleLeads(
         email: chosen.email,
         status: "pushed",
         last_event_at: now,
+        // Written from the same decision that picked the address, so the
+        // record cannot disagree with what was actually sent. Dropped
+        // silently if 0036 has not run — see threadColumns below.
+        ...audienceColumns(chosen),
       });
       await recordEvent({
         type: "email.pushed",
@@ -256,6 +277,7 @@ export async function pushEligibleLeads(
         newValue: { email: chosen.email, campaign_id: settings.campaign_id },
         metadata: {
           email_source: chosen.source,
+          email_audience: chosen.audience,
           personalized: subject.personalization !== "",
           workshop_link: !!composeInput.workshopLink,
           automatic: actor === "worker",
@@ -274,6 +296,7 @@ export async function pushEligibleLeads(
         status: "failed",
         push_error: result.error,
         last_event_at: now,
+        ...audienceColumns(chosen),
       });
       await recordEvent({
         type: "email.push_failed",

@@ -216,3 +216,65 @@ describe("domains", () => {
     expect(rootDomain("www.ace-plumbing.co.uk")).toBe("ace-plumbing.co.uk");
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* the scoring bug that discarded owners' addresses                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Confidence used to give role accounts +0.05 and personal ones nothing.
+ * Off-domain starts at 0.4, a mailto added 0.15, the store floor is 0.6 — so
+ * info@gmail.com landed on exactly 0.60 and survived while sam@gmail.com on
+ * the same page landed on 0.55 and was thrown away. That 0.05 discarded the
+ * owner's real inbox at exactly the businesses this sells to best.
+ */
+describe("A DELIBERATELY PUBLISHED ADDRESS IS NEVER DISCARDED FOR BEING PERSONAL", () => {
+  const site = "acmeplumbing.com";
+  const at = (html: string) =>
+    extractEmails(html, { pageUrl: `https://${site}/contact`, websiteDomain: site, ownerName: null });
+
+  it("keeps the owner's gmail when it is published in a mailto:", () => {
+    const c = at(`<a href="mailto:sam@gmail.com">Email Sam</a>`);
+    expect(bestEmail(c)?.email).toBe("sam@gmail.com");
+  });
+
+  it("does not favour a generic address over a personal one on the same page", () => {
+    const c = at(
+      `<a href="mailto:info@gmail.com">Us</a><a href="mailto:sam@gmail.com">Sam</a>`
+    );
+    const personal = c.find((x) => x.email === "sam@gmail.com")!;
+    const role = c.find((x) => x.email === "info@gmail.com")!;
+    // Equal reachability — confidence answers "does this reach the business",
+    // never "who does it reach".
+    expect(personal.confidence).toBe(role.confidence);
+    // The preference lives in the ranking, where it can be argued with.
+    expect(bestEmail(c)?.email).toBe("sam@gmail.com");
+  });
+
+  it("still refuses an off-domain address that was only loose body text", () => {
+    // A bare address in a paragraph can be a customer's, quoted in a review.
+    expect(bestEmail(at(`<p>write to sam@gmail.com</p>`))).toBeNull();
+  });
+
+  it("...unless it matches an owner we already identified", () => {
+    const c = extractEmails(`<p>write to sam@gmail.com</p>`, {
+      pageUrl: `https://${site}/contact`,
+      websiteDomain: site,
+      ownerName: "Sam Rivera",
+    });
+    expect(bestEmail(c)?.email).toBe("sam@gmail.com");
+  });
+
+  it("on-domain personal still beats on-domain generic", () => {
+    const c = at(
+      `<a href="mailto:info@${site}">Us</a><a href="mailto:sam@${site}">Sam</a>`
+    );
+    expect(bestEmail(c)?.email).toBe(`sam@${site}`);
+    expect(bestEmail(c)?.kind).toBe("personal");
+  });
+
+  it("junk is still junk", () => {
+    expect(bestEmail(at(`<a href="mailto:noreply@${site}">x</a>`))).toBeNull();
+    expect(bestEmail(at(`<a href="mailto:support@wixpress.com">x</a>`))).toBeNull();
+  });
+});

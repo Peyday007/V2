@@ -13,6 +13,7 @@ import {
   looksLikeEmail,
   summarizeEmailAvailability,
   EMAIL_ELIGIBILITY_COLUMNS,
+  isGenericAddress,
 } from "../src/lib/emailEligibility";
 import { isAvailableToCall } from "../src/lib/leadEligibility";
 
@@ -67,13 +68,16 @@ describe("choosing the address", () => {
   it("prefers the enriched direct address", () => {
     expect(
       chooseEmail({ direct_email: "sam@firm.com", owner_email: "info@firm.com" })
-    ).toEqual({ email: "sam@firm.com", source: "direct_email" });
+    ).toEqual({ email: "sam@firm.com", source: "direct_email", audience: "decision_maker" });
   });
 
   it("falls back to whatever owner intel found", () => {
     expect(chooseEmail({ owner_email: "info@firm.com" })).toEqual({
       email: "info@firm.com",
       source: "owner_email",
+      // Generic: the audience is read off the address, and owner intel finding
+      // it does not make info@ a person.
+      audience: "generic",
     });
   });
 
@@ -85,6 +89,7 @@ describe("choosing the address", () => {
     expect(chooseEmail({ direct_email: "not-an-email", owner_email: "info@firm.com" })).toEqual({
       email: "info@firm.com",
       source: "owner_email",
+      audience: "generic",
     });
   });
 
@@ -161,5 +166,106 @@ describe("the column list", () => {
     ]) {
       expect(EMAIL_ELIGIBILITY_COLUMNS, col).toContain(col);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* who the address actually reaches                                           */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The waterfall used to order on SOURCE alone: direct_email, then owner_email,
+ * then website_email, regardless of what the address was. So a provider's
+ * info@ outranked the owner's own published address, which is backwards for a
+ * programme whose whole purpose is reaching somebody who can say yes.
+ *
+ * Audience now leads and source only breaks ties, so a generic address is last
+ * whichever column it arrived in.
+ */
+describe("A GENERIC ADDRESS IS ALWAYS THE LAST RESORT", () => {
+  it("prefers a verified decision-maker above everything", () => {
+    const c = chooseEmail({
+      direct_email: "maria@acehvac.com",
+      owner_email: "sam@acehvac.com",
+      website_email: "sam@acehvac.com",
+      website_email_kind: "personal",
+    });
+    expect(c).toEqual({
+      email: "maria@acehvac.com",
+      source: "direct_email",
+      audience: "decision_maker",
+    });
+  });
+
+  it("takes the owner's published personal address over a generic one", () => {
+    const c = chooseEmail({
+      owner_email: "info@acehvac.com",
+      website_email: "sam@acehvac.com",
+      website_email_kind: "personal",
+    });
+    expect(c?.email).toBe("sam@acehvac.com");
+    expect(c?.audience).toBe("personal");
+  });
+
+  it("a provider that returns info@ is NOT treated as a decision-maker", () => {
+    const c = chooseEmail({
+      direct_email: "info@acehvac.com",
+      website_email: "sam@acehvac.com",
+      website_email_kind: "personal",
+    });
+    // The audience is read off the address, not off the column it arrived in.
+    expect(c?.email).toBe("sam@acehvac.com");
+    expect(c?.audience).toBe("personal");
+  });
+
+  it("still uses a generic address when it is the only one — never nothing", () => {
+    const c = chooseEmail({ website_email: "info@acehvac.com", website_email_kind: "role" });
+    expect(c?.email).toBe("info@acehvac.com");
+    expect(c?.audience).toBe("generic");
+  });
+
+  it("falls back to reading the local part when the crawl recorded no kind", () => {
+    expect(chooseEmail({ website_email: "info@acehvac.com" })?.audience).toBe("generic");
+    expect(chooseEmail({ website_email: "sam@acehvac.com" })?.audience).toBe("personal");
+  });
+
+  it("counts the split before anything is sent", () => {
+    const a = summarizeEmailAvailability([
+      { direct_email: "maria@a.com" },
+      { website_email: "sam@b.com", website_email_kind: "personal" },
+      { website_email: "info@c.com", website_email_kind: "role" },
+      { website_email: "office@d.com", website_email_kind: "role" },
+      { website_email: "info@e.com", website_email_kind: "role", do_not_call: true },
+    ]);
+    expect(a.available).toBe(4);
+    expect(a.audience).toEqual({ decision_maker: 1, personal: 1, generic: 2 });
+  });
+
+  it("does not count suppressed leads in the split", () => {
+    const a = summarizeEmailAvailability([
+      { website_email: "sam@a.com", website_email_kind: "personal", do_not_call: true },
+    ]);
+    expect(a.audience.personal).toBe(0);
+  });
+});
+
+/*
+ * The generic-address list is deliberately duplicated: emailEligibility.ts is
+ * loaded by the push, the admin count and the explainer, and must not drag in
+ * the crawler. Duplication is fine; SILENT DIVERGENCE is not — a word in one
+ * list and not the other means the crawl calls an address generic and the
+ * waterfall calls it personal, and it gets ranked as an owner's inbox.
+ */
+describe("the two generic-address lists cannot drift apart", () => {
+  it("classifies every role local part the crawler knows about", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/lib/extractEmails.ts", import.meta.url), "utf8");
+    const block = /const ROLE_LOCAL_PARTS = new Set\(\[([\s\S]*?)\]\)/.exec(src);
+    expect(block, "could not find ROLE_LOCAL_PARTS").toBeTruthy();
+    const words = [...block![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(words.length).toBeGreaterThan(20);
+
+    const missed = words.filter((w) => !isGenericAddress(`${w}@example.org`));
+    expect(missed, `not treated as generic by the waterfall: ${missed.join(", ")}`).toEqual([]);
   });
 });

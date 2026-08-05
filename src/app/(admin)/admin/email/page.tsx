@@ -74,7 +74,13 @@ type Status = {
   webhookSecretSet: boolean;
   campaigns: { id: string; name: string; status: string | null }[];
   campaignsError: string | null;
-  availability: { available: number; total: number; reasons: { reason: string; count: number }[] };
+  availability: {
+    available: number;
+    total: number;
+    reasons: { reason: string; count: number }[];
+    /** Absent until the server that returns it is deployed. */
+    audience?: { decision_maker: number; personal: number; generic: number } | null;
+  };
   pushed: number;
   awaitingHuman: number;
   autoPushAvailable: boolean;
@@ -496,6 +502,37 @@ export default function EmailPage() {
           of {status.availability.total} leads have an address and are not suppressed.{" "}
           {status.pushed} {status.pushed === 1 ? "is" : "are"} already in a campaign.
         </p>
+        {/*
+          WHO those addresses reach.
+
+          "120 leads have an address" reads as healthy whether they are 120
+          owners or 120 reception desks, and those are different programmes
+          with different reply rates. Shown before anything sends, because
+          afterwards it is an explanation rather than a decision.
+        */}
+        {status.availability.audience && status.availability.available > 0 && (
+          <p style={{ lineHeight: 1.7 }}>
+            Of those,{" "}
+            <strong>
+              {status.availability.audience.decision_maker + status.availability.audience.personal}
+            </strong>{" "}
+            reach a named person
+            {status.availability.audience.decision_maker > 0
+              ? ` (${status.availability.audience.decision_maker} a verified decision-maker)`
+              : ""}
+            , and <strong>{status.availability.audience.generic}</strong> reach a general inbox
+            like info@ or office@.
+            {status.availability.audience.generic >
+              status.availability.audience.decision_maker +
+                status.availability.audience.personal && (
+              <span className="faint">
+                {" "}
+                Most of this list is front desks. Expect a lower reply rate, and treat it as an
+                argument for enriching further before sending rather than a reason not to send.
+              </span>
+            )}
+          </p>
+        )}
         {status.availability.reasons.length > 0 && (
           <ul className="faint" style={{ lineHeight: 1.6, marginTop: 0 }}>
             {status.availability.reasons.slice(0, 5).map((r) => (

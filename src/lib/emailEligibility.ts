@@ -28,6 +28,8 @@ export type EmailLeadRow = {
    * leads this is the ONLY address there is — see chooseEmail.
    */
   website_email?: string | null;
+  /** personal | role | generic, as classified by the crawl that found it. */
+  website_email_kind?: string | null;
   do_not_call?: boolean | null;
   archived_at?: string | null;
   email_unsubscribed_at?: string | null;
@@ -38,7 +40,51 @@ export type EmailLeadRow = {
 /** Which field an address came from, kept so a claim can be traced. */
 export type EmailSource = "direct_email" | "owner_email" | "website_email";
 
-export type ChosenEmail = { email: string; source: EmailSource } | null;
+/**
+ * WHO an address reaches, as opposed to where it came from.
+ *
+ * Source and audience are different questions and used to be conflated. A
+ * contact provider can return `info@`; a website crawl can return the owner's
+ * own gmail. Ordering on source alone therefore sent a generic inbox ahead of
+ * a named person, which is backwards for a programme whose entire purpose is
+ * reaching somebody who can say yes.
+ */
+export type EmailAudience =
+  /** A named decision-maker, attributed by a contact provider. */
+  | "decision_maker"
+  /** A named person: the owner's own address, however we came by it. */
+  | "personal"
+  /** info@, office@, service@. Reaches the business, nobody in particular. */
+  | "generic";
+
+export type ChosenEmail = {
+  email: string;
+  source: EmailSource;
+  audience: EmailAudience;
+} | null;
+
+/**
+ * Local parts that reach the business but not a person.
+ *
+ * Kept in step with ROLE_LOCAL_PARTS in extractEmails.ts by a test, rather
+ * than imported: this module is loaded by the admin count, the push and the
+ * explainer, and it must stay free of the crawler's dependencies.
+ */
+const GENERIC_LOCAL_PARTS = new Set([
+  "info", "contact", "hello", "hi", "office", "admin", "sales", "service",
+  "support", "enquiries", "inquiries", "bookings", "booking", "schedule",
+  "scheduling", "dispatch", "team", "help", "customerservice", "accounts",
+  "accounting", "billing", "estimates", "quotes", "jobs", "careers", "hr",
+  "mail", "general", "reception", "frontdesk", "main",
+]);
+
+/** Does this address reach a person, judged from the address alone. */
+export function isGenericAddress(email: string): boolean {
+  const at = (email || "").indexOf("@");
+  if (at <= 0) return false;
+  const local = email.slice(0, at).toLowerCase();
+  return GENERIC_LOCAL_PARTS.has(local.replace(/[._-]/g, "")) || GENERIC_LOCAL_PARTS.has(local);
+}
 
 /**
  * A shape check, not a validity claim.
@@ -72,14 +118,69 @@ export function looksLikeEmail(value: string | null | undefined): boolean {
  * inbox — but it reaches the business, and it is the difference between a cold
  * email programme and an empty one.
  */
+/** How much we want each audience, lowest first. Generic is always last. */
+const AUDIENCE_ORDER: Record<EmailAudience, number> = {
+  decision_maker: 0,
+  personal: 1,
+  generic: 2,
+};
+
+/** The tie-break within one audience: how well attributed the source is. */
+const SOURCE_ORDER: Record<EmailSource, number> = {
+  direct_email: 0,
+  owner_email: 1,
+  website_email: 2,
+};
+
 export function chooseEmail(lead: EmailLeadRow): ChosenEmail {
-  const direct = (lead.direct_email || "").trim().toLowerCase();
-  if (looksLikeEmail(direct)) return { email: direct, source: "direct_email" };
-  const owner = (lead.owner_email || "").trim().toLowerCase();
-  if (looksLikeEmail(owner)) return { email: owner, source: "owner_email" };
-  const site = (lead.website_email || "").trim().toLowerCase();
-  if (looksLikeEmail(site)) return { email: site, source: "website_email" };
-  return null;
+  const candidates: NonNullable<ChosenEmail>[] = [];
+
+  const add = (raw: string | null | undefined, source: EmailSource) => {
+    const email = (raw || "").trim().toLowerCase();
+    if (!looksLikeEmail(email)) return;
+
+    /*
+     * The audience is read off the ADDRESS, not off the column it arrived in.
+     *
+     * A provider that hands back `info@` has not found a decision-maker, and
+     * treating it as one because of where it came from is how a generic inbox
+     * ends up outranking the owner's own published address.
+     */
+    if (isGenericAddress(email)) {
+      candidates.push({ email, source, audience: "generic" });
+      return;
+    }
+    if (source === "website_email") {
+      /*
+       * Trust the crawler's own classification when it recorded one — it saw
+       * the page, the surrounding text and whether the address matched a name
+       * we already held. Falling back to the local part alone is only for
+       * leads enriched before website_email_kind existed.
+       */
+      const kind = (lead.website_email_kind || "").trim().toLowerCase();
+      const personal = kind ? kind === "personal" : true;
+      candidates.push({ email, source, audience: personal ? "personal" : "generic" });
+      return;
+    }
+    candidates.push({
+      email,
+      source,
+      // A provider attributes an address to a named person; that attribution
+      // is the thing being paid for, and it is what "verified" means here.
+      audience: source === "direct_email" ? "decision_maker" : "personal",
+    });
+  };
+
+  add(lead.direct_email, "direct_email");
+  add(lead.owner_email, "owner_email");
+  add(lead.website_email, "website_email");
+
+  if (candidates.length === 0) return null;
+  return candidates.sort(
+    (a, b) =>
+      AUDIENCE_ORDER[a.audience] - AUDIENCE_ORDER[b.audience] ||
+      SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source]
+  )[0];
 }
 
 /**
@@ -121,15 +222,34 @@ export type EmailAvailability = {
   available: number;
   total: number;
   reasons: { reason: string; count: number }[];
+  /**
+   * Who the sendable addresses actually reach.
+   *
+   * Surfaced because it was invisible and it is the single most important
+   * thing about a cold-email list. "120 leads have an address" reads as
+   * healthy whether those are 120 owners or 120 reception desks, and those are
+   * completely different programmes. Counted before anything sends.
+   */
+  audience: Record<EmailAudience, number>;
 };
 
 export function summarizeEmailAvailability(rows: EmailLeadRow[]): EmailAvailability {
   let available = 0;
   const reasons = new Map<string, number>();
+  const audience: Record<EmailAudience, number> = {
+    decision_maker: 0,
+    personal: 0,
+    generic: 0,
+  };
   for (const row of rows) {
     const reason = emailUnavailableReason(row);
-    if (reason === null) available += 1;
-    else reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    if (reason === null) {
+      available += 1;
+      const chosen = chooseEmail(row);
+      if (chosen) audience[chosen.audience] += 1;
+    } else {
+      reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    }
   }
   return {
     available,
@@ -137,6 +257,7 @@ export function summarizeEmailAvailability(rows: EmailLeadRow[]): EmailAvailabil
     reasons: [...reasons.entries()]
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count),
+    audience,
   };
 }
 
