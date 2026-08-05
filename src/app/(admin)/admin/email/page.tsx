@@ -99,6 +99,15 @@ type Draft = {
   reply: { body: string | null; subject: string | null; from_email: string | null; occurred_at: string } | null;
 };
 
+/** What one worker tick reports back. Shape from /api/worker/tick. */
+type TickResult = {
+  processed: number;
+  succeeded: number;
+  failed: number;
+  duration_ms: number;
+  details?: { type: string; ok: boolean; error?: string }[];
+};
+
 export default function EmailPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
@@ -116,6 +125,8 @@ export default function EmailPage() {
   const [capacity, setCapacity] = useState<Capacity | null>(null);
   const [confirmExternal, setConfirmExternal] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [ticking, setTicking] = useState(false);
+  const [tick, setTick] = useState<TickResult | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -250,6 +261,49 @@ export default function EmailPage() {
     if (j.warning) setErr(j.warning);
     else if (action === "publish") setMsg("Published. New leads pushed from now on get this sequence.");
     load();
+  }
+
+  /*
+   * Run one worker tick, by hand.
+   *
+   * The same endpoint pg_cron calls every minute, doing the same work: top the
+   * campaign up, re-read the inboxes, rebuild what the house knows, and drain
+   * whatever else is queued.
+   *
+   * It exists because the alternative was waiting a minute and guessing. For
+   * months nothing called that endpoint at all — no cron, no action, only a
+   * migration with a placeholder URL in it — and there was no way to tell from
+   * inside the app, because "the worker has not run" and "the worker ran and
+   * decided to do nothing" looked identical from here. Now they do not: this
+   * says what it processed and what failed.
+   *
+   * Not a replacement for the schedule. One press is one tick.
+   */
+  async function runWorker() {
+    setTicking(true);
+    setErr("");
+    setMsg("");
+    setTick(null);
+    try {
+      const res = await fetch("/api/worker/tick", { method: "POST" });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) {
+        // 401 has one cause and one fix, and the generic message sends people
+        // hunting through Supabase instead of Vercel.
+        setErr(
+          res.status === 401
+            ? "The worker refused this: a WORKER_SECRET is set in Vercel, so it will not accept a tick from the browser. The schedule in 0035 needs that secret in its headers line."
+            : j.error || "The worker could not be reached."
+        );
+        return;
+      }
+      setTick(j as TickResult);
+      load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "The worker could not be reached.");
+    } finally {
+      setTicking(false);
+    }
   }
 
   async function syncAccounts(adjust: boolean) {
@@ -699,6 +753,48 @@ export default function EmailPage() {
                 ? ` Last top-up ${new Date(s.last_auto_push_at).toLocaleString()}. ${status.pushedToday} sent today.`
                 : " It has not run yet."}
             </p>
+
+            {/*
+              Kick it off by hand.
+
+              Deliberately sitting under the "it has not run yet" line, because
+              that sentence is where somebody notices nothing is happening and
+              has, until now, had nowhere to go from there.
+            */}
+            <div style={{ marginBottom: 14 }}>
+              <button className="btn-ghost" onClick={runWorker} disabled={ticking}>
+                {ticking ? "Running…" : "Run the worker now"}
+              </button>
+              <span className="faint" style={{ marginLeft: 12, lineHeight: 1.6 }}>
+                One tick, the same as the schedule does every minute. Use it to check the
+                machinery works without waiting.
+              </span>
+              {tick && (
+                <p className="faint" style={{ lineHeight: 1.6, marginTop: 8, marginBottom: 0 }}>
+                  {tick.processed === 0 ? (
+                    <>
+                      Ran in {tick.duration_ms}ms with nothing queued to do. That is a healthy
+                      answer if the campaign is already full — and the wrong one if it is empty,
+                      which usually means the programme is switched off above, or no leads have
+                      an address yet.
+                    </>
+                  ) : (
+                    <>
+                      {tick.succeeded} of {tick.processed} finished
+                      {tick.failed > 0 ? `, ${tick.failed} failed` : ""} in {tick.duration_ms}ms.
+                      {(tick.details || [])
+                        .filter((d) => !d.ok)
+                        .slice(0, 3)
+                        .map((d) => (
+                          <span key={d.type} style={{ display: "block", color: "var(--red)" }}>
+                            {d.type}: {d.error}
+                          </span>
+                        ))}
+                    </>
+                  )}
+                </p>
+              )}
+            </div>
             <div style={{ display: "grid", gap: 12 }}>
               <label>
                 <div className="faint" style={{ marginBottom: 4 }}>
