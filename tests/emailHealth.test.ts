@@ -164,3 +164,29 @@ describe("the worker only blocks when something depends on it", () => {
     expect(stale.steps.find((s) => s.label === "Worker running")!.state).toBe("stopped");
   });
 });
+
+/*
+ * Found by the real thing, not by imagination: with the campaign resumed, the
+ * worker alive and 92 addresses ready, nothing was blocked and nothing had
+ * been pushed — and the headline said to go and check the schedule in
+ * Instantly. The schedule was fine. The campaign was empty.
+ */
+describe("AN EMPTY CAMPAIGN IS NOT A BROKEN ONE", () => {
+  it("says the campaign is empty, and what to press", () => {
+    const h = emailHealth({ ...healthy, sentLast24h: 0, pushedTotal: 0, sendable: 92 });
+    expect(h.blocker).toBeNull();
+    expect(h.headline).toMatch(/the campaign is empty/);
+    expect(h.headline).toMatch(/Push up to 92/);
+    expect(h.headline).not.toMatch(/schedule/);
+  });
+
+  it("still points at the schedule when leads ARE in there and nothing sent", () => {
+    const h = emailHealth({ ...healthy, sentLast24h: 0, pushedTotal: 40 });
+    expect(h.headline).toMatch(/schedule/);
+  });
+
+  it("does not claim it is ready when there is nobody to push", () => {
+    const h = emailHealth({ ...healthy, sentLast24h: 0, pushedTotal: 0, sendable: 0 });
+    expect(h.headline).toMatch(/No lead has an email address yet/);
+  });
+});

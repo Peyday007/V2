@@ -240,11 +240,25 @@ export function emailHealth(f: HealthFacts): Health {
         }
   );
 
+  /*
+   * "Nothing is stopping it" and "there is nothing to send" are different, and
+   * the difference is the next thing to do.
+   *
+   * This was wrong on first contact with the real thing: with the campaign
+   * resumed, the worker alive and 92 addresses ready, nothing was blocked and
+   * nothing had been pushed — and the headline said to go and check the
+   * schedule in Instantly. The schedule was fine. The campaign was empty.
+   */
+  const nothingPushedYet = f.pushedTotal === 0 && f.sendable > 0;
+
   const headline = sending
     ? `Emails are going out — ${f.sentLast24h} in the last 24 hours.`
     : blocker
       ? `Nothing is being sent. ${blocker}`
-      : "Nothing has been sent in the last 24 hours, and nothing here is obviously broken — check the campaign's schedule in Instantly.";
+      : nothingPushedYet
+        ? `Ready, but the campaign is empty — no lead has been pushed to Instantly yet. ` +
+          `Press "Push up to ${f.sendable}" below, or switch on the automatic top-up.`
+        : "Nothing has been sent in the last 24 hours, and nothing here is obviously broken — check the campaign's schedule in Instantly.";
 
   return { headline, sending, blocker, steps };
 }
