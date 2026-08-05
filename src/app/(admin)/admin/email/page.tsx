@@ -105,6 +105,14 @@ type Draft = {
   reply: { body: string | null; subject: string | null; from_email: string | null; occurred_at: string } | null;
 };
 
+/** The one-line answer to "is email running". Shape from /api/instantly/health. */
+type Health = {
+  headline: string;
+  sending: boolean;
+  blocker: string | null;
+  steps: { label: string; state: "ok" | "stopped" | "waiting" | "unknown"; detail: string }[];
+};
+
 /** What one worker tick reports back. Shape from /api/worker/tick. */
 type TickResult = {
   processed: number;
@@ -133,6 +141,7 @@ export default function EmailPage() {
   const [syncing, setSyncing] = useState(false);
   const [ticking, setTicking] = useState(false);
   const [tick, setTick] = useState<TickResult | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -142,6 +151,13 @@ export default function EmailPage() {
         fetch("/api/instantly/sequence").then((r) => r.json()),
         fetch("/api/instantly/capacity").then((r) => r.json()),
       ]);
+      // Separate, and allowed to fail on its own: the health card asks
+      // Instantly whether the campaign is running, which is the slowest thing
+      // on the page and must not hold the rest of it up.
+      fetch("/api/instantly/health")
+        .then((r) => r.json())
+        .then((h) => setHealth(h.health ?? null))
+        .catch(() => setHealth(null));
       setStatus(s);
       setDrafts(d.drafts ?? []);
       setSequences(q.sequences ?? []);
@@ -402,6 +418,64 @@ export default function EmailPage() {
           style={{ borderColor: "var(--amber-dim)", color: "var(--amber)", marginBottom: 16, lineHeight: 1.55 }}
         >
           {msg}
+        </div>
+      )}
+
+      {/* ---------------------------- is it running --------------------------- */}
+      {/*
+        The question the page could not answer.
+
+        Every fact below was already here, spread across six cards, and none of
+        them said whether email was actually going out. The worst was silent:
+        the campaign selector read "AI Dispatch — 3", and 3 is Instantly's code
+        for Completed — a campaign that sends nothing to anybody.
+      */}
+      {health && (
+        <div
+          className="card"
+          style={{
+            marginBottom: 20,
+            borderColor: health.sending
+              ? "var(--green, var(--amber-dim))"
+              : health.blocker
+                ? "var(--red)"
+                : "var(--amber-dim)",
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 10 }}>
+            {health.sending ? "Email is running" : "Email is not sending"}
+          </h2>
+          <p
+            style={{
+              lineHeight: 1.7,
+              marginTop: 0,
+              fontSize: "1.05rem",
+              color: health.sending ? undefined : "var(--red)",
+            }}
+          >
+            {health.headline}
+          </p>
+          <ul style={{ lineHeight: 1.8, marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
+            {health.steps.map((st) => (
+              <li key={st.label}>
+                <span
+                  style={{
+                    color:
+                      st.state === "ok"
+                        ? "var(--text)"
+                        : st.state === "stopped"
+                          ? "var(--red)"
+                          : "var(--text-dim)",
+                  }}
+                >
+                  {st.state === "ok" ? "✓" : st.state === "stopped" ? "✗" : "·"} {st.label}
+                </span>
+                {st.detail && (
+                  <span className="faint"> — {st.detail}</span>
+                )}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
