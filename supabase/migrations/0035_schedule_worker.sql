@@ -88,11 +88,18 @@ where jobname = 'dispatch_worker_tick';
 
 -- Run this one again in a couple of minutes:
 --
---   select status, return_message, start_time
---     from cron.job_run_details
---    where jobname = 'dispatch_worker_tick'
---    order by start_time desc
+--   select d.status, d.return_message, d.start_time
+--     from cron.job_run_details d
+--     join cron.job j on j.jobid = d.jobid
+--    where j.jobname = 'dispatch_worker_tick'
+--    order by d.start_time desc
 --    limit 5;
+--
+-- The join is not decoration: cron.job_run_details records jobid and NOT
+-- jobname, so filtering on jobname there fails with "column does not exist".
+-- This file could not be replayed locally — neither extension exists in the
+-- test environment — so this query is the one part of it that was never run
+-- before shipping. It has since been corrected against the real schema.
 --
 -- And this is the one that proves the app is doing something, rather than
 -- merely being poked. It should stop being empty within a few minutes:
