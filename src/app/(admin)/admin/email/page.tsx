@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { SCRIPT_VERSIONS } from "@/lib/gatekeeperScripts";
 
 /*
  * Cold email, through Instantly.
@@ -768,9 +769,9 @@ export default function EmailPage() {
       <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
         Talk normally. Say what you want the emails to do, who you are writing to, what you
         have found works — whatever is in your head. It writes the whole sequence: how many
-        emails, how many days apart, and what each one says. It already knows the three
-        gatekeeper scripts the team uses on the phone, the recent team updates, and what
-        people have actually written back.
+        emails, how many days apart, and what each one says. It already knows the{" "}
+        {SCRIPT_VERSIONS.length} gatekeeper scripts the team uses on the phone, the recent
+        team updates, and what people have actually written back.
       </p>
       <p className="faint" style={{ marginBottom: 12, lineHeight: 1.6 }}>
         Every sequence links to <strong>the prospect&rsquo;s own page</strong> — what was found

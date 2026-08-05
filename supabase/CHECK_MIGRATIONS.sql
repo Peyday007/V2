@@ -69,6 +69,24 @@ with checks as (
     coalesce((select pg_get_constraintdef(oid) from pg_constraint
                where conname='calls_script_version_check') like '%~%', false),
     'URGENT. While this is missing, callers who draw script D-G lose the entire call when they save.'
+  union all
+  /*
+   * 0035 is checked by its EFFECT, not by its presence.
+   *
+   * Two reasons. A cron row can exist and still be posting into the void —
+   * that is precisely what 0007 did for months — so "is it scheduled" was
+   * never the useful question. And referencing cron.job directly makes this
+   * whole report error out when pg_cron is not installed, because Postgres
+   * validates every branch at parse time, including ones guarded off.
+   *
+   * The worker enqueues these three on every single tick. A row from the last
+   * fifteen minutes means something really is calling the endpoint.
+   */
+  select 11, '0035_schedule_worker',
+    exists (select 1 from jobs
+             where type in ('recompute_house_knowledge','sync_sending_accounts','refill_email_campaign')
+               and created_at > now() - interval '15 minutes'),
+    'THE BIG ONE. No tick in the last 15 min = nothing automatic is running: no campaign refill, no enrichment, no learning.'
 )
 select
   migration,

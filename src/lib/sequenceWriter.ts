@@ -66,7 +66,10 @@ async function gatherContext(): Promise<{ text: string; summary: string }> {
     return `- Script ${s.version} (${s.name}) — ${s.premise}\n  Opens: ${s.opener}`;
   }).join("\n");
   parts.push(`HOW THE TEAM OPENS ON THE PHONE. The email should sound like the same company:\n${scripts}`);
-  summaryBits.push("3 gatekeeper scripts");
+  // Counted, not typed. This said "3" while feeding the writer all seven —
+  // the number is a fact about SCRIPT_VERSIONS and drifts the moment somebody
+  // adds an opener, which is exactly what happened.
+  summaryBits.push(`${SCRIPT_VERSIONS.length} gatekeeper scripts`);
 
   // What the team has most recently been told.
   try {
