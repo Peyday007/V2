@@ -170,12 +170,30 @@ function Figure({
 
 /* -------------------------------------------------------------------------- */
 
+/** What a re-enrichment run would do. Shape from /api/enrichment/backfill. */
+type Backfill = {
+  error: string | null;
+  capabilities: {
+    directNumber: boolean;
+    directNumberNote: string;
+  };
+  plan: {
+    queue: number;
+    waiting: number;
+    summary: string;
+    maxBatch: number;
+    skipped: { reason: string; count: number }[];
+  } | null;
+};
+
 export default function EnrichmentPage() {
   const [data, setData] = useState<Payload | null>(null);
   const [days, setDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [draft, setDraft] = useState<Settings | null>(null);
+  const [backfill, setBackfill] = useState<Backfill | null>(null);
+  const [queueing, setQueueing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -193,6 +211,12 @@ export default function EnrichmentPage() {
         error: j.error ?? null,
       });
       if (j.settings) setDraft(j.settings);
+      // Separate request: a failure here must not blank the report, which is
+      // what this page is actually for.
+      fetch("/api/enrichment/backfill")
+        .then((r) => r.json())
+        .then(setBackfill)
+        .catch(() => setBackfill(null));
     } catch (e) {
       setData({
         report: null,
@@ -204,6 +228,42 @@ export default function EnrichmentPage() {
       });
     }
   }, [days]);
+
+  /*
+   * Queue a re-enrichment batch.
+   *
+   * Nothing happens on screen when this succeeds, and that is correct — the
+   * jobs are worked by the background worker, not by this request. Saying so
+   * out loud matters: a button that appears to do nothing is the one people
+   * press five times.
+   */
+  async function queueBackfill() {
+    setQueueing(true);
+    setMsg("");
+    try {
+      const res = await fetch("/api/enrichment/backfill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.error) {
+        setMsg(j.error || "Could not queue the re-enrichment.");
+        return;
+      }
+      setMsg(
+        `${j.note}${j.waiting ? ` ${j.waiting} more are waiting for the next run.` : ""}` +
+          (j.capabilities && !j.capabilities.directNumber
+            ? ` ${j.capabilities.directNumberNote}`
+            : "")
+      );
+      load();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Could not queue the re-enrichment.");
+    } finally {
+      setQueueing(false);
+    }
+  }
 
   useEffect(() => {
     load();
@@ -252,6 +312,47 @@ export default function EnrichmentPage() {
       {msg && (
         <div className="card" style={{ borderColor: "var(--amber-dim)", marginBottom: 16 }}>
           {msg}
+        </div>
+      )}
+
+      {/* --------------------- leads enriched before we could -------------- */}
+      {backfill?.plan && backfill.plan.queue > 0 && (
+        <div className="card" style={{ borderColor: "var(--amber-dim)", marginBottom: 20 }}>
+          <h2 style={{ marginTop: 0, marginBottom: 10 }}>Leads enriched before we could collect anything</h2>
+          <p style={{ lineHeight: 1.7, marginTop: 0 }}>
+            These were enriched successfully, against a version of this application that could
+            not read an email address off a website, could not diagnose the business properly,
+            and often did not find the owner&rsquo;s name. Nothing failed and nothing is stuck —
+            the code simply did not exist yet.
+          </p>
+          <p className="faint" style={{ lineHeight: 1.7 }}>
+            {backfill.plan.summary.replace(/^Queued/, "A run would queue")}
+          </p>
+          <p style={{ lineHeight: 1.7, color: backfill.capabilities.directNumber ? undefined : "var(--red)" }}>
+            {backfill.capabilities.directNumberNote}
+          </p>
+          {backfill.plan.skipped.length > 0 && (
+            <ul className="faint" style={{ lineHeight: 1.6, marginTop: 0 }}>
+              {backfill.plan.skipped.map((s) => (
+                <li key={s.reason}>
+                  {s.count} skipped — {s.reason.toLowerCase()}
+                </li>
+              ))}
+            </ul>
+          )}
+          <button className="btn" onClick={queueBackfill} disabled={queueing || !data.settings?.enabled}>
+            {queueing ? "Queueing…" : `Re-enrich ${backfill.plan.queue} leads`}
+          </button>
+          {!data.settings?.enabled && (
+            <span className="faint" style={{ marginLeft: 12 }}>
+              Switch enrichment on first.
+            </span>
+          )}
+          {backfill.plan.waiting > 0 && (
+            <span className="faint" style={{ marginLeft: 12 }}>
+              {backfill.plan.waiting} more after that — press again tomorrow.
+            </span>
+          )}
         </div>
       )}
 
