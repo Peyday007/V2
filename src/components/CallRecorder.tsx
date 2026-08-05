@@ -34,7 +34,7 @@ import {
   type LevelVerdict,
   type RecorderState,
 } from "@/lib/recordingSession";
-import type { ConsentDecision } from "@/lib/consent";
+import { dialGate, type ConsentDecision, type DialGate } from "@/lib/consent";
 
 type Config = {
   enabled: boolean;
@@ -57,10 +57,20 @@ const TONE_COLOR: Record<string, string> = {
 export default function CallRecorder({
   leadId,
   onRecordingChange,
+  onDialGate,
 }: {
   leadId: string;
   /** The finished recording's id, so the outcome save can link it to the call. */
   onRecordingChange: (recordingId: string | null) => void;
+  /**
+   * Whether the number may be dialled yet.
+   *
+   * Reported upward because the phone number lives in the dialler header, not
+   * in here. The recorder is the only thing that knows whether audio is
+   * genuinely being captured, and the gate has to be decided on that rather
+   * than on whether a button was pressed.
+   */
+  onDialGate?: (gate: DialGate) => void;
 }) {
   // Compact by design: this sits in the call header as a pill and opens into
   // the full controls only when the caller asks. It used to be a permanent
@@ -179,6 +189,32 @@ export default function CallRecorder({
     // the guard above makes a second run impossible for the same lead.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, leadId, state]);
+
+  /* ------------------------------ the dial gate ---------------------------- */
+
+  /*
+   * Tell the dialler whether the phone may be used yet.
+   *
+   * `state === "recording"` and nothing looser: permission granted is not
+   * capture, and a pressed button is not capture. A microphone that is
+   * permitted but silent is exactly the failure this gate exists to catch, and
+   * it is the state the team was in for weeks.
+   */
+  useEffect(() => {
+    if (!onDialGate) return;
+    if (!config) {
+      // Config not loaded yet. Never block on ignorance — a slow request must
+      // not look like a compliance stop.
+      onDialGate({ blocked: false, reason: "" });
+      return;
+    }
+    onDialGate(
+      dialGate({
+        decision: config.decision,
+        capturing: state === "recording",
+      })
+    );
+  }, [config, state, onDialGate]);
 
   /* -------------------------------- timer --------------------------------- */
 

@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import CallRecorder from "@/components/CallRecorder";
+import type { DialGate } from "@/lib/consent";
 import { OUTCOME_FORM_MAP } from "@/lib/outcomeForms";
 import { OBJECTIONS } from "@/lib/callGuidance";
 import { timezoneForState, looksOpen } from "@/lib/callWindows";
@@ -202,6 +203,14 @@ export default function DialPage() {
   // Measured, not asked for. The caller never types a duration; the clock
   // starts when the lead appears and stops when the outcome is saved.
   const [startedAt, setStartedAt] = useState<string>(() => new Date().toISOString());
+  /*
+   * Whether the phone may be used yet, as reported by the recorder.
+   *
+   * Starts unblocked and only closes when the recorder says so. A gate that
+   * defaulted to closed would stop every call the moment anything about
+   * recording failed to load — a worse outage than the one it prevents.
+   */
+  const [gate, setGate] = useState<DialGate>({ blocked: false, reason: "" });
   const [elapsed, setElapsed] = useState(0);
   // Every objection the caller actually opened on this call, saved with the
   // outcome so objection effectiveness becomes measurable.
@@ -570,7 +579,11 @@ export default function DialPage() {
           {String(Math.floor(elapsed / 60)).padStart(2, "0")}:
           {String(elapsed % 60).padStart(2, "0")}
         </span>
-        <CallRecorder leadId={lead.id} onRecordingChange={onRecordingChange} />
+        <CallRecorder
+          leadId={lead.id}
+          onRecordingChange={onRecordingChange}
+          onDialGate={setGate}
+        />
         <div style={{ flex: 1 }} />
         <button className="btn-ghost" onClick={() => setSkipping(true)} style={{ padding: "4px 12px" }}>
           Skip
@@ -684,10 +697,36 @@ export default function DialPage() {
         </div>
 
         <div style={{ textAlign: "right", minWidth: 260 }}>
-          {/* The direct number leads. Reaching a switchboard is the failure this
-              whole pipeline exists to prevent, so the main line is a fallback
-              and is labelled as one. */}
-          {lead.direct_phone ? (
+          {/*
+            The number is not a link until the call may be placed.
+
+            Rendered as plain text rather than a disabled link on purpose: a
+            tel: link that does nothing reads as a broken app, and a caller
+            works around a broken app by dialling from their handset — which
+            is precisely the recording this gate exists to guarantee, lost.
+            Showing why, in place of the link, is the part that makes the rule
+            hold.
+          */}
+          {gate.blocked ? (
+            <>
+              <div
+                style={{
+                  fontSize: "1.8rem",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  lineHeight: 1.1,
+                  opacity: 0.35,
+                }}
+              >
+                {formatUs(lead.direct_phone || lead.phone || "") ??
+                  lead.direct_phone ??
+                  lead.phone}
+              </div>
+              <div style={{ color: "var(--red)", marginTop: 4, lineHeight: 1.5 }}>
+                {gate.reason}
+              </div>
+            </>
+          ) : lead.direct_phone ? (
             <>
               <a
                 href={`tel:${lead.direct_phone}`}
@@ -713,9 +752,12 @@ export default function DialPage() {
           )}
 
           <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4, flexWrap: "wrap" }}>
+            {/* Copy is gated too. A number on the clipboard is a call from a
+                handset, which is the same recording lost by another route. */}
             <button
               className="tag-dim"
-              style={{ border: "none", cursor: "pointer" }}
+              style={{ border: "none", cursor: gate.blocked ? "not-allowed" : "pointer", opacity: gate.blocked ? 0.4 : 1 }}
+              disabled={gate.blocked}
               onClick={() => {
                 const n = lead.direct_phone || lead.phone;
                 if (n) navigator.clipboard?.writeText(n);
@@ -725,7 +767,7 @@ export default function DialPage() {
             >
               {copied ? "copied ✓" : "copy number"}
             </button>
-            {lead.direct_phone && lead.phone && (
+            {lead.direct_phone && lead.phone && !gate.blocked && (
               <a className="tag-dim" href={`tel:${lead.phone}`} title="Main business line — fallback only">
                 main line {lead.phone}
               </a>

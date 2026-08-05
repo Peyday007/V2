@@ -1,10 +1,17 @@
-import { describe, it, expect } from "vitest";
+import {
+  describe,
+  it,
+  expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   decideConsent,
   mayStartRecording,
   isAllPartyState,
   retentionExpiry,
   ALL_PARTY_CONSENT_STATES,
+  dialGate,
+  recordabilityLabel,
+  type ConsentPolicy,
 } from "../src/lib/consent";
 
 /**
@@ -273,14 +280,163 @@ describe("no judgement calls left for a human", () => {
     }
   });
 
-  it("only the skip-two-party policy ever makes it mandatory", () => {
-    for (const p of ["all_party", "one_party", "per_state", "disabled"] as const) {
-      for (const leadState of ["TX", "NY", "MI", null]) {
-        expect(
-          decideConsent({ policy: p, recordingEnabled: true, leadState }).mandatory,
-          `${p}/${leadState}`
-        ).toBe(false);
+  /*
+   * This test used to read "only the skip-two-party policy ever makes it
+   * mandatory". That was the old design, and it meant the same lawful,
+   * nothing-to-ask call was mandatory under one policy and optional under
+   * another. The law does not change with the setting, so the rule now keys on
+   * the situation rather than the policy name.
+   */
+  it("is mandatory wherever recording is lawful and nobody has to be asked", () => {
+    for (const p of ["all_party", "one_party", "per_state", "one_party_only", "disabled"] as const) {
+      for (const leadState of ["TX", "NY", "MI", "CA", null]) {
+        const d = decideConsent({ policy: p, recordingEnabled: true, leadState });
+        const nobodyToAsk =
+          d.allowed && !d.announcementRequired && !d.affirmativeConsentRequired;
+        expect(d.mandatory, `${p}/${leadState}`).toBe(nobodyToAsk);
       }
     }
+  });
+
+  it("is never mandatory while recording is switched off", () => {
+    for (const p of ["all_party", "one_party", "per_state", "one_party_only"] as const) {
+      expect(
+        decideConsent({ policy: p, recordingEnabled: false, leadState: "TX" }).mandatory,
+        p
+      ).toBe(false);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* the dial gate                                                              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * "Recording has to be mandatory so they cannot call until the mic is on."
+ *
+ * The rule is narrow on purpose. It blocks only where recording is REQUIRED,
+ * which is only where recording is lawful on the caller's consent alone. The
+ * two cases it must never block are the ones that would take the phones down.
+ */
+describe("A RECORDABLE CALL CANNOT BE DIALLED UNTIL THE MIC IS ON", () => {
+  const oneParty = (policy: ConsentPolicy = "one_party_only") =>
+    decideConsent({ policy, recordingEnabled: true, leadState: "TX" });
+
+  it("blocks the dial while nothing is being captured", () => {
+    const g = dialGate({ decision: oneParty(), capturing: false });
+    expect(g.blocked).toBe(true);
+    expect(g.reason).toMatch(/Start the recording before you dial/);
+  });
+
+  it("opens the moment audio is genuinely being taken", () => {
+    expect(dialGate({ decision: oneParty(), capturing: true }).blocked).toBe(false);
+  });
+
+  it("applies under every policy that makes recording lawful without asking", () => {
+    for (const policy of ["one_party_only", "one_party", "per_state"] as ConsentPolicy[]) {
+      expect(decideConsent({ policy, recordingEnabled: true, leadState: "TX" }).mandatory).toBe(true);
+      expect(dialGate({ decision: oneParty(policy), capturing: false }).blocked).toBe(true);
+    }
+  });
+
+  it("NEVER blocks a call it could not record anyway", () => {
+    // Michigan under one_party_only: recording is refused outright. Gating the
+    // dial on a recording that will never start strands the caller on a lead
+    // they can neither ring nor get past.
+    const mi = decideConsent({
+      policy: "one_party_only",
+      recordingEnabled: true,
+      leadState: "MI",
+    });
+    expect(mi.allowed).toBe(false);
+    const g = dialGate({ decision: mi, capturing: false });
+    expect(g.blocked).toBe(false);
+    expect(g.reason).toMatch(/You can still make the call/);
+  });
+
+  it("NEVER blocks when recording is switched off for the whole deployment", () => {
+    const off = decideConsent({ policy: "one_party_only", recordingEnabled: false, leadState: "TX" });
+    expect(dialGate({ decision: off, capturing: false }).blocked).toBe(false);
+  });
+
+  it("never blocks a call that needs the prospect asked — that is a human decision", () => {
+    const ca = decideConsent({ policy: "all_party", recordingEnabled: true, leadState: "CA" });
+    expect(ca.affirmativeConsentRequired).toBe(true);
+    expect(dialGate({ decision: ca, capturing: false }).blocked).toBe(false);
+  });
+
+  it("never blocks when the state is unknown", () => {
+    const unknown = decideConsent({ policy: "one_party_only", recordingEnabled: true, leadState: null });
+    expect(unknown.allowed).toBe(false);
+    expect(dialGate({ decision: unknown, capturing: false }).blocked).toBe(false);
+  });
+});
+
+describe("WIDENING mandatory NEVER AUTHORISES A NEW RECORDING", () => {
+  it("is false everywhere an announcement or an agreement is required", () => {
+    for (const policy of ["all_party", "one_party", "per_state", "one_party_only"] as ConsentPolicy[]) {
+      for (const state of ["CA", "MI", "FL", "IL", "WA", null]) {
+        const d = decideConsent({ policy, recordingEnabled: true, leadState: state });
+        if (d.announcementRequired || d.affirmativeConsentRequired || !d.allowed) {
+          expect(d.mandatory, `${policy}/${state} must not be mandatory`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it("is only ever true where recording was already allowed with nobody to ask", () => {
+    for (const policy of ["all_party", "one_party", "per_state", "one_party_only"] as ConsentPolicy[]) {
+      for (const state of ["TX", "NY", "OH", "CA", "MI", null]) {
+        const d = decideConsent({ policy, recordingEnabled: true, leadState: state });
+        if (d.mandatory) {
+          expect(d.allowed).toBe(true);
+          expect(d.announcementRequired).toBe(false);
+          expect(d.affirmativeConsentRequired).toBe(false);
+        }
+      }
+    }
+  });
+});
+
+describe("the caller is told which kind of call this is", () => {
+  it("labels each case", () => {
+    const at = (policy: ConsentPolicy, state: string | null) =>
+      recordabilityLabel(decideConsent({ policy, recordingEnabled: true, leadState: state }));
+    expect(at("one_party_only", "TX")).toBe("RECORDED");
+    expect(at("one_party_only", "MI")).toBe("NOT RECORDABLE");
+    expect(at("all_party", "CA")).toBe("ASK FIRST");
+  });
+});
+
+/*
+ * The gate is only as good as what the recorder calls "capturing".
+ *
+ * Permission granted is not capture. A pressed button is not capture. A
+ * microphone that is permitted but silent is exactly the failure this exists to
+ * catch, and it is the state the team was in for weeks — the pill said NOT
+ * RECORDING while everybody assumed calls were being kept.
+ *
+ * No pure test can reach a React component's internals, so this reads the
+ * source for the one line that matters.
+ */
+describe("THE RECORDER REPORTS CAPTURE, NOT PERMISSION", () => {
+  const src = readFileSync(
+    new URL("../src/components/CallRecorder.tsx", import.meta.url),
+    "utf8"
+  );
+
+  it("gates on audio actually being taken", () => {
+    expect(src).toMatch(/capturing:\s*state === "recording"/);
+  });
+
+  it("does not report the gate from a looser state", () => {
+    expect(src).not.toMatch(/capturing:\s*state !== "idle"/);
+    expect(src).not.toMatch(/capturing:\s*true/);
+  });
+
+  it("never blocks before the config has loaded", () => {
+    // A slow request must not look like a compliance stop.
+    expect(src).toMatch(/if \(!config\)[\s\S]{0,220}blocked: false/);
   });
 });

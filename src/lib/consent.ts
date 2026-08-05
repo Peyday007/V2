@@ -39,11 +39,21 @@ export type ConsentDecision = {
   /**
    * Recording is REQUIRED here, not offered.
    *
-   * True only where a single party's consent is legally sufficient AND the
-   * policy has been set to skip two-party states entirely. There is nothing
-   * for the caller to decide in that situation: no announcement to read, no
-   * agreement to capture, no judgement call. So the recorder starts itself
-   * rather than waiting for somebody to remember.
+   * True wherever recording is lawful on the caller's consent alone — no
+   * announcement to read, no agreement to capture, no judgement call. There is
+   * nothing for a caller to decide, so the recorder starts itself and the
+   * dialler refuses to place the call until it is actually capturing.
+   *
+   * This used to be set only by the one_party_only policy, which meant the
+   * same lawful, nothing-to-ask call was mandatory under one policy and
+   * optional under another. The law does not change with the setting: if a
+   * single party's consent is sufficient and the caller is that party, there
+   * was never a decision to make.
+   *
+   * It is NEVER true where an announcement or an agreement is required, and
+   * never where recording is not allowed at all. Widening this can only make
+   * recording happen where `allowed` was already true and nobody had to be
+   * asked — it can never authorise a recording that was not already lawful.
    */
   mandatory: boolean;
   /** Why, in words a non-lawyer can act on. */
@@ -175,7 +185,8 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
       announcementRequired: false,
       affirmativeConsentRequired: false,
       status: "not_required",
-      mandatory: false,
+      // Lawful, and there is nobody to ask. See the note on `mandatory`.
+      mandatory: true,
       reason: `${leadState} allows one-party consent, and the caller is a party to the call.`,
       policyApplied: policy,
     };
@@ -212,7 +223,8 @@ export function decideConsent(input: ConsentInput): ConsentDecision {
     announcementRequired: false,
     affirmativeConsentRequired: false,
     status: "not_required",
-    mandatory: false,
+    // Lawful, and there is nobody to ask. See the note on `mandatory`.
+    mandatory: true,
     reason: `${leadState} allows one-party consent.`,
     policyApplied: policy,
   };
@@ -241,4 +253,68 @@ export function retentionExpiry(createdAt: Date, retentionDays: number): Date {
   const d = new Date(createdAt);
   d.setDate(d.getDate() + Math.max(1, retentionDays));
   return d;
+}
+
+/* -------------------------------------------------------------------------- */
+/* the dial gate                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the number may be dialled yet.
+ *
+ * The brief was "recording has to be mandatory so they cannot call until the
+ * mic is on". This is that rule, and it is deliberately narrow: it blocks ONLY
+ * where recording is required, which is only where recording is lawful on the
+ * caller's consent alone.
+ *
+ * Two things it must never do, because either would be worse than the problem
+ * it solves:
+ *
+ *   It must never block a call it cannot record. In the fourteen all-party
+ *   states recording is refused outright — gating the dial on a recording that
+ *   is never going to start would leave a caller stuck on a lead they can
+ *   neither ring nor get past. Those calls go ahead unrecorded, labelled.
+ *
+ *   It must never block when recording is switched off for the whole
+ *   deployment. Turning the feature off must not stop the phones.
+ *
+ * `capturing` is whether audio is genuinely being taken right now — not
+ * whether a button was pressed, and not whether permission was granted. A
+ * microphone that is permitted but silent is the failure this exists to catch.
+ */
+export type DialGate = { blocked: boolean; reason: string };
+
+export function dialGate(input: {
+  decision: ConsentDecision;
+  capturing: boolean;
+}): DialGate {
+  const { decision, capturing } = input;
+
+  if (!decision.mandatory) {
+    return {
+      blocked: false,
+      reason: decision.allowed
+        ? ""
+        : `Not recorded — ${decision.reason} You can still make the call.`,
+    };
+  }
+  if (capturing) return { blocked: false, reason: "" };
+
+  return {
+    blocked: true,
+    reason:
+      "Start the recording before you dial. " +
+      "This call is recordable and every recordable call gets recorded.",
+  };
+}
+
+/**
+ * The label for the lead, so a caller knows which kind of call this is before
+ * they pick the phone up rather than after.
+ */
+export function recordabilityLabel(decision: ConsentDecision): string {
+  if (decision.mandatory) return "RECORDED";
+  if (!decision.allowed) return "NOT RECORDABLE";
+  if (decision.affirmativeConsentRequired) return "ASK FIRST";
+  return "OPTIONAL";
 }
