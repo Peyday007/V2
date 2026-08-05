@@ -87,6 +87,12 @@ with checks as (
              where type in ('recompute_house_knowledge','sync_sending_accounts','refill_email_campaign')
                and created_at > now() - interval '15 minutes'),
     'THE BIG ONE. No tick in the last 15 min = nothing automatic is running: no campaign refill, no enrichment, no learning.'
+  union all
+  select 12, '0036_email_audience',
+    exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='email_threads'
+               and column_name='email_audience'),
+    'Records whether each email reached a person or a front desk. Adds columns only — it does not find addresses.'
 )
 select
   migration,
@@ -119,3 +125,64 @@ select
     where pl.status = 'done'
       and not exists (select 1 from calls k where k.lead_id = pl.lead_id)),
   'If this is above 0, leads are marked done that nobody ever rang. Run 0028.';
+
+-- ---------------------------------------------------------------------------
+-- WHY IS NOTHING HAPPENING?
+--
+-- Running a migration adds columns. It does not go and fill them in. If the
+-- Email page says "0 of 1000 leads have an address", the addresses were never
+-- COLLECTED, and no migration will change that — the crawler that reads them
+-- off each business's contact page runs as a background job, and background
+-- jobs only run when the worker ticks.
+--
+-- These four queries find where the chain is broken. Read them in order; the
+-- first one that looks wrong is the cause of everything after it.
+-- ---------------------------------------------------------------------------
+
+-- 1. Is the worker alive? Jobs are queued by the app and drained by the tick.
+--    A large `waiting` next to an old `newest_job` means work is piling up
+--    with nothing running it — that is the scheduler (0035), not a migration.
+select
+  count(*) filter (where status = 'pending')  as waiting,
+  count(*) filter (where status = 'running')  as running,
+  count(*) filter (where status = 'done')     as finished,
+  count(*) filter (where status = 'failed')   as failed,
+  max(created_at)                             as newest_job,
+  max(created_at) filter (where status = 'done') as last_finished
+from jobs;
+
+-- 2. What is waiting, by type. `enrich_owner_contact` is the one that finds
+--    email addresses, owner names and direct numbers.
+select type, status, count(*)
+from jobs
+where status in ('pending', 'running', 'failed')
+group by 1, 2
+order by 3 desc
+limit 20;
+
+-- 3. Where the leads actually are.
+--
+--    WATCH FOR THIS: leads sitting at 'ready_for_calling' that never finished
+--    enrichment. 0027 was a repair that moved stuck leads to callable so the
+--    team could work — which was right at the time, and it means those leads
+--    are callable WITHOUT an email address, without a direct number and
+--    without a diagnostic. They will never gain one on their own, because the
+--    job that would have done it is no longer queued for them.
+select
+  coalesce(machine_status, '(none)') as machine_status,
+  count(*)                                                as leads,
+  count(*) filter (where website_email is not null)        as have_email,
+  count(*) filter (where direct_phone is not null)         as have_direct_number,
+  count(*) filter (where diagnostic_findings is not null)  as have_diagnostic
+from leads
+where archived_at is null
+group by 1
+order by 2 desc;
+
+-- 4. Has enrichment ever actually run to completion?
+--    An empty table means it has never run at all.
+select
+  count(*)                                              as enrichment_runs_recorded,
+  count(*) filter (where success_level is not null)      as with_a_result,
+  max(started_at)                                       as most_recent
+from enrichment_runs;
