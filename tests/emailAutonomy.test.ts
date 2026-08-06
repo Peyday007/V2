@@ -7,6 +7,7 @@
 // campaign, produces no error at all. Hence the tests.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   validatePlan,
   normalisePlan,
@@ -396,5 +397,104 @@ describe("the daily counter", () => {
 
   it("formats the way Postgres stores a date", () => {
     expect(todayString(new Date("2026-08-04T23:30:00Z"))).toBe("2026-08-04");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* the top-up can finally count                                               */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The automatic top-up was on, the worker was alive, the campaign was Active
+ * and 92 leads had addresses — and the campaign stayed empty.
+ *
+ * activeLeadCount() asked Instantly how many leads were in the campaign.
+ * /leads/list returns a page of items and no total, so it found no `total`,
+ * `total_count` or `count` key and returned null every minute. planRefill
+ * treats null as DO NOT PUSH, which is right — pushing blind double-fills a
+ * campaign — and meant the top-up declined sixty times an hour, silently.
+ *
+ * The count now comes from our own thread rows, which cannot be null and need
+ * no API. Instantly's number is still used when it arrives, as a ceiling.
+ */
+describe("A COUNT WE OWN, RATHER THAN ONE WE HAVE TO ASK FOR", () => {
+  /** The resolution used by the refill handler. */
+  const resolve = (ours: number | null, theirs: number | null) =>
+    ours === null ? theirs : theirs === null ? ours : Math.max(ours, theirs);
+
+  it("uses our own count when Instantly says nothing — the case that was stuck", () => {
+    expect(resolve(40, null)).toBe(40);
+    // And that is a number, so planRefill will act on it.
+    expect(
+      planRefill({
+        autoPushEnabled: true,
+        programmeEnabled: true,
+        campaignId: "c1",
+        activeInCampaign: resolve(40, null),
+        targetActive: 1000,
+        dailyCap: 500,
+        pushedToday: 0,
+        eligible: 92,
+        maxPerRun: 49,
+      }).count
+    ).toBeGreaterThan(0);
+  });
+
+  it("takes the LARGER when both are known, so a disagreement under-fills", () => {
+    // Over-pushing is the one failure that burns a sending domain.
+    expect(resolve(40, 118)).toBe(118);
+    expect(resolve(118, 40)).toBe(118);
+  });
+
+  it("still refuses to push when NEITHER can be read", () => {
+    expect(resolve(null, null)).toBeNull();
+    const d = planRefill({
+      autoPushEnabled: true,
+      programmeEnabled: true,
+      campaignId: "c1",
+      activeInCampaign: resolve(null, null),
+      targetActive: 1000,
+      dailyCap: 500,
+      pushedToday: 0,
+      eligible: 92,
+      maxPerRun: 49,
+    });
+    expect(d.count).toBe(0);
+    expect(d.reason).toMatch(/Could not read how many leads are in the campaign/);
+  });
+
+  it("an empty campaign is zero, not unknown", () => {
+    // The distinction the whole bug turned on: nothing in the campaign must
+    // read as 0 and push, not as null and decline.
+    expect(resolve(0, null)).toBe(0);
+    expect(
+      planRefill({
+        autoPushEnabled: true,
+        programmeEnabled: true,
+        campaignId: "c1",
+        activeInCampaign: 0,
+        targetActive: 1000,
+        dailyCap: 500,
+        pushedToday: 0,
+        eligible: 92,
+        maxPerRun: 49,
+      }).count
+    ).toBe(49);
+  });
+});
+
+describe("THE HANDLER USES THE COUNT IT OWNS", () => {
+  const src = readFileSync(new URL("../src/lib/jobHandlers.ts", import.meta.url), "utf8");
+  const refill = src.slice(
+    src.indexOf("const refillEmailCampaign"),
+    src.indexOf("const syncSendingAccountsJob")
+  );
+
+  it("asks our own thread count", () => {
+    expect(refill).toMatch(/activeThreadCount\(/);
+  });
+
+  it("does not let Instantly's null decide on its own", () => {
+    expect(refill).toMatch(/ours === null \? theirs : theirs === null \? ours : Math\.max\(ours, theirs\)/);
   });
 });

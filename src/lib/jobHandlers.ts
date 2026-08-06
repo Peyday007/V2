@@ -19,7 +19,7 @@ import { decideSearching } from "./leadYield";
 import { enrichLeadForOwner } from "./ownerEnrichment";
 import { loadSettings } from "./instantlyStore";
 import { activeLeadCount } from "./instantly/client";
-import { countEligible, pushEligibleLeads } from "./emailPush";
+import { countEligible, pushEligibleLeads, activeThreadCount } from "./emailPush";
 import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
 import { syncSendingAccounts } from "./capacitySync";
 import { recomputeKnowledge } from "./houseKnowledgeStore";
@@ -1329,10 +1329,25 @@ const refillEmailCampaign: Handler = async () => {
     today
   );
 
-  const [active, eligible] = await Promise.all([
+  /*
+   * How full the campaign is, counted from our own thread rows.
+   *
+   * Instantly's /leads/list returns a page and no total, so activeLeadCount()
+   * returned null every single minute and planRefill correctly refused to push
+   * blind. Correct, and it meant the top-up never ran.
+   *
+   * Instantly's number is still asked for and still used when it comes back —
+   * but as a CEILING, not a replacement. Taking the larger of the two can only
+   * ever push fewer leads, never more, so a disagreement between the two
+   * systems resolves toward under-filling rather than double-filling.
+   */
+  const [ours, theirs, eligible] = await Promise.all([
+    activeThreadCount(settings.campaign_id || ""),
     activeLeadCount(settings.campaign_id || ""),
     countEligible(),
   ]);
+  const active =
+    ours === null ? theirs : theirs === null ? ours : Math.max(ours, theirs);
 
   const decision = planRefill({
     autoPushEnabled: settings.auto_push_enabled,

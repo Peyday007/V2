@@ -368,3 +368,45 @@ export async function countEligible(): Promise<number> {
   }
   return 0;
 }
+
+/**
+ * How many of our leads are still being worked by the campaign.
+ *
+ * WHY THIS EXISTS AND activeLeadCount() NO LONGER DECIDES:
+ *
+ * The automatic top-up asked Instantly how many leads were in the campaign.
+ * Instantly's /leads/list returns a page of items and no total, so
+ * activeLeadCount() found no `total`, `total_count` or `count` key and returned
+ * null — every minute, forever. planRefill treats null as DO NOT PUSH, which is
+ * right (pushing blind double-fills a campaign) and meant the top-up declined
+ * sixty times an hour while the campaign sat empty.
+ *
+ * We already know the answer. Every lead we push writes a thread row. Counting
+ * our own rows needs no API, cannot return null, and is the same number for the
+ * purpose that matters: how many of OUR leads are in flight.
+ *
+ * WHICH STATUSES COUNT: pushed, sent and opened — still in the sequence.
+ * Replied is excluded because the conversation has moved to a human, and
+ * bounced, unsubscribed and failed are dead. Excluding them means those slots
+ * are refilled, which is the entire point of a top-up.
+ *
+ * The one thing it cannot see is a lead removed inside Instantly by hand: we
+ * would still count it and push one fewer. That errs toward under-filling,
+ * which is the safe direction.
+ */
+export const IN_FLIGHT_STATUSES = ["pushed", "sent", "opened"] as const;
+
+export async function activeThreadCount(campaignId: string): Promise<number | null> {
+  if (!campaignId) return null;
+  try {
+    const { count, error } = await supabaseAdmin()
+      .from("email_threads")
+      .select("*", { count: "exact", head: true })
+      .eq("campaign_id", campaignId)
+      .in("status", IN_FLIGHT_STATUSES as unknown as string[]);
+    if (error) return null;
+    return count ?? 0;
+  } catch {
+    return null;
+  }
+}
