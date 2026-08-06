@@ -10,6 +10,8 @@ import {
   emailUnavailableReason,
   explainNonePushable,
   summarizeEmailAvailability,
+  orderForPush,
+  onlyNamedPeople,
   type EmailLeadRow,
 } from "./emailEligibility";
 import { composePersonalization, composeVariables, splitName, type ComposeInput } from "./emailCompose";
@@ -165,7 +167,28 @@ export async function pushEligibleLeads(
     );
   }
 
-  const batch = eligible.slice(0, cap);
+  /*
+   * Best leads first, rather than whatever order the database returned.
+   *
+   * This was the gap: chooseEmail picked the best address WITHIN a lead, but
+   * nothing decided which leads to send. `slice(0, cap)` over an unordered list
+   * filled a campaign with repair@, sales@, office@ and service@ while named
+   * people sat unpushed behind them.
+   *
+   * The optional filter is separate and off by default. Refusing generic
+   * addresses means refusing most of the list — a one-van operation usually
+   * publishes only info@ — so it is an administrator's decision, not a default.
+   */
+  const wanted = settings.named_people_only ? onlyNamedPeople(eligible) : eligible;
+  if (wanted.length === 0 && eligible.length > 0) {
+    return nothing(
+      `${eligible.length} lead${eligible.length === 1 ? " has" : "s have"} an address, but every one ` +
+        `of them is a general inbox like info@ or office@, and "only named people" is switched on. ` +
+        `Turn it off to email them, or enrich further to find named contacts.`,
+      cap
+    );
+  }
+  const batch = orderForPush(wanted).slice(0, cap);
 
   /*
    * A packet for everyone in this batch, so the email has something to link to.

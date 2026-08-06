@@ -253,6 +253,12 @@ export async function PUT(req: NextRequest) {
     patch.daily_push_cap = n;
   }
 
+  if (typeof body.named_people_only === "boolean") {
+    // Not a compliance switch and not automatic — it only narrows who gets
+    // emailed, never widens it, so it needs no confirmation step.
+    patch.named_people_only = body.named_people_only;
+  }
+
   if (typeof body.auto_push_enabled === "boolean") {
     /*
      * Switching this on hands over the decision to send. Same treatment as

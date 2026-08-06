@@ -299,3 +299,67 @@ export const EMAIL_ELIGIBILITY_TIERS: string[] = [
   // no direct_email either (0023 unrun)
   "id, business_name, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
 ];
+
+/* -------------------------------------------------------------------------- */
+/* which leads go first                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A lead's worth as a push, best first.
+ *
+ * THE GAP THIS CLOSES: chooseEmail decides which address to use for ONE lead.
+ * Nothing decided which leads to send at all — the push did `slice(0, cap)`
+ * over whatever order the database returned. So a batch of 49 was a random mix,
+ * and a campaign filled up with repair@, sales@, office@ and service@ while
+ * named people sat unpushed behind them.
+ *
+ * Two things matter and they are not the same:
+ *   - who the address reaches (decision-maker, a person, a front desk)
+ *   - whether we know their NAME, which is what makes the email personal
+ *     rather than a form letter addressed to nobody
+ *
+ * A named person at a generic address still beats an unnamed one, because the
+ * email can at least open with their name.
+ */
+export type PushCandidate = EmailLeadRow & {
+  decision_maker_name?: string | null;
+  owner_name?: string | null;
+};
+
+const AUDIENCE_RANK: Record<EmailAudience, number> = {
+  decision_maker: 0,
+  personal: 1,
+  generic: 2,
+};
+
+export function knowsAName(lead: PushCandidate): boolean {
+  return !!(lead.decision_maker_name || "").trim() || !!(lead.owner_name || "").trim();
+}
+
+/** Lower is better. Used to sort, never to exclude. */
+export function pushRank(lead: PushCandidate): number {
+  const chosen = chooseEmail(lead);
+  if (!chosen) return 99;
+  // Audience dominates; a known name breaks the tie within it.
+  return AUDIENCE_RANK[chosen.audience] * 2 + (knowsAName(lead) ? 0 : 1);
+}
+
+/**
+ * Order a batch so the best leads are sent first.
+ *
+ * Deliberately a SORT and not a filter. Excluding generic addresses is a
+ * decision for an administrator — most one-van operations publish only
+ * info@, and refusing to email them is refusing most of the list. The switch
+ * for that is separate and off by default.
+ */
+export function orderForPush<T extends PushCandidate>(leads: T[]): T[] {
+  return [...leads].sort((a, b) => pushRank(a) - pushRank(b));
+}
+
+/** Keep only leads that reach a named human. Off unless explicitly asked for. */
+export function onlyNamedPeople<T extends PushCandidate>(leads: T[]): T[] {
+  return leads.filter((l) => {
+    const chosen = chooseEmail(l);
+    return !!chosen && chosen.audience !== "generic";
+  });
+}

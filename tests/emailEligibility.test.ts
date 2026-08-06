@@ -4,6 +4,7 @@
 // housekeeping; that one is a compliance rule.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   canEmail,
   canRepush,
@@ -14,6 +15,10 @@ import {
   summarizeEmailAvailability,
   EMAIL_ELIGIBILITY_COLUMNS,
   isGenericAddress,
+  orderForPush,
+  onlyNamedPeople,
+  pushRank,
+  knowsAName,
 } from "../src/lib/emailEligibility";
 import { isAvailableToCall } from "../src/lib/leadEligibility";
 
@@ -267,5 +272,81 @@ describe("the two generic-address lists cannot drift apart", () => {
 
     const missed = words.filter((w) => !isGenericAddress(`${w}@example.org`));
     expect(missed, `not treated as generic by the waterfall: ${missed.join(", ")}`).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* which leads go first                                                       */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * A campaign filled up with repair@, sales@, contact@, office@ and service@
+ * while named people sat unpushed behind them, and Instantly's CONTACT column
+ * was empty for nearly every row.
+ *
+ * chooseEmail picked the best address WITHIN a lead. Nothing decided which
+ * LEADS to send — the push sliced an unordered list.
+ */
+describe("NAMED PEOPLE ARE PUSHED BEFORE GENERAL INBOXES", () => {
+  const dm = { id: "dm", direct_email: "maria@a.com", decision_maker_name: "Maria Rivera" };
+  const namedPersonal = { id: "np", website_email: "sam@b.com", website_email_kind: "personal", owner_name: "Sam Patel" };
+  const unnamedPersonal = { id: "up", website_email: "jo@c.com", website_email_kind: "personal" };
+  const namedGeneric = { id: "ng", website_email: "info@d.com", website_email_kind: "role", owner_name: "Dana Cole" };
+  const unnamedGeneric = { id: "ug", website_email: "office@e.com", website_email_kind: "role" };
+
+  it("orders decision-maker, then named person, then general inbox", () => {
+    const order = orderForPush([unnamedGeneric, namedGeneric, unnamedPersonal, namedPersonal, dm]);
+    expect(order.map((l) => l.id)).toEqual(["dm", "np", "up", "ng", "ug"]);
+  });
+
+  it("prefers a lead whose person we can name, within the same audience", () => {
+    expect(pushRank(namedPersonal)).toBeLessThan(pushRank(unnamedPersonal));
+    expect(pushRank(namedGeneric)).toBeLessThan(pushRank(unnamedGeneric));
+  });
+
+  it("a named person at a general inbox still loses to an unnamed personal one", () => {
+    // Audience dominates: reaching the right human beats knowing their name.
+    expect(pushRank(unnamedPersonal)).toBeLessThan(pushRank(namedGeneric));
+  });
+
+  it("ORDERING NEVER DROPS ANYBODY", () => {
+    const all = [unnamedGeneric, namedGeneric, unnamedPersonal, namedPersonal, dm];
+    expect(orderForPush(all)).toHaveLength(all.length);
+    // Including leads with no address at all — they sort last, not away.
+    expect(orderForPush([...all, { id: "none" }])).toHaveLength(6);
+  });
+
+  it("the optional filter keeps only named audiences", () => {
+    const kept = onlyNamedPeople([dm, namedPersonal, namedGeneric, unnamedGeneric]);
+    expect(kept.map((l) => l.id)).toEqual(["dm", "np"]);
+  });
+
+  it("knowsAName accepts either name field", () => {
+    expect(knowsAName({ owner_name: "Sam" })).toBe(true);
+    expect(knowsAName({ decision_maker_name: "Sam" })).toBe(true);
+    expect(knowsAName({ owner_name: "   " })).toBe(false);
+    expect(knowsAName({})).toBe(false);
+  });
+});
+
+/*
+ * The pure ordering can be perfect and still unused. Reverting the push to
+ * `wanted.slice(0, cap)` passes every test above — which is exactly the state
+ * the code was in when the campaign filled with general inboxes.
+ */
+describe("THE PUSH ACTUALLY USES THE ORDERING", () => {
+  const src = readFileSync(new URL("../src/lib/emailPush.ts", import.meta.url), "utf8");
+
+  it("orders the batch before slicing it", () => {
+    expect(src).toMatch(/orderForPush\([\s\S]{0,40}\)\.slice\(0, cap\)/);
+  });
+
+  it("does not slice an unordered list", () => {
+    expect(src).not.toMatch(/const batch = (eligible|wanted)\.slice\(0, cap\)/);
+  });
+
+  it("honours the named-people-only switch", () => {
+    expect(src).toMatch(/settings\.named_people_only/);
+    expect(src).toMatch(/onlyNamedPeople\(/);
   });
 });

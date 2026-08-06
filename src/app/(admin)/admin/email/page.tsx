@@ -20,6 +20,7 @@ type Settings = {
   auto_reply_enabled: boolean;
   reply_confidence_floor: number;
   auto_push_enabled: boolean;
+  named_people_only: boolean;
   target_active_leads: number;
   daily_push_cap: number;
   last_auto_push_at: string | null;
@@ -628,6 +629,24 @@ export default function EmailPage() {
             it. Until then the only addresses are ones a caller typed in by hand.
           </p>
         )}
+        {/* Who to send to, not just how many. */}
+        <label style={{ display: "block", marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            checked={!!s.named_people_only}
+            disabled={busy}
+            onChange={(e) => save({ named_people_only: e.target.checked })}
+          />{" "}
+          <span>Only email named people — skip info@, office@ and the like</span>
+          <div className="faint" style={{ marginLeft: 24, lineHeight: 1.6 }}>
+            {status.availability.audience
+              ? `Leaves ${status.availability.audience.decision_maker + status.availability.audience.personal} of ${status.availability.available}. `
+              : ""}
+            Off by default: most one-van operations publish only a general
+            inbox, so switching this on refuses most of the list. Either way the
+            push now sends named people FIRST.
+          </div>
+        </label>
         <button className="btn" onClick={push} disabled={busy || !canPush}>
           {busy ? "Working…" : `Push up to ${s.max_push_per_run} leads`}
         </button>
