@@ -350,3 +350,35 @@ describe("THE PUSH ACTUALLY USES THE ORDERING", () => {
     expect(src).toMatch(/onlyNamedPeople\(/);
   });
 });
+
+/*
+ * 119 leads in Instantly after nine hours: 118 added by hand, one by us.
+ *
+ * A push Instantly refuses still writes a thread row — deliberately, so the
+ * lead is not silently lost. But `alreadyPushed` counted every row whatever its
+ * status, so a failed push excluded that lead from every future attempt,
+ * permanently, while the page reported it as "already in a campaign".
+ *
+ * canRepush existed for exactly this from the day the module was written, and
+ * emailPush.ts never imported it.
+ */
+describe("A FAILED PUSH IS NOT A PUSH", () => {
+  it("only a failed thread may be retried", () => {
+    expect(canRepush("failed")).toBe(true);
+    for (const s of ["pushed", "sent", "opened", "replied", "bounced", "unsubscribed", null]) {
+      expect(canRepush(s), String(s)).toBe(false);
+    }
+  });
+
+  it("the push excludes on status, not on the row existing", () => {
+    const src = readFileSync(new URL("../src/lib/emailPush.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/canRepush\(t\.status/);
+    // The old shape: every thread row excluded its lead forever.
+    expect(src).not.toMatch(/new Set\(\(existing \|\| \[\]\)\.map\(\(t\) => String\(t\.lead_id\)\)\)/);
+  });
+
+  it("clears the stale failure row before retrying, so rows cannot pile up", () => {
+    const src = readFileSync(new URL("../src/lib/emailPush.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/\.delete\(\)\.in\("lead_id", retrying\)\.eq\("status", "failed"\)/);
+  });
+});

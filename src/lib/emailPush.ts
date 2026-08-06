@@ -12,6 +12,7 @@ import {
   summarizeEmailAvailability,
   orderForPush,
   onlyNamedPeople,
+  canRepush,
   type EmailLeadRow,
 } from "./emailEligibility";
 import { composePersonalization, composeVariables, splitName, type ComposeInput } from "./emailCompose";
@@ -146,12 +147,41 @@ export async function pushEligibleLeads(
 
   const { data: existing, error: threadsErr } = await db
     .from("email_threads")
-    .select("lead_id")
+    .select("lead_id, status")
     .limit(50000);
   if (threadsErr) {
     return nothing(migrationHint(threadsErr.message) || threadsErr.message, cap);
   }
-  const alreadyPushed = new Set((existing || []).map((t) => String(t.lead_id)));
+  /*
+   * A FAILED PUSH IS NOT A PUSH.
+   *
+   * This set used to hold every lead with a thread row, whatever its status.
+   * A push that Instantly refused still writes a row — deliberately, so the
+   * lead is not silently lost — and that row then excluded the lead from every
+   * future attempt, permanently. Ninety-one leads went in as failures and none
+   * was ever retried, while the page reported them as "already in a campaign".
+   *
+   * canRepush has existed for exactly this since the module was written and was
+   * never called here. It says: a push that errored never reached Instantly, so
+   * retrying is not a second sequence — it is the first one, again.
+   */
+  const alreadyPushed = new Set(
+    (existing || [])
+      .filter((t) => !canRepush(t.status as string | null))
+      .map((t) => String(t.lead_id))
+  );
+
+  /*
+   * Retried leads keep their old thread row, so clear it before the new push
+   * writes another — otherwise the unique-per-lead intent decays into a pile of
+   * failure rows and `alreadyPushed` stops meaning anything.
+   */
+  const retrying = (existing || [])
+    .filter((t) => canRepush(t.status as string | null))
+    .map((t) => String(t.lead_id));
+  if (retrying.length > 0) {
+    await db.from("email_threads").delete().in("lead_id", retrying).eq("status", "failed");
+  }
 
   const eligible = rows.filter(
     (l) => !alreadyPushed.has(l.id) && emailUnavailableReason(l) === null
@@ -362,8 +392,23 @@ export async function countEligible(): Promise<number> {
       return 0;
     }
     const rows = res.data as unknown as LeadRow[];
-    const { data: existing } = await db.from("email_threads").select("lead_id").limit(50000);
-    const already = new Set((existing || []).map((t) => String(t.lead_id)));
+    /*
+     * The same rule as the push itself, for the same reason.
+     *
+     * countEligible feeds planRefill's `eligible`, so counting a failed push as
+     * done made the top-up believe there was nobody left — the second half of
+     * why one lead reached Instantly in nine hours. Two places deciding what
+     * "already pushed" means is how they disagreed.
+     */
+    const { data: existing } = await db
+      .from("email_threads")
+      .select("lead_id, status")
+      .limit(50000);
+    const already = new Set(
+      (existing || [])
+        .filter((t) => !canRepush(t.status as string | null))
+        .map((t) => String(t.lead_id))
+    );
     return rows.filter((l) => !already.has(l.id) && emailUnavailableReason(l) === null).length;
   }
   return 0;
