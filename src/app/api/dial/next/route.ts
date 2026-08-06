@@ -10,6 +10,7 @@ import { buildDossier, type CallRow } from "@/lib/relationship";
 import { orderCandidates } from "@/lib/dialOrder";
 import { buildPrompt } from "@/lib/promptStore";
 import { logEvent } from "@/lib/events";
+import { loadGate, recordGateAction } from "@/lib/callGateStore";
 
 export async function GET() {
   const callerId = await getCallerId();
@@ -23,6 +24,40 @@ export async function GET() {
     .single();
   if (!caller || !caller.active) {
     return NextResponse.json({ error: "Access revoked" }, { status: 401 });
+  }
+
+  /* --------------------------- the after-call gate ---------------------------
+   * THE PRODUCTION ENFORCEMENT POINT.
+   *
+   * Checked before any lead is chosen, so there is nothing to bypass: no lead
+   * is returned at all. Refreshing, a second tab, a stale client or a direct
+   * call to this endpoint all arrive here first.
+   *
+   * Deliberately NOT in the browser. A gate the client enforces is a
+   * suggestion, and the behaviour this prevents — a shift of calls recording
+   * nothing — is exactly what somebody does when a prompt is in the way.
+   *
+   * Callbacks are read below and still served: a promise already made to a
+   * prospect outranks a paused packet, and blocking it would punish the
+   * prospect for the caller's paperwork.
+   */
+  const gate = await loadGate(callerId);
+  if (!gate.mayDial) {
+    await recordGateAction(callerId, gate);
+    return NextResponse.json({
+      caller: caller.name,
+      lead: null,
+      remaining: null,
+      gate: {
+        level: gate.level,
+        message: gate.message,
+        callIds: gate.callIds,
+        next: gate.next,
+        liftedBy: gate.liftedBy,
+        systemFault: gate.systemFault,
+      },
+      error: gate.message,
+    });
   }
 
   /* ------------------------------ due callbacks ------------------------------

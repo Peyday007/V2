@@ -146,6 +146,18 @@ type Dossier = {
 };
 
 type NextResp = {
+  /**
+   * Set when the server refused to serve a lead. Enforced there, not here —
+   * this only explains it. Refreshing or opening another tab changes nothing.
+   */
+  gate?: {
+    level: string;
+    message: string;
+    callIds: string[];
+    next: string | null;
+    liftedBy: "caller" | "manager" | null;
+    systemFault: boolean;
+  } | null;
   caller: string;
   lead: Lead | null;
   contacts?: Contact[];
@@ -436,7 +448,41 @@ export default function DialPage() {
             reason, so a fault looked exactly like a completed packet and the
             caller signed out on a packet with leads still in it.
           */}
-          {data.error ? (
+          {data.gate ? (
+            /*
+              Paused by the gate — not a fault, and said so.
+
+              "Something is wrong" would be the wrong words entirely: nothing is
+              broken, the records just need finishing. The distinction matters
+              because a caller who thinks the app is broken reports a bug, and a
+              caller who knows what is missing fixes it in ninety seconds.
+            */
+            <>
+              <h1 style={{ marginBottom: 12, color: data.gate.systemFault ? "var(--red)" : "var(--amber)" }}>
+                {data.gate.systemFault ? "This one is on us" : "Finish your last call first"}
+              </h1>
+              <p style={{ marginBottom: 12, lineHeight: 1.7, maxWidth: 560, margin: "0 auto 12px" }}>
+                {data.gate.message}
+              </p>
+              {data.gate.next && (
+                <p className="muted" style={{ marginBottom: 12, lineHeight: 1.6 }}>
+                  {data.gate.next}
+                </p>
+              )}
+              {data.gate.liftedBy === "manager" && (
+                <p className="muted" style={{ marginBottom: 12 }}>
+                  Your manager has been told and will sort this out with you.
+                </p>
+              )}
+              <p className="muted" style={{ marginBottom: 20, lineHeight: 1.6 }}>
+                You can still finish your records, take callbacks you have already
+                promised, and message your manager.
+              </p>
+              <button className="btn" onClick={fetchNext} style={{ marginRight: 8 }}>
+                I have finished them
+              </button>
+            </>
+          ) : data.error ? (
             <>
               <h1 style={{ marginBottom: 12, color: "var(--red)" }}>
                 Something is wrong
@@ -444,7 +490,7 @@ export default function DialPage() {
               <p style={{ marginBottom: 8, lineHeight: 1.6, maxWidth: 520, margin: "0 auto 8px" }}>
                 {data.error}
               </p>
-              {data.remaining > 0 && (
+              {(data.remaining ?? 0) > 0 && (
                 <p className="muted" style={{ marginBottom: 20 }}>
                   {data.remaining} lead{data.remaining === 1 ? "" : "s"} still in your packet.
                 </p>

@@ -10,6 +10,7 @@ import { processCompletedCall } from "@/lib/callIntelligence";
 import { linkRecordingToCall } from "@/lib/recordingStore";
 import { reviewCall } from "@/lib/callReview";
 import { isScriptVersion } from "@/lib/gatekeeperScripts";
+import { recordSaveFailure } from "@/lib/callGateStore";
 
 type Values = Record<string, string>;
 
@@ -203,6 +204,20 @@ export async function POST(req: NextRequest) {
   }
 
   if (error || !call) {
+    /*
+     * The outcome never became a row, so nothing downstream can see it.
+     *
+     * Recorded as an event before returning, because the after-call gate reads
+     * these: without it, an outage that eats saves is indistinguishable from a
+     * caller who stopped logging their work, and the caller gets restricted for
+     * the application's fault. That misattribution is the single worst thing
+     * this feature could do.
+     */
+    await recordSaveFailure({
+      callerId,
+      leadId: lead_id,
+      reason: error?.message || "unknown",
+    }).catch(() => {});
     return NextResponse.json(
       { error: error?.message || "The call could not be saved." },
       { status: 500 }

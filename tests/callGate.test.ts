@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   decideGate,
   whatIsMissing,
@@ -224,5 +225,72 @@ describe("EVERY DECISION CARRIES ITS EVIDENCE", () => {
       call({ outcome: "voicemail", notes: "Left a voicemail asking for the owner" })
     );
     expect(gate(vm).level).toBe("clear");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* wired into production, not just written                                    */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The directive's sharpest line: "Do not report built when logic exists but is
+ * not wired into the real workflow." A gate the browser enforces is a
+ * suggestion — refreshing, a second tab, or calling the endpoint directly all
+ * walk straight past it, and that is exactly what somebody does when a prompt
+ * is in the way.
+ *
+ * These read the production path itself, because a pure test of decideGate
+ * passes whether or not anything calls it.
+ */
+describe("THE GATE IS ENFORCED SERVER-SIDE, WHERE IT CANNOT BE BYPASSED", () => {
+  const next = readFileSync(
+    new URL("../src/app/api/dial/next/route.ts", import.meta.url),
+    "utf8"
+  );
+  const outcome = readFileSync(
+    new URL("../src/app/api/dial/outcome/route.ts", import.meta.url),
+    "utf8"
+  );
+  const store = readFileSync(new URL("../src/lib/callGateStore.ts", import.meta.url), "utf8");
+
+  it("the lead-serving endpoint consults the gate", () => {
+    expect(next).toMatch(/loadGate\(callerId\)/);
+  });
+
+  it("NO LEAD IS RETURNED when the gate says no", () => {
+    // Withholding the lead is what makes it unbypassable: there is nothing to
+    // refuse client-side because there is nothing to refuse.
+    expect(next).toMatch(/if \(!gate\.mayDial\)[\s\S]{0,400}lead: null/);
+  });
+
+  it("checks the gate BEFORE choosing a lead, not after", () => {
+    // After would mean the lead was already claimed and skipped.
+    expect(next.indexOf("loadGate(callerId)")).toBeLessThan(next.indexOf("dueCallbacks"));
+  });
+
+  it("records every block, so it can be reconstructed later", () => {
+    expect(next).toMatch(/recordGateAction\(callerId, gate\)/);
+    expect(store).toMatch(/call\.gate_blocked/);
+  });
+
+  it("a failed save is recorded as the system's fault", () => {
+    expect(outcome).toMatch(/recordSaveFailure\(/);
+    expect(store).toMatch(/call\.save_failed/);
+  });
+
+  it("a save failure never stops the response returning", () => {
+    // .catch on the record: failing to log a fault must not turn a 500 into a
+    // hang, and the caller still needs to be told the save failed.
+    expect(outcome).toMatch(/recordSaveFailure\([\s\S]{0,200}\}\)\.catch\(\(\) => \{\}\)/);
+  });
+
+  it("NEVER BLOCKS ON IGNORANCE — an unreadable database leaves the phones on", () => {
+    // A control that stops work because a query failed converts a blip into an
+    // outage, which is worse than the wasted shift it guards against.
+    expect(store).toMatch(/return open\(\{ unknown: true \}\)/);
+  });
+
+  it("an unrun migration leaves the gate ON, never silently off", () => {
+    expect(store).toMatch(/data\.after_call_gate_enabled === false/);
   });
 });
