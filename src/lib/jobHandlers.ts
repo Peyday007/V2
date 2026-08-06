@@ -1317,11 +1317,42 @@ const refillEmailCampaign: Handler = async () => {
   const { settings, error } = await loadSettings();
   if (error) {
     // A missing table before 0029 is run lands here. Not a failure worth
-    // retrying every thirty seconds.
+    // retrying every thirty seconds — but it is still a decision, and the note
+    // is the only place anybody would ever see it.
     console.log(`[refill] skipped: ${error}`);
+    await supabaseAdmin()
+      .from("instantly_settings")
+      .update({
+        last_refill_note: `Could not read the email settings, so nothing was pushed: ${error}`,
+        last_refill_checked_at: new Date().toISOString(),
+        last_refill_active_count: null,
+      })
+      .eq("id", true)
+      .then(() => {}, () => {});
     return;
   }
-  if (!settings.auto_push_enabled || !settings.enabled) return;
+  /*
+   * Switched off is a DECISION, and it has to be written down like any other.
+   *
+   * This returned silently, above the note — so the one state an owner is most
+   * likely to be wrong about ("I turned that on, didn't I?") produced exactly
+   * the silence the note exists to remove. Found by the columns reading NULL
+   * after the migration was run: the handler was reaching this line and
+   * stopping, and nothing said so.
+   */
+  if (!settings.auto_push_enabled || !settings.enabled) {
+    await supabaseAdmin()
+      .from("instantly_settings")
+      .update({
+        last_refill_note: !settings.enabled
+          ? "The email programme is switched off, so nothing was pushed."
+          : "Automatic top-ups are switched off; pushing is manual.",
+        last_refill_checked_at: new Date().toISOString(),
+        last_refill_active_count: null,
+      })
+      .eq("id", true);
+    return;
+  }
 
   const today = todayString();
   const pushedToday = dailyCounterFor(

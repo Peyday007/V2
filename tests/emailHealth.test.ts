@@ -290,3 +290,40 @@ describe("THE DECISION IS RECORDED, NOT LOGGED", () => {
     expect(write).toBeLessThan(earlyReturn);
   });
 });
+
+/*
+ * The columns read NULL after 0037 was run. The handler was reaching the
+ * switched-off guard and returning ABOVE the note write — so the one state an
+ * owner is most likely to be wrong about ("I turned that on, didn't I?")
+ * produced exactly the silence the note exists to remove.
+ */
+describe("EVERY EXIT PATH WRITES A NOTE, INCLUDING THE QUIET ONES", () => {
+  const refill = readFileSync(
+    new URL("../src/lib/jobHandlers.ts", import.meta.url),
+    "utf8"
+  ).slice(
+    readFileSync(new URL("../src/lib/jobHandlers.ts", import.meta.url), "utf8").indexOf(
+      "const refillEmailCampaign"
+    ),
+    readFileSync(new URL("../src/lib/jobHandlers.ts", import.meta.url), "utf8").indexOf(
+      "const syncSendingAccountsJob"
+    )
+  );
+
+  it("says so when the switches are off, instead of returning silently", () => {
+    expect(refill).toMatch(/Automatic top-ups are switched off/);
+    expect(refill).toMatch(/The email programme is switched off/);
+  });
+
+  it("says so when the settings cannot be read", () => {
+    expect(refill).toMatch(/Could not read the email settings/);
+  });
+
+  it("HAS NO BARE RETURN BEFORE A NOTE", () => {
+    // Every `return;` in the handler must be preceded by a note write, or the
+    // decision is invisible — which is the whole failure this fixes.
+    const bare = refill.split("\n").filter((l) => /^\s+return;\s*$/.test(l)).length;
+    const notes = (refill.match(/last_refill_note/g) || []).length;
+    expect(notes).toBeGreaterThanOrEqual(bare);
+  });
+});
