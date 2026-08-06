@@ -2,7 +2,12 @@ import "server-only";
 import { supabaseAdmin } from "./supabaseAdmin";
 import { recordEvent } from "./events";
 import { isMissingColumnError } from "./enrichmentGrade";
-import { listAccounts, setAccountDailyLimit, instantlyCapability } from "./instantly/client";
+import {
+  listAccounts,
+  setAccountDailyLimit,
+  instantlyCapability,
+  campaignDailyLimit,
+} from "./instantly/client";
 import { loadSettings, migrationHint } from "./instantlyStore";
 import {
   computeCapacity,
@@ -263,8 +268,19 @@ export async function syncSendingAccounts(opts: {
 
   /* ------------------------- recompute the cap --------------------------- */
   const steps = await activeSequenceSteps();
-  const cap = smartDailyCap(accounts, steps, Number(settings.capacity_headroom) || 0.85);
-  const capacity = computeCapacity(accounts, Number(settings.capacity_headroom) || 0.85);
+  const headroom = Number(settings.capacity_headroom) || 0.85;
+  /*
+   * The campaign's own limit, read fresh rather than remembered.
+   *
+   * It is a field somebody edits in Instantly, so a cached copy would be wrong
+   * within minutes of the edit that mattered. Null when it cannot be read, and
+   * computeCapacity is explicit in the reason about which of those it is.
+   */
+  const campaignLimit = settings.campaign_id
+    ? await campaignDailyLimit(settings.campaign_id)
+    : null;
+  const cap = smartDailyCap(accounts, steps, headroom, campaignLimit);
+  const capacity = computeCapacity(accounts, headroom, campaignLimit);
 
   await db
     .from("instantly_settings")

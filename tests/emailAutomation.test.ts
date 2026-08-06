@@ -349,10 +349,11 @@ describe("normalising a webhook", () => {
 
 describe("the Instantly client, without a network", () => {
   it("reads a campaign list in any of the shapes it might arrive in", () => {
-    const expected = [{ id: "1", name: "Trades Q1", status: "active" }];
-    expect(normaliseCampaigns({ items: expected })).toEqual(expected);
-    expect(normaliseCampaigns({ data: expected })).toEqual(expected);
-    expect(normaliseCampaigns(expected)).toEqual(expected);
+    const raw = [{ id: "1", name: "Trades Q1", status: "active", daily_limit: 60 }];
+    const expected = [{ id: "1", name: "Trades Q1", status: "active", dailyLimit: 60 }];
+    expect(normaliseCampaigns({ items: raw })).toEqual(expected);
+    expect(normaliseCampaigns({ data: raw })).toEqual(expected);
+    expect(normaliseCampaigns(raw)).toEqual(expected);
     expect(normaliseCampaigns(null)).toEqual([]);
   });
 

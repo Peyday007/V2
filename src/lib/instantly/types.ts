@@ -26,7 +26,17 @@ export type PushResult =
   | { ok: true; instantlyLeadId: string | null; email: string }
   | { ok: false; error: string; retryable: boolean };
 
-export type Campaign = { id: string; name: string; status: string | null };
+export type Campaign = {
+  id: string;
+  name: string;
+  status: string | null;
+  /**
+   * The campaign's own cap — "max number of emails to send per day for this
+   * campaign". Null when Instantly did not return it, which must never be
+   * confused with a campaign that has no cap; see computeCapacity.
+   */
+  dailyLimit: number | null;
+};
 
 /**
  * Every event this app does something with, normalised to one vocabulary.

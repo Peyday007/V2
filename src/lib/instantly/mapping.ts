@@ -56,6 +56,13 @@ export function normaliseCampaigns(body: unknown): Campaign[] {
       id: String(id),
       name: String(o?.name ?? o?.campaign_name ?? "Untitled campaign"),
       status: o?.status === undefined || o?.status === null ? null : String(o.status),
+      /*
+       * The campaign's own daily cap, which is usually the real constraint on
+       * how much goes out — see computeCapacity. Null when it is not in the
+       * response, never a guessed default: a guess here would silently change
+       * how many leads a day the top-up pushes.
+       */
+      dailyLimit: firstNumber(o, ["daily_limit", "dailyLimit", "campaign_daily_limit"]),
     });
   }
   return out;

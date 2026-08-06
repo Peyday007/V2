@@ -51,6 +51,10 @@ export type Capacity = {
   usableSends: number;
   accountsCounted: number;
   accountsIgnored: number;
+  /** The campaign's own daily limit, when it is known. */
+  campaignDailyLimit: number | null;
+  /** True when the campaign's limit — not the inboxes — is what decides. */
+  cappedByCampaign: boolean;
   reason: string;
 };
 
@@ -64,11 +68,32 @@ export type Capacity = {
  */
 export const MIN_HEALTHY_WARMUP = 75;
 
+/**
+ * THE CAMPAIGN HAS ITS OWN LIMIT, AND IT IS USUALLY THE ONE THAT DECIDES.
+ *
+ * Instantly caps sending in two independent places: each inbox has a daily
+ * limit, and the campaign has a daily limit of its own — "max number of emails
+ * to send per day for this campaign". Whichever is lower wins, and Instantly
+ * spreads the campaign's allowance across the inboxes assigned to it.
+ *
+ * Leaving it out is not a rounding error. Eighteen inboxes at 90 sums to 1620,
+ * which reads as a programme sending well over a thousand emails a day; if the
+ * campaign is set to 60, sixty is what goes out, and each inbox shows three or
+ * four sends against a limit of ninety. Every number derived from the total —
+ * the leads-per-day cap, the top-up size — is then wrong by the same factor,
+ * and it is wrong in the dangerous direction: it pushes leads faster than they
+ * can be mailed, so the backlog grows forever and nobody can see why.
+ *
+ * Pass null when it genuinely is not known. The total then falls back to the
+ * inbox sum, exactly as before, and the reason says the limit was not read
+ * rather than implying it was checked.
+ */
 export function computeCapacity(
   accounts: SendingAccount[],
-  headroom = DEFAULT_HEADROOM
+  headroom = DEFAULT_HEADROOM,
+  campaignDailyLimit: number | null = null
 ): Capacity {
-  let dailySends = 0;
+  let accountSends = 0;
   let counted = 0;
   let ignored = 0;
 
@@ -79,21 +104,37 @@ export function computeCapacity(
       ignored += 1;
       continue;
     }
-    dailySends += a.dailyLimit;
+    accountSends += a.dailyLimit;
     counted += 1;
   }
 
+  const limit =
+    campaignDailyLimit !== null && Number.isFinite(campaignDailyLimit) && campaignDailyLimit > 0
+      ? Math.floor(campaignDailyLimit)
+      : null;
+  const cappedByCampaign = limit !== null && limit < accountSends;
+  const dailySends = cappedByCampaign ? limit! : accountSends;
+
   const usableSends = Math.floor(dailySends * clamp(headroom, 0.1, 1));
+  const inboxes = `${counted} inbox${counted === 1 ? "" : "es"}`;
+  const ignoredNote = ignored > 0 ? ` ${ignored} left out as inactive or unhealthy.` : "";
+
   return {
     dailySends,
     usableSends,
     accountsCounted: counted,
     accountsIgnored: ignored,
+    campaignDailyLimit: limit,
+    cappedByCampaign,
     reason:
       counted === 0
         ? "No healthy sending accounts, so nothing can go out."
-        : `${counted} inbox${counted === 1 ? "" : "es"} can send ${dailySends}/day between them; planning against ${usableSends} to leave room for replies and retries.` +
-          (ignored > 0 ? ` ${ignored} left out as inactive or unhealthy.` : ""),
+        : cappedByCampaign
+          ? `The campaign is limited to ${limit} emails a day in Instantly, which is less than the ${accountSends} ${inboxes} could carry — so ${limit} is the real number, spread across the inboxes at about ${Math.max(1, Math.round(limit! / counted))} each. Planning against ${usableSends}. Raise it in Instantly under the campaign's Options if you want more.${ignoredNote}`
+          : `${inboxes} can send ${dailySends}/day between them; planning against ${usableSends} to leave room for replies and retries.${ignoredNote}` +
+            (limit === null
+              ? " The campaign's own daily limit has not been read, so this assumes the inboxes are the only cap."
+              : ` The campaign's limit of ${limit} a day is not the constraint.`),
   };
 }
 
@@ -140,9 +181,10 @@ export type SmartCap = {
 export function smartDailyCap(
   accounts: SendingAccount[],
   sequenceSteps: number,
-  headroom = DEFAULT_HEADROOM
+  headroom = DEFAULT_HEADROOM,
+  campaignDailyLimit: number | null = null
 ): SmartCap {
-  const capacity = computeCapacity(accounts, headroom);
+  const capacity = computeCapacity(accounts, headroom, campaignDailyLimit);
   const steps = Math.max(1, Math.floor(sequenceSteps || 1));
   const perDay = leadsPerDay(capacity.usableSends, steps);
   return {

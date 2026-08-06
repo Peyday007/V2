@@ -43,8 +43,17 @@ type Capacity = {
     excluded: boolean;
     last_change_reason: string | null;
   }[];
-  capacity?: { dailySends: number; usableSends: number; accountsCounted: number; accountsIgnored: number; reason: string };
+  capacity?: {
+    dailySends: number;
+    usableSends: number;
+    accountsCounted: number;
+    accountsIgnored: number;
+    campaignDailyLimit: number | null;
+    cappedByCampaign: boolean;
+    reason: string;
+  };
   smart?: { leadsPerDay: number; sequenceSteps: number; reason: string };
+  campaignDailyLimit?: number | null;
   sequenceSteps?: number;
   ceiling?: number;
   daysToCeiling?: number;
@@ -684,6 +693,23 @@ export default function EmailPage() {
                 "Nothing read from Instantly yet — press Check the inboxes."
               )}
             </p>
+            {capacity?.capacity?.cappedByCampaign && (
+              <p
+                style={{
+                  lineHeight: 1.7,
+                  border: "1px solid var(--amber)",
+                  borderRadius: 4,
+                  padding: "10px 12px",
+                  marginTop: 0,
+                }}
+              >
+                <strong>The campaign is the limit, not the inboxes.</strong> Instantly is set to
+                send at most {capacity.capacity.campaignDailyLimit} emails a day for this campaign,
+                and it spreads that across every inbox — which is why each one shows only three or
+                four sends against a limit of ninety. Change it in Instantly: open the campaign,
+                Options, Daily Limit.
+              </p>
+            )}
             <p className="faint" style={{ lineHeight: 1.7 }}>
               Pushing a lead is not sending an email. A lead entering a{" "}
               {capacity?.sequenceSteps ?? 3}-step sequence sends{" "}

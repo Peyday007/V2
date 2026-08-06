@@ -19,7 +19,8 @@ import {
   MIN_HEALTHY_WARMUP,
   type SendingAccount,
 } from "../src/lib/sendingCapacity";
-import { normaliseAccounts } from "../src/lib/instantly/mapping";
+import { normaliseAccounts, normaliseCampaigns } from "../src/lib/instantly/mapping";
+import { readFileSync } from "node:fs";
 
 const NOW = new Date("2026-08-04T12:00:00Z");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
@@ -85,6 +86,70 @@ describe("what the inboxes can send", () => {
 
   it("says what it did, in words", () => {
     expect(computeCapacity([account()]).reason).toMatch(/1 inbox can send 30\/day/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* the other cap, the one that was being ignored                              */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The real case that produced this: eighteen inboxes, most at 90, and the page
+ * confidently reporting well over a thousand sends a day. Instantly was sending
+ * sixty, because the CAMPAIGN was set to sixty, and each inbox showed "4 of 90".
+ * Summing the inboxes and calling it capacity was simply wrong.
+ */
+describe("THE CAMPAIGN'S OWN DAILY LIMIT IS USUALLY THE ONE THAT DECIDES", () => {
+  const eighteen = Array.from({ length: 18 }, (_, i) =>
+    account({ email: `a${i}@x.com`, dailyLimit: 90 })
+  );
+
+  it("takes the campaign limit when it is lower than the inboxes", () => {
+    const c = computeCapacity(eighteen, DEFAULT_HEADROOM, 60);
+    expect(c.dailySends).toBe(60);
+    expect(c.cappedByCampaign).toBe(true);
+    expect(c.campaignDailyLimit).toBe(60);
+  });
+
+  it("explains the '4 of 90' that started this, in the operator's own terms", () => {
+    const c = computeCapacity(eighteen, DEFAULT_HEADROOM, 60);
+    expect(c.reason).toMatch(/campaign is limited to 60 emails a day/i);
+    // 60 spread over 18 inboxes is 3 each, which is what the screenshots showed.
+    expect(c.reason).toMatch(/about 3 each/);
+    expect(c.reason).toMatch(/Options/);
+  });
+
+  it("keeps the inbox total when the campaign limit is higher", () => {
+    const c = computeCapacity([account({ dailyLimit: 30 })], DEFAULT_HEADROOM, 500);
+    expect(c.dailySends).toBe(30);
+    expect(c.cappedByCampaign).toBe(false);
+    expect(c.reason).toMatch(/limit of 500 a day is not the constraint/);
+  });
+
+  it("A LIMIT THAT COULD NOT BE READ IS NOT A LIMIT OF ZERO", () => {
+    // The failure mode that would be worst: a failed request reading as a cap
+    // of nothing, which stops the programme dead and looks like a bad setting.
+    for (const unknown of [null, 0, Number.NaN, -5]) {
+      const c = computeCapacity([account({ dailyLimit: 30 })], DEFAULT_HEADROOM, unknown);
+      expect(c.dailySends).toBe(30);
+      expect(c.cappedByCampaign).toBe(false);
+      expect(c.campaignDailyLimit).toBeNull();
+    }
+  });
+
+  it("says the limit was not read, rather than implying it was checked", () => {
+    const c = computeCapacity([account({ dailyLimit: 30 })], DEFAULT_HEADROOM, null);
+    expect(c.reason).toMatch(/has not been read/);
+  });
+
+  it("CARRIES THROUGH TO THE LEADS-PER-DAY CAP, which is what pushes", () => {
+    // The whole point. Without this the top-up sizes itself against 1620 sends
+    // a day and pushes leads into a campaign that can mail sixty of them, so
+    // the backlog grows forever and nothing in the app says why.
+    const uncapped = smartDailyCap(eighteen, 4);
+    const capped = smartDailyCap(eighteen, 4, DEFAULT_HEADROOM, 60);
+    expect(uncapped.leadsPerDay).toBe(344);
+    expect(capped.leadsPerDay).toBe(12);
   });
 });
 
@@ -359,5 +424,55 @@ describe("parsing what Instantly sends back", () => {
 
   it("skips a row with no address at all", () => {
     expect(normaliseAccounts([{ daily_limit: 30 }])).toEqual([]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* the campaign limit is read, not just accounted for                         */
+/* -------------------------------------------------------------------------- */
+
+describe("reading a campaign's daily limit", () => {
+  it("picks it up under any of the names it goes by", () => {
+    expect(normaliseCampaigns([{ id: "c1", daily_limit: 60 }])[0].dailyLimit).toBe(60);
+    expect(normaliseCampaigns([{ id: "c1", dailyLimit: 60 }])[0].dailyLimit).toBe(60);
+    expect(normaliseCampaigns([{ id: "c1", campaign_daily_limit: "60" }])[0].dailyLimit).toBe(60);
+  });
+
+  it("IS NULL WHEN ABSENT, never a guessed default", () => {
+    // A guess here would silently change how many leads a day get pushed.
+    expect(normaliseCampaigns([{ id: "c1", name: "X" }])[0].dailyLimit).toBeNull();
+  });
+});
+
+/*
+ * "Do not report built when logic exists but is not wired into the real
+ * workflow." A capacity function that ACCEPTS a campaign limit is worth nothing
+ * if the two places that compute capacity never pass one — and that is exactly
+ * the shape of bug this codebase has shipped before. These read the production
+ * files.
+ */
+describe("THE CAMPAIGN LIMIT REACHES THE PLACES THAT DECIDE", () => {
+  const sync = readFileSync(new URL("../src/lib/capacitySync.ts", import.meta.url), "utf8");
+  const route = readFileSync(
+    new URL("../src/app/api/instantly/capacity/route.ts", import.meta.url),
+    "utf8"
+  );
+
+  it("the worker's sync reads it and passes it to BOTH calculations", () => {
+    expect(sync).toMatch(/campaignDailyLimit\(settings\.campaign_id\)/);
+    expect(sync).toMatch(/smartDailyCap\(accounts, steps, headroom, campaignLimit\)/);
+    expect(sync).toMatch(/computeCapacity\(accounts, headroom, campaignLimit\)/);
+  });
+
+  it("the page's own numbers come from the same limit", () => {
+    // Otherwise the page and the worker disagree, which is the drift that
+    // produced "47 ready to call" next to "none are available".
+    expect(route).toMatch(/campaignDailyLimit\(settings\.campaign_id\)/);
+    expect(route).toMatch(/computeCapacity\(accounts, headroom, campaignLimit\)/);
+    expect(route).toMatch(/smartDailyCap\(accounts, steps, headroom, campaignLimit\)/);
+  });
+
+  it("a failed read never takes the page down with it", () => {
+    expect(route).toMatch(/\.catch\(\(\) => null\)/);
   });
 });

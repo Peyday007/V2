@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { syncSendingAccounts, activeSequenceSteps } from "@/lib/capacitySync";
 import { loadSettings, migrationHint } from "@/lib/instantlyStore";
+import { campaignDailyLimit } from "@/lib/instantly/client";
 import {
   computeCapacity,
   smartDailyCap,
@@ -69,6 +70,19 @@ export async function GET() {
   const headroom = Number(settings.capacity_headroom) || 0.85;
   const steps = await activeSequenceSteps();
 
+  /*
+   * The one non-local read on this route, and it earns its place.
+   *
+   * The campaign's daily limit is the cap that actually decides how much goes
+   * out, and it lives only in Instantly — there is no copy here to read. It is
+   * also the field somebody edits when they want more volume, so caching it
+   * would show a stale number at exactly the moment it changed. Null on any
+   * failure, which falls back to the inbox total and says so.
+   */
+  const campaignLimit = settings.campaign_id
+    ? await campaignDailyLimit(settings.campaign_id).catch(() => null)
+    : null;
+
   // The plan is computed over the accounts that are NOT excluded, matching
   // exactly what the worker would do.
   const adjustable = accounts.filter((a, i) => !rows[i].excluded);
@@ -84,8 +98,9 @@ export async function GET() {
     available: true,
     error,
     accounts: rows.map((a, i) => ({ ...a, ...accounts[i] })),
-    capacity: computeCapacity(accounts, headroom),
-    smart: smartDailyCap(accounts, steps, headroom),
+    capacity: computeCapacity(accounts, headroom, campaignLimit),
+    smart: smartDailyCap(accounts, steps, headroom, campaignLimit),
+    campaignDailyLimit: campaignLimit,
     sequenceSteps: steps,
     ceiling: policy.ceiling,
     daysToCeiling: daysToCeiling(adjustable, policy),

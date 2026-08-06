@@ -130,6 +130,29 @@ export async function listCampaigns(): Promise<
   return { ok: true, campaigns: normaliseCampaigns(res.body) };
 }
 
+/**
+ * The campaign's own daily sending limit.
+ *
+ * The second of Instantly's two caps, and usually the binding one: the inboxes
+ * each have a limit, and the campaign has a limit, and the lower wins. Without
+ * this the capacity plan sums the inboxes and believes a number that will never
+ * go out — see computeCapacity for what that costs.
+ *
+ * Null on any failure, deliberately. A campaign whose limit could not be read
+ * must not be treated as a campaign with no limit, and it must not be treated
+ * as a campaign limited to zero either; the caller falls back to the inbox
+ * total and says the limit was not read.
+ */
+export async function campaignDailyLimit(campaignId: string): Promise<number | null> {
+  if (!campaignId || !instantlyCapability().available) return null;
+  const res = await call(`/campaigns/${encodeURIComponent(campaignId)}`, { method: "GET" });
+  if (!res.ok) return null;
+  // Reuse the list parser rather than a second set of key guesses, so a rename
+  // in Instantly's field names is fixed in one place.
+  const [campaign] = normaliseCampaigns([res.body]);
+  return campaign?.dailyLimit ?? null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* pushing a lead                                                             */
 /* -------------------------------------------------------------------------- */
