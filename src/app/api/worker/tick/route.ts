@@ -79,6 +79,20 @@ async function runTick() {
     // A jobs table that will not accept this must not stop the tick.
   });
 
+  /*
+   * Catch old leads up on their own, once a day.
+   *
+   * A daily bucket rather than the minute bucket refill uses: this is
+   * catch-up work on a fixed backlog, not something that needs to notice a
+   * change within sixty seconds. The handler no-ops entirely unless an
+   * administrator switched auto_reenrich_enabled on.
+   */
+  await enqueue({
+    type: "auto_reenrich",
+    idempotencyKey: `auto_reenrich:${new Date().toISOString().slice(0, 10)}`,
+    priority: 210, // behind the email top-up; this is older data, not today's work
+  }).catch(() => {});
+
   while (Date.now() - startedAt < TIME_BUDGET_MS) {
     const jobs = await claimBatch(BATCH_SIZE, worker);
     if (jobs.length === 0) break;

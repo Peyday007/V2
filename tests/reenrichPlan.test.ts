@@ -143,24 +143,75 @@ describe("pressing the button twice does not queue the work twice", () => {
  * reads the route rather than trusting it.
  */
 describe("THE BACKFILL MUST ASK FOR A FORCED RE-RUN", () => {
+  // Lives in reenrichStore.ts now, not the route — both the manual button and
+  // the automatic worker queue through the exact same function, checked below.
+  const store = readFileSync(join(__dirname, "..", "src", "lib", "reenrichStore.ts"), "utf8");
   const route = readFileSync(
     join(__dirname, "..", "src", "app", "api", "enrichment", "backfill", "route.ts"),
     "utf8"
   );
 
   it("sets admin_requested on every queued job", () => {
-    expect(route).toMatch(/admin_requested:\s*true/);
+    expect(store).toMatch(/admin_requested:\s*true/);
   });
 
   it("queues the handler that actually collects addresses", () => {
-    expect(route).toMatch(/type:\s*"enrich_owner_contact"/);
+    expect(store).toMatch(/type:\s*"enrich_owner_contact"/);
   });
 
   it("uses the per-day idempotency key rather than a bare lead id", () => {
-    expect(route).toMatch(/idempotencyKey:\s*reenrichKey\(/);
+    expect(store).toMatch(/idempotencyKey:\s*reenrichKey\(/);
   });
 
   it("runs behind live lead generation", () => {
-    expect(route).toMatch(/priority:\s*200/);
+    expect(store).toMatch(/priority:\s*200/);
+  });
+
+  it("the manual button queues through queueReenrichBatch, not its own copy", () => {
+    expect(route).toMatch(/queueReenrichBatch\(plan\)/);
+    expect(route).not.toMatch(/admin_requested/);
+  });
+});
+
+/*
+ * "Do not report built when logic exists but is not wired into the real
+ * workflow." The button worked; the question was why nobody could turn it
+ * into something automatic. These read the production files that answer
+ * that: the worker tick, the job handler, and the settings it reads.
+ */
+describe("RE-ENRICHMENT CAN NOW RUN ITSELF, THE SAME WAY THE EMAIL TOP-UP DOES", () => {
+  const tick = readFileSync(
+    join(__dirname, "..", "src", "app", "api", "worker", "tick", "route.ts"),
+    "utf8"
+  );
+  const handlers = readFileSync(join(__dirname, "..", "src", "lib", "jobHandlers.ts"), "utf8");
+  const store = readFileSync(join(__dirname, "..", "src", "lib", "reenrichStore.ts"), "utf8");
+
+  it("the worker enqueues an auto_reenrich tick, once a day", () => {
+    expect(tick).toMatch(/type:\s*"auto_reenrich"/);
+    expect(tick).toMatch(/toISOString\(\)\.slice\(0,\s*10\)/);
+  });
+
+  it("the handler checks the switch BEFORE reading any leads", () => {
+    const handlerBody = handlers.slice(handlers.indexOf("const autoReenrich"));
+    const enabledCheck = handlerBody.indexOf("if (!enabled)");
+    const leadsRead = handlerBody.indexOf("readReenrichLeads()");
+    expect(enabledCheck).toBeGreaterThan(-1);
+    expect(enabledCheck).toBeLessThan(leadsRead);
+  });
+
+  it("queues through the SAME function the manual button uses", () => {
+    expect(handlers).toMatch(/queueReenrichBatch\(plan\)/);
+  });
+
+  it("writes a note on every exit path, including switched off", () => {
+    // The email top-up's silent-when-off bug happened twice. This is the same
+    // shape of mistake, checked directly rather than trusted to have been
+    // avoided.
+    expect(handlers).toMatch(/recordReenrichRun\("Automatic re-enrichment is switched off\."/);
+  });
+
+  it("an unrun 0040 reads the switch as off, not as a crash", () => {
+    expect(store).toMatch(/if \(error \|\| !data\) return \{ enabled: false/);
   });
 });

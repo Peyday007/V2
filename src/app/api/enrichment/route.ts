@@ -13,6 +13,7 @@ import {
   providerStatus,
   directNumberCapability,
 } from "@/lib/contactProviders";
+import { MAX_BATCH } from "@/lib/reenrichPlan";
 
 export const dynamic = "force-dynamic";
 
@@ -151,6 +152,15 @@ export async function PATCH(req: NextRequest) {
 
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+  /*
+   * Same rule as auto_push_enabled on the email side: ships false, and only
+   * an explicit administrator action turns it on. This one does not bill
+   * anything by itself, but it does crawl real websites on its own schedule,
+   * which is autonomous behaviour by the same standard.
+   */
+  if (typeof body.auto_reenrich_enabled === "boolean") {
+    patch.auto_reenrich_enabled = body.auto_reenrich_enabled;
+  }
 
   const caps: [string, number, number][] = [
     ["max_cost_per_lead_cents", 0, 10_000],
@@ -159,6 +169,7 @@ export async function PATCH(req: NextRequest) {
     ["per_run_budget_cents", 0, 1_000_000],
     ["data_expiry_days", 1, 3650],
     ["max_retries", 0, 20],
+    ["auto_reenrich_batch", 1, MAX_BATCH],
   ];
   for (const [key, min, max] of caps) {
     if (body[key] !== undefined) {

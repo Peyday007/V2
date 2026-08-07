@@ -24,6 +24,13 @@ import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
 import { syncSendingAccounts } from "./capacitySync";
 import { recomputeKnowledge } from "./houseKnowledgeStore";
 import { appliedPriors } from "./houseKnowledge";
+import { planReenrichment } from "./reenrichPlan";
+import {
+  readReenrichLeads,
+  loadAutoReenrichSettings,
+  queueReenrichBatch,
+  recordReenrichRun,
+} from "./reenrichStore";
 
 type Handler = (job: Job) => Promise<void>;
 
@@ -1507,6 +1514,48 @@ const recomputeHouseKnowledge: Handler = async () => {
   );
 };
 
+/**
+ * Catch up old leads on their own, the same way the email top-up does.
+ *
+ * This is NOT part of the pipeline new leads go through — those already get
+ * enriched automatically with no button, via queue_enrichment /
+ * enrich_owner_contact. This job only exists because roughly a thousand
+ * leads were enriched before the application knew how to collect an email
+ * address, a diagnosis or an owner name, and somebody has to go back for
+ * them. Off by default: it is new autonomous behaviour touching real
+ * websites, so it waits for an administrator to say so, same as auto-push.
+ *
+ * Every exit writes a note, including "switched off" — the email top-up's
+ * silent-when-off bug happened twice before that rule was made absolute.
+ */
+const autoReenrich: Handler = async () => {
+  const { enabled, batch } = await loadAutoReenrichSettings();
+  if (!enabled) {
+    await recordReenrichRun("Automatic re-enrichment is switched off.", null);
+    return;
+  }
+
+  const { rows, error } = await readReenrichLeads();
+  if (error) {
+    await recordReenrichRun(`Could not read the leads table, so nothing was queued: ${error}`, null);
+    return;
+  }
+
+  const plan = planReenrichment(rows || [], batch);
+  if (plan.queue.length === 0) {
+    await recordReenrichRun(plan.summary, 0);
+    return;
+  }
+
+  const { queued, alreadyQueued } = await queueReenrichBatch(plan);
+  await recordReenrichRun(
+    queued > 0
+      ? `${plan.summary} ${plan.waiting > 0 ? `${plan.waiting} more waiting for tomorrow.` : ""}`.trim()
+      : `${alreadyQueued} already queued today; nothing new to add.`,
+    queued
+  );
+};
+
 export const HANDLERS: Record<JobType, Handler> = {
   plan_search_tasks: planSearchTasks,
   execute_places_search: executePlacesSearch,
@@ -1520,4 +1569,5 @@ export const HANDLERS: Record<JobType, Handler> = {
   refill_email_campaign: refillEmailCampaign,
   sync_sending_accounts: syncSendingAccountsJob,
   recompute_house_knowledge: recomputeHouseKnowledge,
+  auto_reenrich: autoReenrich,
 };

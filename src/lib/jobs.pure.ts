@@ -22,7 +22,12 @@ export type JobType =
   // Rebuilds what the house knows from every outcome across every channel.
   // Nothing acts on a prior until it clears the sample floor, so this getting
   // behind costs sharpness, never correctness.
-  | "recompute_house_knowledge";
+  | "recompute_house_knowledge"
+  // Re-enrichment for leads processed before the app could collect an email,
+  // a diagnosis or an owner name — catch-up on old data, not a recurring
+  // step for new leads, which are enriched automatically already. Only does
+  // anything when an administrator switched auto_reenrich_enabled on.
+  | "auto_reenrich";
 
 /** Exponential backoff with a ceiling: 30s, 60s, 120s, 240s… max 15 min. */
 export function backoffSeconds(attempts: number): number {

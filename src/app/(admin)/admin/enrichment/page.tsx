@@ -97,6 +97,12 @@ type Settings = {
   min_confidence: number;
   data_expiry_days: number;
   max_retries: number;
+  /** From 0040. Absent on an older database — every read defaults it below. */
+  auto_reenrich_enabled?: boolean;
+  auto_reenrich_batch?: number;
+  last_reenrich_note?: string | null;
+  last_reenrich_at?: string | null;
+  last_reenrich_queued?: number | null;
 };
 
 type ProviderStatus = {
@@ -194,6 +200,7 @@ export default function EnrichmentPage() {
   const [draft, setDraft] = useState<Settings | null>(null);
   const [backfill, setBackfill] = useState<Backfill | null>(null);
   const [queueing, setQueueing] = useState(false);
+  const [confirmAutoReenrich, setConfirmAutoReenrich] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -353,6 +360,43 @@ export default function EnrichmentPage() {
               {backfill.plan.waiting} more after that — press again tomorrow.
             </span>
           )}
+
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+            <p className="faint" style={{ lineHeight: 1.7, marginTop: 0, marginBottom: 10 }}>
+              This button exists at all because these leads were processed by older code — new
+              leads already get enriched automatically with nobody pressing anything. Switch this
+              on and the same catch-up run happens on its own, once a day, until the backlog is
+              gone.
+              {data.settings?.last_reenrich_at
+                ? ` Last run ${new Date(data.settings.last_reenrich_at).toLocaleString()}${
+                    data.settings.last_reenrich_note ? ` — ${data.settings.last_reenrich_note}` : ""
+                  }`
+                : ""}
+            </p>
+            {!data.settings?.auto_reenrich_enabled && (
+              <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", marginBottom: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={confirmAutoReenrich}
+                  onChange={(e) => setConfirmAutoReenrich(e.target.checked)}
+                />
+                <span className="faint">
+                  I understand it will crawl these websites on its own schedule.
+                </span>
+              </label>
+            )}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={!!data.settings?.auto_reenrich_enabled}
+                disabled={
+                  busy || !data.settings?.enabled || (!data.settings?.auto_reenrich_enabled && !confirmAutoReenrich)
+                }
+                onChange={(e) => save({ auto_reenrich_enabled: e.target.checked })}
+              />
+              <span>Catch these up without me pressing anything</span>
+            </label>
+          </div>
         </div>
       )}
 
