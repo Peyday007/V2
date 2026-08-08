@@ -22,7 +22,12 @@ import {
   type SequencePlan,
   type SequenceStep,
 } from "../src/lib/sequencePlan";
-import { toInstantlySequence, readCampaignSteps, hasVisibleText } from "../src/lib/instantly/mapping";
+import {
+  toInstantlySequence,
+  readCampaignSteps,
+  hasVisibleText,
+  formatBody,
+} from "../src/lib/instantly/mapping";
 import { planRefill, dailyCounterFor, todayString } from "../src/lib/refillPlan";
 
 const step = (over: Partial<SequenceStep> = {}): SequenceStep => ({
@@ -268,20 +273,35 @@ describe("translating the cadence for Instantly", () => {
     expect(theirTotal).toBe(ourTotal);
   });
 
-  it("keeps the line breaks, so an email does not arrive as one paragraph", () => {
-    const out = toInstantlySequence([step({ body: "Hi,\n\nOne question.\n\nWorth a look?" })]);
+  it("DEFAULTS TO THE DOCUMENTED PLAIN-TEXT FORM, not the guessed one", () => {
+    // Instantly's own API documentation shows bodies as a plain string with
+    // \n between the lines. The <br> conversion below was an inference, and
+    // an unverified inference is what published four emails with blank
+    // bodies. The documented form goes first now.
+    const out = toInstantlySequence([step({ body: "Hi,\n\nOne question." })]);
+    expect(out.steps[0].variants[0].body).toBe("Hi,\n\nOne question.");
+  });
+
+  it("keeps the line breaks in HTML form, so an email is not one paragraph", () => {
+    const out = toInstantlySequence([step({ body: "Hi,\n\nOne question.\n\nWorth a look?" })], "html");
     expect(out.steps[0].variants[0].body).toContain("<br>");
     expect(out.steps[0].variants[0].body).not.toContain("\n");
   });
 
-  it("escapes markup so a stray angle bracket cannot break the email", () => {
-    const out = toInstantlySequence([step({ body: "a < b & c > d" })]);
+  it("escapes markup in HTML form so a stray angle bracket cannot break it", () => {
+    const out = toInstantlySequence([step({ body: "a < b & c > d" })], "html");
     expect(out.steps[0].variants[0].body).toBe("a &lt; b &amp; c &gt; d");
   });
 
-  it("leaves merge fields alone", () => {
-    const out = toInstantlySequence([step({ body: "Hi {{owner_first_name}}" })]);
-    expect(out.steps[0].variants[0].body).toContain("{{owner_first_name}}");
+  it("NEVER MANGLES THE TEXT FORM — it is passed through untouched", () => {
+    // Escaping plain text would put &lt; in somebody's inbox.
+    expect(formatBody("a < b & c > d", "text")).toBe("a < b & c > d");
+  });
+
+  it("leaves merge fields alone in both forms", () => {
+    for (const f of ["text", "html"] as const) {
+      expect(formatBody("Hi {{owner_first_name}}", f)).toContain("{{owner_first_name}}");
+    }
   });
 });
 
@@ -597,7 +617,24 @@ describe("PUBLISHING VERIFIES, RATHER THAN TRUSTING THE RESPONSE", () => {
   it("an empty body is reported as NOT published", () => {
     const publish = client.slice(client.indexOf("export async function publishSequence"));
     expect(publish).toMatch(/hasVisibleText\(s\.body\)/);
-    expect(publish).toMatch(/blank > 0[\s\S]{0,120}ok: false/);
+    // Success requires BOTH no blank bodies and every step stored.
+    expect(publish).toMatch(/blank === 0 && stored\.length >= steps\.length/);
+  });
+
+  it("TRIES THE DOCUMENTED FORMAT FIRST, then the old assumption", () => {
+    const publish = client.slice(client.indexOf("export async function publishSequence"));
+    expect(publish).toMatch(/\["text", "html"\] as const/);
+    expect(publish).toMatch(/toInstantlySequence\(steps, format\)/);
+  });
+
+  it("verifies BETWEEN the two attempts rather than firing both blindly", () => {
+    // What separates a waterfall from a shotgun: the second format is only
+    // sent because the first one was checked and found wanting.
+    const publish = client.slice(client.indexOf("export async function publishSequence"));
+    const readBack = publish.indexOf("readPublishedSteps(campaignId)");
+    const secondTry = publish.indexOf("last = { blank");
+    expect(readBack).toBeGreaterThan(-1);
+    expect(readBack).toBeLessThan(secondTry);
   });
 
   it("a failed read-back does NOT become a failed publish", () => {

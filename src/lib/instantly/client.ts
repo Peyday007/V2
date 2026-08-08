@@ -8,6 +8,7 @@ import {
   pushBody,
   readCampaignSteps,
   toInstantlySequence,
+  type BodyFormat,
   type SendingAccountRow,
 } from "./mapping";
 
@@ -16,6 +17,7 @@ import {
 // here so callers still have one import for the adapter.
 export {
   explainStatus,
+  formatBody,
   hasVisibleText,
   normaliseAccounts,
   normaliseCampaigns,
@@ -265,48 +267,62 @@ export async function publishSequence(
     return { ok: false, error: "The sequence has no emails in it." };
   }
 
-  const res = await call(`/campaigns/${encodeURIComponent(campaignId)}`, {
-    method: "PATCH",
-    body: { sequences: [toInstantlySequence(steps)] },
-  });
-  if (!res.ok) return { ok: false, error: res.error };
-
   /*
-   * READ IT BACK. A 200 is not proof the copy arrived.
+   * TRY, THEN GO AND LOOK — for each format in turn.
    *
-   * This exists because of a campaign where every subject was present in the
-   * Instantly editor and every BODY was blank — and the PATCH had returned
-   * 200, so the page said "Published" and nothing anywhere disagreed. An
-   * accepted request and a correct one are different facts, and the only way
-   * to have the second is to go and look.
+   * This shape exists because of a real campaign: four emails published with
+   * their subject lines intact and every single body blank, for days, while
+   * this app reported "Published". The PATCH had returned 200. An accepted
+   * request and a correct one are different facts, and the only way to have
+   * the second is to read the campaign back.
    *
-   * A failure to read back is NOT reported as a failure to publish: the PATCH
-   * succeeded, and calling that a failure would send somebody chasing copy
-   * that is fine. Silence here means "could not check", and it says so.
+   * Two formats are tried because which one this API wants is not something
+   * we get to know from in here — the documented one first, the previous
+   * assumption second. Verifying BETWEEN them is what makes trying two
+   * honest rather than a shotgun: each attempt is checked against the real
+   * campaign, and the one reported is the one that actually stored words.
    */
-  const stored = await readPublishedSteps(campaignId);
-  if (stored === null) return { ok: true };
+  let last: { blank: number; stored: number } | null = null;
 
-  const blank = stored.filter((s) => !hasVisibleText(s.body)).length;
-  if (blank > 0) {
-    return {
-      ok: false,
-      error:
-        `Instantly accepted the update but stored ${blank} of ${stored.length} ` +
-        `email${stored.length === 1 ? "" : "s"} with an empty body — the subjects are there and ` +
-        `the words are not. Nothing will go out worth reading until that is fixed, so this has ` +
-        `NOT been treated as published.`,
-    };
+  for (const format of ["text", "html"] as const) {
+    const res = await call(`/campaigns/${encodeURIComponent(campaignId)}`, {
+      method: "PATCH",
+      body: { sequences: [toInstantlySequence(steps, format)] },
+    });
+    if (!res.ok) return { ok: false, error: res.error };
+
+    const stored = await readPublishedSteps(campaignId);
+
+    /*
+     * Could not check. NOT reported as a failure to publish — the PATCH did
+     * succeed, and calling that a failure sends somebody chasing copy that is
+     * fine. It does mean there is no point trying the other format, because
+     * there is no way to tell whether this one worked.
+     */
+    if (stored === null) return { ok: true };
+
+    const blank = stored.filter((s) => !hasVisibleText(s.body)).length;
+    if (blank === 0 && stored.length >= steps.length) return { ok: true };
+    last = { blank, stored: stored.length };
   }
-  if (stored.length < steps.length) {
+
+  if (last && last.stored < steps.length) {
     return {
       ok: false,
       error:
-        `Instantly stored ${stored.length} of the ${steps.length} emails in this sequence. ` +
+        `Instantly stored ${last.stored} of the ${steps.length} emails in this sequence. ` +
         `The rest were dropped, so the campaign is not what was written here.`,
     };
   }
-  return { ok: true };
+  return {
+    ok: false,
+    error:
+      `Instantly accepted the sequence but stored ${last?.blank ?? 0} of ${last?.stored ?? 0} ` +
+      `emails with an empty body — the subjects arrived and the words did not. Both the ` +
+      `plain-text and the HTML format were tried and neither stuck, so this is something about ` +
+      `the campaign or the account rather than the formatting. Press "Read it" below and paste ` +
+      `the emails into the Instantly editor by hand for now.`,
+  };
 }
 
 /**

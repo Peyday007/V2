@@ -69,6 +69,31 @@ export function normaliseCampaigns(body: unknown): Campaign[] {
 }
 
 /**
+ * How the line breaks are carried across.
+ *
+ * Two formats because we do not get to know which one this account's API
+ * wants, and guessing cost a campaign: four emails published with their
+ * subjects intact and every body blank, for days, with the app reporting
+ * success. So both are expressed here and the publisher tries them against
+ * the real campaign, reading back which one actually stored.
+ *
+ *   "text"  — what Instantly's own API documentation shows: a plain string
+ *             with \n between the lines. Tried FIRST, because it is the
+ *             documented contract rather than an inference.
+ *   "html"  — <br> between lines, markup escaped. What this code used to send
+ *             on the assumption that the editor renders HTML.
+ */
+export type BodyFormat = "text" | "html";
+
+export function formatBody(body: string, format: BodyFormat): string {
+  if (format === "text") return body;
+  return body
+    .split("\n")
+    .map((line) => (line.trim() === "" ? "<br>" : escapeHtml(line)))
+    .join("<br>");
+}
+
+/**
  * Our sequence, in Instantly's shape.
  *
  * THE OFF-BY-ONE HERE IS THE WHOLE FUNCTION. The two systems count the gap
@@ -83,7 +108,8 @@ export function normaliseCampaigns(body: unknown): Campaign[] {
  * a test rather than an inline map inside the route.
  */
 export function toInstantlySequence(
-  steps: { step: number; delayDays: number; subject: string; body: string }[]
+  steps: { step: number; delayDays: number; subject: string; body: string }[],
+  format: BodyFormat = "text"
 ): { steps: { type: string; delay: number; variants: { subject: string; body: string }[] }[] } {
   return {
     steps: steps.map((s, i) => ({
@@ -94,13 +120,7 @@ export function toInstantlySequence(
       variants: [
         {
           subject: s.subject,
-          // Instantly renders HTML. Our bodies are plain text written to be
-          // read as plain text, so the line breaks have to survive the trip —
-          // otherwise every email arrives as one unbroken paragraph.
-          body: s.body
-            .split("\n")
-            .map((line) => (line.trim() === "" ? "<br>" : escapeHtml(line)))
-            .join("<br>"),
+          body: formatBody(s.body, format),
         },
       ],
     })),
