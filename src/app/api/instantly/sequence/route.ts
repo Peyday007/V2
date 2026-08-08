@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { recordEvent } from "@/lib/events";
 import { writeSequence } from "@/lib/sequenceWriter";
-import { publishSequence } from "@/lib/instantly/client";
+import { publishSequence, readPublishedSteps, hasVisibleText } from "@/lib/instantly/client";
 import { loadSettings, migrationHint } from "@/lib/instantlyStore";
 import { describeCadence, validatePlan, type SequenceStep } from "@/lib/sequencePlan";
 
@@ -35,7 +35,32 @@ export async function GET() {
       { status: 200 }
     );
   }
+
+  /*
+   * What the CAMPAIGN has, not what this database has.
+   *
+   * These two can disagree — a sequence marked active here whose copy never
+   * survived the trip to Instantly looks completely healthy from inside this
+   * app. Fetching it means the page can show the difference instead of
+   * everybody assuming publishing worked because it said it did.
+   */
+  const { settings } = await loadSettings();
+  const live = settings.campaign_id ? await readPublishedSteps(settings.campaign_id) : null;
+
   return NextResponse.json({
+    inInstantly:
+      live === null
+        ? null
+        : {
+            steps: live.length,
+            blankBodies: live.filter((s) => !hasVisibleText(s.body)).length,
+            // Trimmed hard: this is for confirming copy arrived, not for
+            // reading the emails, and the whole sequence would be a wall.
+            preview: live.slice(0, 6).map((s) => ({
+              subject: s.subject,
+              bodyStart: s.body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120),
+            })),
+          },
     sequences: (data || []).map((s) => {
       const steps = (s.steps || []) as SequenceStep[];
       return {
@@ -202,9 +227,9 @@ export async function PUT(req: NextRequest) {
       status: "active",
       pushedToInstantly: false,
       warning:
-        `This is now the active sequence here, but Instantly did not accept the update, ` +
-        `so the campaign out there is unchanged: ${published.error} ` +
-        `Copy the emails into the Instantly sequence editor by hand.`,
+        `This is now the active sequence here, but the campaign out there does not match it: ` +
+        `${published.error} ` +
+        `Copy the emails into the Instantly sequence editor by hand, or press Publish again.`,
     });
   }
 

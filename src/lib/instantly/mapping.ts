@@ -107,6 +107,61 @@ export function toInstantlySequence(
   };
 }
 
+/**
+ * Read the steps back OUT of a campaign, as Instantly actually stored them.
+ *
+ * The other half of publishing, and the half that was missing. A PATCH that
+ * returns 200 proves the request was accepted, not that the copy arrived —
+ * and a campaign whose subjects are present while every body is blank returns
+ * 200 exactly like a campaign that worked. Without reading back, the page says
+ * "Published" either way, which is the one thing it must never do.
+ *
+ * Tolerant about shape for the same reason as every other reader here: this is
+ * used to decide whether to REPORT A PROBLEM, so a field rename must not
+ * manufacture an empty body and cry wolf about copy that is really there.
+ */
+export function readCampaignSteps(
+  body: unknown
+): { subject: string; body: string }[] | null {
+  const campaign = body as Record<string, unknown> | null;
+  if (!campaign || typeof campaign !== "object") return null;
+
+  const sequences = campaign.sequences;
+  if (!Array.isArray(sequences) || sequences.length === 0) return null;
+
+  // Only the first sequence carries the copy — Instantly's own documentation
+  // says the array exists but only element zero is used.
+  const first = sequences[0] as Record<string, unknown> | null;
+  const steps = first?.steps;
+  if (!Array.isArray(steps)) return null;
+
+  const out: { subject: string; body: string }[] = [];
+  for (const entry of steps) {
+    const step = entry as Record<string, unknown>;
+    const variants = Array.isArray(step?.variants) ? step.variants : [];
+    const variant = (variants[0] ?? {}) as Record<string, unknown>;
+    out.push({
+      subject: firstString(variant, ["subject"]) ?? "",
+      body: firstString(variant, ["body"]) ?? "",
+    });
+  }
+  return out;
+}
+
+/**
+ * Is there anything a prospect would actually read?
+ *
+ * Tags alone are not content. A body of "<br><br>" or "<div></div>" renders as
+ * a blank email, and it is the exact shape a mangled round-trip produces, so
+ * emptiness is judged on what survives stripping the markup out.
+ */
+export function hasVisibleText(html: string): boolean {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim().length > 0;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

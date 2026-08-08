@@ -76,6 +76,17 @@ type Sequence = {
   published_at: string | null;
 };
 
+/**
+ * What the Instantly campaign actually contains, as opposed to what this
+ * database believes it published. Null when it could not be read — which is
+ * not the same as empty and must never be shown as a problem.
+ */
+type InInstantly = {
+  steps: number;
+  blankBodies: number;
+  preview: { subject: string; bodyStart: string }[];
+} | null;
+
 type Status = {
   settings: Settings;
   error: string | null;
@@ -142,6 +153,7 @@ export default function EmailPage() {
   const [confirmAuto, setConfirmAuto] = useState(false);
   const [confirmAutoPush, setConfirmAutoPush] = useState(false);
   const [sequences, setSequences] = useState<Sequence[]>([]);
+  const [inInstantly, setInInstantly] = useState<InInstantly>(null);
   const [brief, setBrief] = useState("");
   const [writing, setWriting] = useState(false);
   const [problems, setProblems] = useState<{ step: number | null; problem: string }[]>([]);
@@ -171,6 +183,7 @@ export default function EmailPage() {
       setStatus(s);
       setDrafts(d.drafts ?? []);
       setSequences(q.sequences ?? []);
+      setInInstantly(q.inInstantly ?? null);
       setCapacity(c);
       if (d.error) setErr(d.error);
     } catch (e) {
@@ -1053,6 +1066,67 @@ export default function EmailPage() {
         </div>
       </div>
 
+      {/*
+        What Instantly actually has.
+
+        This card exists because a campaign sat there with every subject
+        present and every body blank, while this page said "Published" —
+        publishing checked that the request was accepted and never that the
+        copy arrived. What the campaign contains and what this database
+        believes it published are two different facts, and only one of them
+        gets emailed to anybody.
+      */}
+      {inInstantly && (
+        <div
+          className="card"
+          style={{
+            marginBottom: 16,
+            borderColor: inInstantly.blankBodies > 0 ? "var(--red)" : "var(--border)",
+          }}
+        >
+          <h3 style={{ marginTop: 0, marginBottom: 8 }}>What Instantly actually has</h3>
+          {inInstantly.steps === 0 ? (
+            <p style={{ lineHeight: 1.7, margin: 0, color: "var(--red)" }}>
+              The campaign has no emails in it at all. Publish a sequence below — until then
+              every lead pushed there sits and receives nothing.
+            </p>
+          ) : inInstantly.blankBodies > 0 ? (
+            <p style={{ lineHeight: 1.7, marginTop: 0, color: "var(--red)" }}>
+              <strong>
+                {inInstantly.blankBodies} of {inInstantly.steps} emails have a subject and an
+                empty body.
+              </strong>{" "}
+              Instantly accepted the sequence and kept the subject lines, but the words did not
+              survive the trip. Press Publish again on the live sequence below — it now checks
+              what actually landed instead of trusting the response.
+            </p>
+          ) : (
+            <p className="faint" style={{ lineHeight: 1.7, marginTop: 0 }}>
+              {inInstantly.steps} email{inInstantly.steps === 1 ? "" : "s"}, all with copy in
+              them. This is read from the campaign itself, not from what this app thinks it
+              published.
+            </p>
+          )}
+          <div style={{ marginTop: 10 }}>
+            {inInstantly.preview.map((p, i) => (
+              <div
+                key={i}
+                className="faint"
+                style={{ lineHeight: 1.6, fontSize: "0.78rem", marginBottom: 4 }}
+              >
+                {i + 1}. <strong>{p.subject || <span style={{ color: "var(--red)" }}>no subject</span>}</strong>
+                {" — "}
+                {p.bodyStart ? (
+                  `${p.bodyStart}…`
+                ) : (
+                  <span style={{ color: "var(--red)" }}>body is empty</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {sequences.length > 0 && (
         <div style={{ marginBottom: 28 }}>
           {sequences.map((q) => {
@@ -1087,16 +1161,22 @@ export default function EmailPage() {
                   >
                     {open ? "Hide" : "Read it"}
                   </button>
-                  {!active && (
-                    <button
-                      className="btn"
-                      style={{ padding: "3px 12px", fontSize: "0.7rem" }}
-                      disabled={busy}
-                      onClick={() => decideSequence(q.id, "publish")}
-                    >
-                      Publish
-                    </button>
-                  )}
+                  {/*
+                    The live one can be published AGAIN, deliberately.
+
+                    Without this, a sequence whose copy did not survive the
+                    trip to Instantly is unfixable from here: it is already
+                    marked active, so the only button that could resend it was
+                    hidden. Being active is not evidence the campaign matches.
+                  */}
+                  <button
+                    className="btn"
+                    style={{ padding: "3px 12px", fontSize: "0.7rem" }}
+                    disabled={busy}
+                    onClick={() => decideSequence(q.id, "publish")}
+                  >
+                    {active ? "Publish again" : "Publish"}
+                  </button>
                 </div>
 
                 {open && (

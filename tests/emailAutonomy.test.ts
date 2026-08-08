@@ -22,7 +22,7 @@ import {
   type SequencePlan,
   type SequenceStep,
 } from "../src/lib/sequencePlan";
-import { toInstantlySequence } from "../src/lib/instantly/mapping";
+import { toInstantlySequence, readCampaignSteps, hasVisibleText } from "../src/lib/instantly/mapping";
 import { planRefill, dailyCounterFor, todayString } from "../src/lib/refillPlan";
 
 const step = (over: Partial<SequenceStep> = {}): SequenceStep => ({
@@ -496,5 +496,119 @@ describe("THE HANDLER USES THE COUNT IT OWNS", () => {
 
   it("does not let Instantly's null decide on its own", () => {
     expect(refill).toMatch(/ours === null \? theirs : theirs === null \? ours : Math\.max\(ours, theirs\)/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* a 200 is not proof the copy arrived                                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The campaign that produced this: every subject present in the Instantly
+ * editor, every BODY blank, and this app reporting "Published" — because
+ * publishing checked that the PATCH was accepted and never that the words
+ * landed. An accepted request and a correct one are different facts.
+ */
+describe("READING BACK WHAT INSTANTLY ACTUALLY STORED", () => {
+  const campaign = (steps: { subject?: string; body?: string }[]) => ({
+    id: "c1",
+    sequences: [{ steps: steps.map((v) => ({ type: "email", delay: 0, variants: [v] })) }],
+  });
+
+  it("reads the subject and body of every step", () => {
+    const got = readCampaignSteps(
+      campaign([
+        { subject: "One", body: "First body" },
+        { subject: "Two", body: "Second body" },
+      ])
+    );
+    expect(got).toEqual([
+      { subject: "One", body: "First body" },
+      { subject: "Two", body: "Second body" },
+    ]);
+  });
+
+  it("SEES THE EXACT FAILURE: subject present, body gone", () => {
+    const got = readCampaignSteps(campaign([{ subject: "{{business_name}} — a few things", body: "" }]));
+    expect(got).toEqual([{ subject: "{{business_name}} — a few things", body: "" }]);
+    expect(hasVisibleText(got![0].body)).toBe(false);
+  });
+
+  it("only reads the first sequence, which is the only one Instantly uses", () => {
+    const body = {
+      sequences: [
+        { steps: [{ variants: [{ subject: "real", body: "real" }] }] },
+        { steps: [{ variants: [{ subject: "ignored", body: "ignored" }] }] },
+      ],
+    };
+    expect(readCampaignSteps(body)).toHaveLength(1);
+  });
+
+  it("A CAMPAIGN IT CANNOT READ IS NULL, NEVER AN EMPTY LIST", () => {
+    // Empty would read as "the campaign has no copy" and send somebody
+    // republishing over emails that were perfectly fine.
+    for (const junk of [null, undefined, {}, { sequences: [] }, { sequences: [{}] }, "nope"]) {
+      expect(readCampaignSteps(junk)).toBeNull();
+    }
+  });
+
+  it("a step with no variants reads as empty rather than throwing", () => {
+    expect(readCampaignSteps({ sequences: [{ steps: [{ type: "email" }] }] })).toEqual([
+      { subject: "", body: "" },
+    ]);
+  });
+});
+
+describe("tags are not content", () => {
+  it("counts real words as visible", () => {
+    expect(hasVisibleText("Hi there<br>How are you?")).toBe(true);
+  });
+
+  it("KNOWS A BODY OF PURE MARKUP IS A BLANK EMAIL", () => {
+    // The shape a mangled round-trip leaves behind: structurally valid,
+    // renders as nothing, and would pass any check that only asked whether
+    // the string was empty.
+    for (const blank of ["", "   ", "<br>", "<br><br><br>", "<div></div>", "<p>&nbsp;</p>"]) {
+      expect(hasVisibleText(blank)).toBe(false);
+    }
+  });
+});
+
+/*
+ * "Do not report built when logic exists but is not wired into the real
+ * workflow." Reading back is worth nothing if publishing does not do it, so
+ * this reads the production file.
+ */
+describe("PUBLISHING VERIFIES, RATHER THAN TRUSTING THE RESPONSE", () => {
+  const client = readFileSync(
+    new URL("../src/lib/instantly/client.ts", import.meta.url),
+    "utf8"
+  );
+  const route = readFileSync(
+    new URL("../src/app/api/instantly/sequence/route.ts", import.meta.url),
+    "utf8"
+  );
+
+  it("publishSequence reads the campaign back after the PATCH", () => {
+    const publish = client.slice(client.indexOf("export async function publishSequence"));
+    expect(publish).toMatch(/readPublishedSteps\(campaignId\)/);
+  });
+
+  it("an empty body is reported as NOT published", () => {
+    const publish = client.slice(client.indexOf("export async function publishSequence"));
+    expect(publish).toMatch(/hasVisibleText\(s\.body\)/);
+    expect(publish).toMatch(/blank > 0[\s\S]{0,120}ok: false/);
+  });
+
+  it("a failed read-back does NOT become a failed publish", () => {
+    // The PATCH succeeded. Calling that a failure sends somebody chasing copy
+    // that is fine.
+    const publish = client.slice(client.indexOf("export async function publishSequence"));
+    expect(publish).toMatch(/stored === null\) return \{ ok: true \}/);
+  });
+
+  it("the page is told what the campaign really contains", () => {
+    expect(route).toMatch(/inInstantly/);
+    expect(route).toMatch(/blankBodies/);
   });
 });

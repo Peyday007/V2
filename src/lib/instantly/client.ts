@@ -2,9 +2,11 @@ import "server-only";
 import type { Campaign, InstantlyCapability, PushResult, PushSubject } from "./types";
 import {
   explainStatus,
+  hasVisibleText,
   normaliseAccounts,
   normaliseCampaigns,
   pushBody,
+  readCampaignSteps,
   toInstantlySequence,
   type SendingAccountRow,
 } from "./mapping";
@@ -14,9 +16,11 @@ import {
 // here so callers still have one import for the adapter.
 export {
   explainStatus,
+  hasVisibleText,
   normaliseAccounts,
   normaliseCampaigns,
   pushBody,
+  readCampaignSteps,
   toInstantlySequence,
 } from "./mapping";
 
@@ -266,7 +270,59 @@ export async function publishSequence(
     body: { sequences: [toInstantlySequence(steps)] },
   });
   if (!res.ok) return { ok: false, error: res.error };
+
+  /*
+   * READ IT BACK. A 200 is not proof the copy arrived.
+   *
+   * This exists because of a campaign where every subject was present in the
+   * Instantly editor and every BODY was blank — and the PATCH had returned
+   * 200, so the page said "Published" and nothing anywhere disagreed. An
+   * accepted request and a correct one are different facts, and the only way
+   * to have the second is to go and look.
+   *
+   * A failure to read back is NOT reported as a failure to publish: the PATCH
+   * succeeded, and calling that a failure would send somebody chasing copy
+   * that is fine. Silence here means "could not check", and it says so.
+   */
+  const stored = await readPublishedSteps(campaignId);
+  if (stored === null) return { ok: true };
+
+  const blank = stored.filter((s) => !hasVisibleText(s.body)).length;
+  if (blank > 0) {
+    return {
+      ok: false,
+      error:
+        `Instantly accepted the update but stored ${blank} of ${stored.length} ` +
+        `email${stored.length === 1 ? "" : "s"} with an empty body — the subjects are there and ` +
+        `the words are not. Nothing will go out worth reading until that is fixed, so this has ` +
+        `NOT been treated as published.`,
+    };
+  }
+  if (stored.length < steps.length) {
+    return {
+      ok: false,
+      error:
+        `Instantly stored ${stored.length} of the ${steps.length} emails in this sequence. ` +
+        `The rest were dropped, so the campaign is not what was written here.`,
+    };
+  }
   return { ok: true };
+}
+
+/**
+ * What Instantly currently has for a campaign, as opposed to what we sent.
+ *
+ * Null when it cannot be read — never an empty list, which would read as "the
+ * campaign has no copy" and is the sort of thing that gets somebody to
+ * republish over copy that was fine.
+ */
+export async function readPublishedSteps(
+  campaignId: string
+): Promise<{ subject: string; body: string }[] | null> {
+  if (!campaignId || !instantlyCapability().available) return null;
+  const res = await call(`/campaigns/${encodeURIComponent(campaignId)}`, { method: "GET" });
+  if (!res.ok) return null;
+  return readCampaignSteps(res.body);
 }
 
 /**
