@@ -11,6 +11,7 @@
 //   just took a cold call; a confident claim about their business that nobody
 //   checked is how the call that earned the click gets lost.
 
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 
 import {
@@ -150,9 +151,8 @@ describe("copying the link is a weaker bar than texting it", () => {
 });
 
 describe("the recommendations on the owner's page", () => {
-  it("always offers something, even on a bare record", () => {
+  it("never offers more than the page can carry", () => {
     const recs = buildRecommendations({ businessName: "Rivera Plumbing" });
-    expect(recs.length).toBeGreaterThan(0);
     expect(recs.length).toBeLessThanOrEqual(4);
     expect(recs.every((r) => !!r.title && !!r.detail)).toBe(true);
   });
@@ -168,7 +168,41 @@ describe("the recommendations on the owner's page", () => {
     const text = recs.map((r) => r.detail).join(" ");
     expect(text).not.toMatch(/\d+ reviews/);
     expect(text).not.toMatch(/undefined|null|NaN/);
-    expect(recs[0].basis).toBe("general");
+  });
+
+  it("EVERY RECOMMENDATION IS GROUNDED IN SOMETHING ON THE RECORD", () => {
+    /*
+     * There used to be four "general" recommendations returned whatever the
+     * record said, all of them about answering the phone. That was the
+     * "still feels AI receptionist heavy" complaint in one function: it
+     * assumed the problem was calls when the diagnosis above spans the site,
+     * local search, the listing and the reviews, and it filled the page with
+     * an offer at the exact moment there was nothing to base one on.
+     */
+    for (const input of [
+      { businessName: "X" },
+      { businessName: "X", website: "https://x.com" },
+      { businessName: "X", reviewCount: 140 },
+      { businessName: "X", website: "https://x.com", reviewCount: 3 },
+    ]) {
+      const recs = buildRecommendations(input);
+      expect(recs.every((r) => r.basis !== "general")).toBe(true);
+    }
+  });
+
+  it("a record with nothing on it produces NOTHING, rather than a pitch", () => {
+    // A thin page is the honest output here, and it is a signal worth seeing:
+    // it means enrich this lead, do not send it.
+    const recs = buildRecommendations({ businessName: "X", website: "https://x.com" });
+    expect(recs).toEqual([]);
+  });
+
+  it("DOES NOT ASSUME THE PROBLEM IS THE PHONE", () => {
+    // A business found through search with a working site gets no unprompted
+    // lecture about voicemail.
+    const recs = buildRecommendations({ businessName: "X", website: "https://x.com", reviewCount: 5 });
+    const text = recs.map((r) => `${r.title} ${r.detail}`).join(" ").toLowerCase();
+    expect(text).not.toMatch(/voicemail|answers every call|receptionist/);
   });
 
   it("adds the no-website point only when there is genuinely no website", () => {
@@ -626,5 +660,101 @@ describe("declaring a leader", () => {
   it("the minimum is a stated constant", () => {
     expect(MIN_CALLS).toBeGreaterThanOrEqual(20);
     expect(REVIEW_AFTER_CALLS).toBeGreaterThan(MIN_CALLS);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* it is not only about the phone, and it does not read like a pitch          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * "I feel like it's still targeting just one thing, which is the AI
+ * receptionist." The diagnosis already spanned the site, local search, the
+ * listing and the reviews — it was the COPY around it that collapsed
+ * everything back to answering calls.
+ */
+describe("THE FRAMING FOLLOWS THE FINDINGS, NOT THE PRODUCT", () => {
+  const searchProblem = {
+    businessName: "Rivera Plumbing",
+    findings: [
+      {
+        key: "buried_in_search",
+        headline: "You are on page two for plumber near me",
+        detail: "Three competitors sit above you for the search that matters most.",
+        basis: ["search_rank"],
+      },
+    ],
+  };
+
+  it("answers the finding it was given, not the phone", () => {
+    const recs = buildRecommendations(searchProblem);
+    const text = recs.map((r) => `${r.title} ${r.detail}`).join(" ").toLowerCase();
+    expect(text).toMatch(/results|search/);
+    expect(text).not.toMatch(/voicemail|after hours/);
+  });
+
+  it("the writer is told the answer is not always the phone", () => {
+    const writer = readFileSync(new URL("../src/lib/sequenceWriter.ts", import.meta.url), "utf8");
+    expect(writer).toMatch(/DO NOT WRITE EVERY EMAIL AS IF THE ANSWER IS ANSWERING THE PHONE/);
+    expect(writer).toMatch(/DO NOT WRITE LIKE A SALESMAN/);
+  });
+
+  it("the writer is banned from the specific salesman moves", () => {
+    const writer = readFileSync(new URL("../src/lib/sequenceWriter.ts", import.meta.url), "utf8");
+    for (const rule of [/pain-agitation/i, /No pressure of any kind/, /Ask for a reply, not a booking/]) {
+      expect(writer).toMatch(rule);
+    }
+  });
+});
+
+/*
+ * The preview has to render through the same component as the live page, or
+ * it is a picture of something else. And it must not touch the packet: an
+ * admin reading their own copy is not a prospect opening their link, and
+ * "opened" is a number people make decisions on.
+ */
+describe("SEEING INSIDE THE WORKSHOP CHANGES NOTHING", () => {
+  /*
+   * Comments stripped before matching.
+   *
+   * The first run of this failed on the route's own comment explaining why it
+   * does not write an opened event — a guard that reads prose is testing the
+   * documentation, not the behaviour.
+   */
+  const stripComments = (src: string) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  const preview = stripComments(
+    readFileSync(new URL("../src/app/api/workshop/preview/route.ts", import.meta.url), "utf8")
+  );
+  const page = readFileSync(
+    new URL("../src/app/(admin)/admin/campaigns/workshop/page.tsx", import.meta.url),
+    "utf8"
+  );
+  const live = readFileSync(
+    new URL("../src/app/workshop/[token]/page.tsx", import.meta.url),
+    "utf8"
+  );
+
+  it("NEVER WRITES — no status change, no opened event", () => {
+    expect(preview).not.toMatch(/\.update\(/);
+    expect(preview).not.toMatch(/recordEvent/);
+    expect(preview).not.toMatch(/workshop\.opened/);
+  });
+
+  it("runs the same two functions the real page runs", () => {
+    expect(preview).toMatch(/computeGaps\(gapInput\)/);
+    expect(preview).toMatch(/buildRecommendations\(gapInput\)/);
+  });
+
+  it("both pages render through the ONE shared component", () => {
+    expect(page).toMatch(/<WorkshopBody data=/);
+    expect(live).toMatch(/<WorkshopBody data=/);
+  });
+
+  it("the trial wording lives in one place and is marked not to be edited", () => {
+    const view = readFileSync(new URL("../src/components/WorkshopView.tsx", import.meta.url), "utf8");
+    expect(view).toMatch(/NOT TO BE EDITED/);
+    expect(view).toMatch(/I agree to a free 7-day trial, no cost, cancel anytime/);
   });
 });

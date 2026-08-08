@@ -321,51 +321,42 @@ export function buildRecommendations(input: GapInput): Recommendation[] {
     }
     return out;
   }
+  /*
+   * NO DIAGNOSIS, SO NO PITCH.
+   *
+   * This used to return four recommendations about answering the phone
+   * whatever the record said, which had two problems. It assumed the
+   * business's problem was calls — and the diagnosis above spans the site,
+   * local search, the listing and the reviews, so the phone is one of five
+   * things it might have been. And it filled a page with an offer at the
+   * exact moment there was nothing to base one on, which is what "still feels
+   * AI receptionist heavy" describes.
+   *
+   * What is left is only what the record actually supports. A short honest
+   * page beats a long generic one, and a thin page is a signal worth seeing:
+   * it means this lead needs enriching, not sending.
+   */
   const reviews = input.reviewCount;
   const busy = typeof reviews === "number" && reviews >= BUSY_REVIEW_COUNT;
 
-  out.push(
-    busy
-      ? {
-          key: "after_hours",
-          title: "Pick up after hours and at weekends",
-          detail: `With ${reviews} reviews you are clearly getting found. The calls that come in at seven in the evening, on a Sunday, or while you are under a sink are the ones worth catching — every one of them gets answered, and you get the details by text.`,
-          basis: "review_count",
-        }
-      : {
-          key: "after_hours",
-          title: "Pick up after hours and at weekends",
-          detail:
-            "Calls that arrive outside working hours, or while you are already on a job, get answered instead of going to voicemail. You get the caller's name, number and what they wanted, by text.",
-          basis: "general",
-        }
-  );
-
-  out.push({
-    key: "never_voicemail",
-    title: "Stop sending new customers to voicemail",
-    detail:
-      "Most people ringing a trade will not leave a message — they ring the next name on the list. Anything missed is answered on the first or second ring instead, so the job does not walk.",
-    basis: "general",
-  });
+  if (busy) {
+    out.push({
+      key: "after_hours",
+      title: "Catch the enquiries you are already earning",
+      detail: `With ${reviews} reviews you are clearly getting found. The question is what happens to the people who ring at seven in the evening, on a Sunday, or while you are under a sink — that is the part worth tightening first.`,
+      basis: "review_count",
+    });
+  }
 
   if (!(input.website || "").trim()) {
     out.push({
       key: "no_website_capture",
-      title: "Capture the enquiries your listing sends you",
+      title: "Give people somewhere to land",
       detail:
-        "There is no website on your listing, so everyone who looks you up has exactly one way in: the phone. That makes every unanswered call a lost job rather than an inconvenience.",
+        "There is no website on your listing, so anyone who looks you up has exactly one way in — the phone. A single page with what you do, where you work and a way to get in touch changes that.",
       basis: "website",
     });
   }
-
-  out.push({
-    key: "qualify",
-    title: "Find out what the job is before you ring back",
-    detail:
-      "Callers are asked what they need, where they are, and how urgent it is. You get that in a text, so you can decide who is worth ringing back first instead of working through them blind.",
-    basis: "general",
-  });
 
   const setup = (input.answeringSetup || "").trim();
   if (setup) {

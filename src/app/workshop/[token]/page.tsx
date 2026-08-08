@@ -1,6 +1,12 @@
 "use client";
 
 import { use, useCallback, useEffect, useState } from "react";
+import {
+  WorkshopBody,
+  WorkshopShell as Shell,
+  AGREEMENT,
+  type WorkshopPacket as Packet,
+} from "@/components/WorkshopView";
 
 // The page a business owner opens from a text message.
 //
@@ -8,22 +14,6 @@ import { use, useCallback, useEffect, useState } from "react";
 // changes what it has to be: no jargon, no internal vocabulary, readable on a
 // phone in a van, and honest. It says only what the record actually supports —
 // if there are no computable gaps, it shows none rather than filling the space.
-
-type Gap = { key: string; headline: string; detail: string; basis: string };
-type Recommendation = { key: string; title: string; detail: string; basis: string };
-
-type Packet = {
-  businessName: string;
-  city: string | null;
-  state: string | null;
-  gaps: Gap[];
-  recommendations: Recommendation[];
-  contact: { name: string; phone: string; email: string };
-  alreadyRequested: boolean;
-  requestedAt: string | null;
-};
-
-const AGREEMENT = "I agree to a free 7-day trial, no cost, cancel anytime";
 
 export default function WorkshopPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
@@ -133,84 +123,7 @@ export default function WorkshopPage({ params }: { params: Promise<{ token: stri
 
   return (
     <Shell>
-      <p className="faint" style={{ marginBottom: 4, letterSpacing: "0.1em", fontSize: "0.75rem" }}>
-        PREPARED FOR
-      </p>
-      <h1 style={{ marginBottom: 4, fontSize: "1.9rem", textTransform: "none", letterSpacing: 0 }}>
-        {data.businessName}
-      </h1>
-      {where && <p className="faint" style={{ marginBottom: 26 }}>{where}</p>}
-
-      {/* ------------------------------ the gaps ------------------------------ */}
-      {data.gaps.length > 0 ? (
-        <>
-          <h2 style={{ marginBottom: 12 }}>What we found</h2>
-          <div style={{ display: "grid", gap: 14, marginBottom: 30 }}>
-            {data.gaps.map((g) => (
-              <div
-                key={g.key}
-                style={{
-                  borderLeft: "3px solid var(--amber)",
-                  paddingLeft: 14,
-                }}
-              >
-                <div style={{ fontWeight: 700, fontSize: "1.05rem", marginBottom: 3 }}>
-                  {g.headline}
-                </div>
-                <p style={{ lineHeight: 1.6 }}>{g.detail}</p>
-              </div>
-            ))}
-          </div>
-        </>
-      ) : (
-        // No fabricated bullets. The offer stands on its own.
-        <p style={{ lineHeight: 1.65, marginBottom: 30, fontSize: "1.05rem" }}>
-          We help local service businesses stop losing work to missed calls — the
-          ones that come in after hours, at the weekend, or while you are already
-          on a job.
-        </p>
-      )}
-
-      {/* --------------------------- what we would do -------------------------- */}
-      {data.recommendations.length > 0 && (
-        <>
-          <h2 style={{ marginBottom: 4 }}>What we&rsquo;d set up for you</h2>
-          <p className="faint" style={{ marginBottom: 14, lineHeight: 1.55 }}>
-            All of it runs on your existing number. Nothing to install.
-          </p>
-          <div style={{ display: "grid", gap: 16, marginBottom: 30 }}>
-            {data.recommendations.map((r, i) => (
-              <div key={r.key} style={{ display: "flex", gap: 12 }}>
-                <div
-                  aria-hidden
-                  style={{
-                    flex: "none",
-                    width: 26,
-                    height: 26,
-                    borderRadius: "50%",
-                    border: "1px solid var(--amber)",
-                    color: "var(--amber)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: "0.8rem",
-                    fontWeight: 700,
-                    marginTop: 2,
-                  }}
-                >
-                  {i + 1}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: "1.02rem", marginBottom: 3 }}>
-                    {r.title}
-                  </div>
-                  <p style={{ lineHeight: 1.6 }}>{r.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
+      <WorkshopBody data={data} />
 
       {/* -------------------------------- the CTA ----------------------------- */}
       {!showForm ? (
@@ -288,20 +201,5 @@ export default function WorkshopPage({ params }: { params: Promise<{ token: stri
         </div>
       )}
     </Shell>
-  );
-}
-
-/** No navigation, no admin chrome. A prospect sees this and nothing else. */
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <main
-      style={{
-        maxWidth: 680,
-        margin: "0 auto",
-        padding: "48px 22px 80px",
-      }}
-    >
-      {children}
-    </main>
   );
 }

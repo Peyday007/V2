@@ -277,6 +277,23 @@ export default function PacketsAdmin() {
         it came from.
       </p>
 
+      {/*
+        The prospect's own page, readable from here.
+        Lives on this page because a packet IS the thing that produces one, and
+        the nav is already full. Opening a real token to check the wording
+        marks that packet as read and puts an admin in the funnel as a
+        prospect, so this is the only safe way to look.
+      */}
+      <p style={{ marginBottom: 22, lineHeight: 1.6 }}>
+        <a className="btn-ghost" href="/admin/campaigns/workshop" style={{ textDecoration: "none" }}>
+          See inside the workshop
+        </a>
+        <span className="faint" style={{ marginLeft: 12 }}>
+          What a business owner reads when they open their link. Nothing is
+          recorded.
+        </span>
+      </p>
+
       {(msg || err) && (
         <div
           className="card"

@@ -211,28 +211,53 @@ export function composePreview(input: ComposeInput): { subject: string; body: st
   const personal = composePersonalization(input);
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
 
-  const subject = `${input.businessName} — missed calls`;
+  const gapInput = {
+    businessName: input.businessName,
+    city: input.city,
+    website: input.website,
+    rating: input.rating,
+    reviewCount: input.reviewCount,
+    answeringSetup: input.answeringSetup,
+    findings: input.findings,
+  };
+  const gaps = computeGaps(gapInput);
+
+  /*
+   * LED BY WHAT WAS FOUND, not by the product.
+   *
+   * This used to open with a question about missed calls and then pitch an
+   * AI receptionist, whatever the diagnosis said — so a business whose actual
+   * problem was that nobody could find them in search got an email about the
+   * phone. Being obviously not about them is what makes cold email look
+   * automated, and it wasted the diagnosis we had already done.
+   */
+  const subject = gaps[0] ? `${input.businessName} — ${gaps[0].headline}` : `${input.businessName}`;
 
   const lines: string[] = [greeting, ""];
   lines.push(
     personal
-      ? `${capitalise(personal)} — so I wanted to ask one question.`
-      : "I wanted to ask one quick question."
+      ? `${capitalise(personal)} — so I had a look at how people find and reach you.`
+      : "I had a look at how people find and reach you."
   );
-  lines.push("");
-  lines.push(
-    "What happens to a call that comes in while you are on a job, or at seven in the evening?"
-  );
-  lines.push("");
-  lines.push(
-    "We put an AI receptionist on the line for local trades. It answers every call, asks what the job is and where, and texts you the details. Nothing goes to voicemail."
-  );
+
+  if (gaps.length > 0) {
+    lines.push("");
+    lines.push(gaps.length === 1 ? "One thing stood out:" : "A few things stood out:");
+    for (const g of gaps.slice(0, 3)) {
+      lines.push("");
+      lines.push(`• ${g.headline}${g.detail ? ` — ${g.detail}` : ""}`);
+    }
+  }
+
   if ((input.workshopLink || "").trim()) {
     lines.push("");
-    lines.push(`Here is what we found for ${input.businessName}: ${input.workshopLink!.trim()}`);
+    lines.push(
+      `The rest of it, and what we would do about each one, is here: ${input.workshopLink!.trim()}`
+    );
   }
   lines.push("");
-  lines.push("Worth a two-minute look?");
+  // A reply, not a booking link. See the writer's own rules.
+  lines.push("Worth a look?");
 
   return { subject, body: lines.join("\n") };
 }
