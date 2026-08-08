@@ -8,7 +8,8 @@ import {
   pushBody,
   readCampaignSteps,
   toInstantlySequence,
-  type BodyFormat,
+  countBlocks,
+  formatBody,
   type SendingAccountRow,
 } from "./mapping";
 
@@ -16,6 +17,7 @@ import {
 // tested — this file imports server-only, which a test cannot load. Re-exported
 // here so callers still have one import for the adapter.
 export {
+  countBlocks,
   explainStatus,
   formatBody,
   hasVisibleText,
@@ -282,9 +284,9 @@ export async function publishSequence(
    * honest rather than a shotgun: each attempt is checked against the real
    * campaign, and the one reported is the one that actually stored words.
    */
-  let last: { blank: number; stored: number } | null = null;
+  let last: { blank: number; fused: number; stored: number } | null = null;
 
-  for (const format of ["text", "html"] as const) {
+  for (const format of ["paragraphs", "html", "text"] as const) {
     const res = await call(`/campaigns/${encodeURIComponent(campaignId)}`, {
       method: "PATCH",
       body: { sequences: [toInstantlySequence(steps, format)] },
@@ -302,8 +304,24 @@ export async function publishSequence(
     if (stored === null) return { ok: true };
 
     const blank = stored.filter((s) => !hasVisibleText(s.body)).length;
-    if (blank === 0 && stored.length >= steps.length) return { ok: true };
-    last = { blank, stored: stored.length };
+
+    /*
+     * Structure, not just presence.
+     *
+     * "Is it empty" was too weak a check and shipped the second failure: the
+     * bodies came back full of words with every paragraph fused into one
+     * block, and passed. A step written as four paragraphs that stores as one
+     * did not survive, so it is compared against what was sent.
+     */
+    const fused = stored.filter((s, i) => {
+      const sent = steps[i];
+      if (!sent) return false;
+      const wanted = countBlocks(formatBody(sent.body, format));
+      return wanted > 1 && countBlocks(s.body) < wanted;
+    }).length;
+
+    if (blank === 0 && fused === 0 && stored.length >= steps.length) return { ok: true };
+    last = { blank, fused, stored: stored.length };
   }
 
   if (last && last.stored < steps.length) {
@@ -314,14 +332,23 @@ export async function publishSequence(
         `The rest were dropped, so the campaign is not what was written here.`,
     };
   }
+  if (last && last.blank > 0) {
+    return {
+      ok: false,
+      error:
+        `Instantly accepted the sequence but stored ${last.blank} of ${last.stored} emails with ` +
+        `an empty body — the subjects arrived and the words did not. All three formats were ` +
+        `tried and none stuck, so this is something about the campaign or the account rather ` +
+        `than the formatting. Press "Read it" below and paste the emails in by hand for now.`,
+    };
+  }
   return {
     ok: false,
     error:
-      `Instantly accepted the sequence but stored ${last?.blank ?? 0} of ${last?.stored ?? 0} ` +
-      `emails with an empty body — the subjects arrived and the words did not. Both the ` +
-      `plain-text and the HTML format were tried and neither stuck, so this is something about ` +
-      `the campaign or the account rather than the formatting. Press "Read it" below and paste ` +
-      `the emails into the Instantly editor by hand for now.`,
+      `The copy is in Instantly, but ${last?.fused ?? 0} of ${last?.stored ?? 0} emails lost ` +
+      `their paragraph breaks and will arrive as one block of text. Everything is there and it ` +
+      `will send — it just reads badly. Open the campaign's sequence editor and put the line ` +
+      `breaks back, or press "Read it" below and paste them in.`,
   };
 }
 

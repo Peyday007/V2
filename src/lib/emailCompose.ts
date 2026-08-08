@@ -160,6 +160,34 @@ export function composeVariables(input: ComposeInput): Record<string, string> {
     // The single recommendation most worth leading with.
     top_recommendation: recs[0]?.title ?? "",
     workshop_link: (input.workshopLink || "").trim(),
+
+    /*
+     * THE FINDINGS THEMSELVES, in the email.
+     *
+     * gap_headline is one line, and everything else we actually worked out
+     * sat behind a link — so the only people who ever saw the real substance
+     * were the ones curious enough to click. That is backwards: the findings
+     * ARE the reason the email is worth reading, and they should be in it.
+     *
+     * Written as lines rather than a paragraph because that is how somebody
+     * skims an email on a phone. Blank between them so they survive as
+     * separate blocks — see formatBody, which turns those into paragraphs.
+     *
+     * Both are empty strings when nothing was found, never a placeholder.
+     * A sentence about a business we know nothing about is exactly the
+     * "AI receptionist heavy" filler this is meant to replace.
+     */
+    gap_detail: gaps[0]?.detail ?? "",
+    gap_list: gaps
+      .slice(0, 3)
+      .map((g) => `• ${g.headline}${g.detail ? ` — ${g.detail}` : ""}`)
+      .join("\n"),
+    recommendation_list: recs
+      .slice(0, 3)
+      .map((r) => `• ${r.title}${r.detail ? ` — ${r.detail}` : ""}`)
+      .join("\n"),
+    /** How many things were found, so copy can say "three things" honestly. */
+    gap_count: gaps.length > 0 ? String(Math.min(gaps.length, 3)) : "",
     // So a template can branch instead of printing an empty line.
     has_website: (input.website || "").trim() ? "yes" : "no",
     spoke_to_owner: (input.answeringSetup || "").trim() ? "yes" : "no",

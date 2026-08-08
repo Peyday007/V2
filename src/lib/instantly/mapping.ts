@@ -71,26 +71,78 @@ export function normaliseCampaigns(body: unknown): Campaign[] {
 /**
  * How the line breaks are carried across.
  *
- * Two formats because we do not get to know which one this account's API
- * wants, and guessing cost a campaign: four emails published with their
- * subjects intact and every body blank, for days, with the app reporting
- * success. So both are expressed here and the publisher tries them against
- * the real campaign, reading back which one actually stored.
+ * THIS HAS BEEN WRONG TWICE, IN OPPOSITE DIRECTIONS, so the reasoning is
+ * written out rather than left to whoever reads it next.
  *
- *   "text"  — what Instantly's own API documentation shows: a plain string
- *             with \n between the lines. Tried FIRST, because it is the
- *             documented contract rather than an inference.
- *   "html"  — <br> between lines, markup escaped. What this code used to send
- *             on the assumption that the editor renders HTML.
+ * Instantly's campaign editor renders the body as HTML — the "send as
+ * text-only (no HTML)" switch in the campaign's own Options is off by
+ * default. Two consequences follow, and they are the two failures already
+ * seen in production:
+ *
+ *   Send a plain string with \n and every break COLLAPSES. HTML treats a
+ *   newline as whitespace, so a four-paragraph email arrives as one
+ *   unbroken block. Nothing errors. The read-back cannot catch it either:
+ *   the \n really is stored, it just does not render.
+ *
+ *   Send bare text joined by <br> and this account stored it BLANK. Four
+ *   emails, subjects intact, bodies empty, for days.
+ *
+ * The likely reason for the second is that the editor parses incoming HTML
+ * into a document model, and a fragment with no block-level element at all
+ * parses to an empty document. So the format that satisfies both constraints
+ * is proper paragraphs: every block wrapped in <p>, which is what the editor
+ * itself produces when a person types into it.
+ *
+ *   "paragraphs" — <p>…</p> per block. Tried FIRST: valid HTML, renders with
+ *                  the breaks intact, and is the shape the editor emits.
+ *   "html"       — <br> between lines. The previous behaviour, kept as a
+ *                  fallback rather than deleted, because it is only KNOWN to
+ *                  have failed on one account.
+ *   "text"       — plain \n. Last, because it is the documented shape and
+ *                  stores reliably, but renders as one paragraph. Content
+ *                  that reads badly beats no content at all.
  */
-export type BodyFormat = "text" | "html";
+export type BodyFormat = "paragraphs" | "html" | "text";
 
 export function formatBody(body: string, format: BodyFormat): string {
   if (format === "text") return body;
+
+  if (format === "html") {
+    return body
+      .split("\n")
+      .map((line) => (line.trim() === "" ? "<br>" : escapeHtml(line)))
+      .join("<br>");
+  }
+
+  /*
+   * Blank lines separate paragraphs; a single newline inside one is a line
+   * break within it. That is how the copy is written — an address line under
+   * a sign-off is not a new paragraph — so both have to survive.
+   */
   return body
-    .split("\n")
-    .map((line) => (line.trim() === "" ? "<br>" : escapeHtml(line)))
-    .join("<br>");
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => `<p>${block.split("\n").map(escapeHtml).join("<br>")}</p>`)
+    .join("");
+}
+
+/**
+ * How many separate blocks a stored body would render as.
+ *
+ * The read-back's structural check. A body that came back with its content
+ * intact but its paragraphs fused is the exact failure that shipped last
+ * time, and counting blocks is what tells the two apart — "is it empty" does
+ * not, because it is not empty.
+ */
+export function countBlocks(html: string): number {
+  const paragraphs = (html.match(/<p[\s>]/gi) || []).length;
+  if (paragraphs > 0) return paragraphs;
+  const breaks = (html.match(/<br\s*\/?>/gi) || []).length;
+  if (breaks > 0) return breaks + 1;
+  // No markup at all: whatever the newlines say, knowing HTML will collapse
+  // them when it renders.
+  return html.split(/\n{2,}/).filter((b) => b.trim()).length || (html.trim() ? 1 : 0);
 }
 
 /**
@@ -109,7 +161,7 @@ export function formatBody(body: string, format: BodyFormat): string {
  */
 export function toInstantlySequence(
   steps: { step: number; delayDays: number; subject: string; body: string }[],
-  format: BodyFormat = "text"
+  format: BodyFormat = "paragraphs"
 ): { steps: { type: string; delay: number; variants: { subject: string; body: string }[] }[] } {
   return {
     steps: steps.map((s, i) => ({

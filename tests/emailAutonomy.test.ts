@@ -27,6 +27,7 @@ import {
   readCampaignSteps,
   hasVisibleText,
   formatBody,
+  countBlocks,
 } from "../src/lib/instantly/mapping";
 import { planRefill, dailyCounterFor, todayString } from "../src/lib/refillPlan";
 
@@ -34,7 +35,8 @@ const step = (over: Partial<SequenceStep> = {}): SequenceStep => ({
   step: 1,
   delayDays: 0,
   subject: "Missed calls at {{business_name}}",
-  body: "Hi {{owner_first_name}},\n\nWhat happens to a call you cannot get to?",
+  body:
+    "Hi {{owner_first_name}},\n\nWhat happens to a call you cannot get to?\n\n{{gap_list}}",
   rationale: "Opens on the one question that matters.",
   ...over,
 });
@@ -273,13 +275,25 @@ describe("translating the cadence for Instantly", () => {
     expect(theirTotal).toBe(ourTotal);
   });
 
-  it("DEFAULTS TO THE DOCUMENTED PLAIN-TEXT FORM, not the guessed one", () => {
-    // Instantly's own API documentation shows bodies as a plain string with
-    // \n between the lines. The <br> conversion below was an inference, and
-    // an unverified inference is what published four emails with blank
-    // bodies. The documented form goes first now.
+  it("DEFAULTS TO REAL PARAGRAPHS, which is the only form that both stores and renders", () => {
+    // Plain \n stores fine and renders as one block, because HTML collapses
+    // newlines. Bare <br> rendered fine and stored BLANK on the live account.
+    // <p> blocks are what the editor itself produces and satisfy both.
     const out = toInstantlySequence([step({ body: "Hi,\n\nOne question." })]);
-    expect(out.steps[0].variants[0].body).toBe("Hi,\n\nOne question.");
+    expect(out.steps[0].variants[0].body).toBe("<p>Hi,</p><p>One question.</p>");
+  });
+
+  it("keeps a single newline as a break INSIDE its paragraph", () => {
+    // A sign-off and the line under it are one block, not two.
+    expect(formatBody("Thanks,\nSam", "paragraphs")).toBe("<p>Thanks,<br>Sam</p>");
+  });
+
+  it("COUNTS BLOCKS, so fused paragraphs can be told from missing ones", () => {
+    expect(countBlocks("<p>a</p><p>b</p><p>c</p>")).toBe(3);
+    expect(countBlocks("a<br>b")).toBe(2);
+    // The failure that shipped: content present, structure gone.
+    expect(countBlocks("a b c")).toBe(1);
+    expect(countBlocks("")).toBe(0);
   });
 
   it("keeps the line breaks in HTML form, so an email is not one paragraph", () => {
@@ -529,6 +543,48 @@ describe("THE HANDLER USES THE COUNT IT OWNS", () => {
  * publishing checked that the PATCH was accepted and never that the words
  * landed. An accepted request and a correct one are different facts.
  */
+describe("THE FINDINGS BELONG IN THE EMAIL, NOT BEHIND THE LINK", () => {
+  /*
+   * We diagnose the business, then the copy said "here is what we found:
+   * <link>" — so everything of substance was visible only to whoever was
+   * curious enough to click, which is the person who needed convincing
+   * least. The findings are the reason the email is worth reading.
+   */
+  const firstEmail = (body: string) =>
+    validatePlan(
+      plan([
+        step({ body }),
+        step({ step: 2, delayDays: 3, body: "More soon. {{workshop_link}}" }),
+      ])
+    );
+
+  it("REFUSES a first email that only offers a link", () => {
+    const problems = firstEmail("Hi {{owner_first_name}},\n\nWe looked at {{business_name}}. See {{workshop_link}}");
+    expect(problems.some((p) => /does not say what we found/.test(p.problem))).toBe(true);
+  });
+
+  it("accepts one that carries the list of findings", () => {
+    expect(firstEmail("Hi,\n\n{{gap_list}}\n\nMore: {{workshop_link}}")).toEqual([]);
+  });
+
+  it("accepts the headline-and-detail form too", () => {
+    expect(
+      firstEmail("Hi,\n\n{{gap_headline}}\n\n{{gap_detail}}\n\nMore: {{workshop_link}}")
+    ).toEqual([]);
+  });
+
+  it("names the FIRST email, which is the one everybody reads", () => {
+    const problems = firstEmail("Nothing useful here. {{workshop_link}}");
+    expect(problems.find((p) => /does not say what we found/.test(p.problem))?.step).toBe(1);
+  });
+
+  it("the writer is told to put them in, not to link to them", () => {
+    const writer = readFileSync(new URL("../src/lib/sequenceWriter.ts", import.meta.url), "utf8");
+    expect(writer).toMatch(/PUT THE FINDINGS IN THE EMAIL/);
+    expect(writer).toMatch(/still be worth reading if the link were removed/);
+  });
+});
+
 describe("READING BACK WHAT INSTANTLY ACTUALLY STORED", () => {
   const campaign = (steps: { subject?: string; body?: string }[]) => ({
     id: "c1",
@@ -617,13 +673,20 @@ describe("PUBLISHING VERIFIES, RATHER THAN TRUSTING THE RESPONSE", () => {
   it("an empty body is reported as NOT published", () => {
     const publish = client.slice(client.indexOf("export async function publishSequence"));
     expect(publish).toMatch(/hasVisibleText\(s\.body\)/);
-    // Success requires BOTH no blank bodies and every step stored.
-    expect(publish).toMatch(/blank === 0 && stored\.length >= steps\.length/);
+    // Success requires no blank bodies, no fused ones, and every step stored.
+    expect(publish).toMatch(/blank === 0 && fused === 0 && stored\.length >= steps\.length/);
   });
 
-  it("TRIES THE DOCUMENTED FORMAT FIRST, then the old assumption", () => {
+  it("CHECKS STRUCTURE TOO — content present with the breaks gone is a failure", () => {
+    // "Is it empty" passed a sequence whose paragraphs had all fused into one
+    // block. That shipped. Emptiness is not the only way to lose the copy.
     const publish = client.slice(client.indexOf("export async function publishSequence"));
-    expect(publish).toMatch(/\["text", "html"\] as const/);
+    expect(publish).toMatch(/countBlocks\(s\.body\) < wanted/);
+  });
+
+  it("tries paragraphs first, then the two formats already known to fail one way", () => {
+    const publish = client.slice(client.indexOf("export async function publishSequence"));
+    expect(publish).toMatch(/\["paragraphs", "html", "text"\] as const/);
     expect(publish).toMatch(/toInstantlySequence\(steps, format\)/);
   });
 

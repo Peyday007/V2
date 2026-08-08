@@ -133,6 +133,10 @@ export const KNOWN_VARIABLES = [
   "review_count",
   "rating",
   "gap_headline",
+  "gap_detail",
+  "gap_list",
+  "gap_count",
+  "recommendation_list",
   "top_recommendation",
   "workshop_link",
   "has_website",
@@ -263,6 +267,33 @@ export function validatePlan(plan: SequencePlan): PlanProblem[] {
       problem:
         "No email links to the prospect's page. Put {{workshop_link}} in at least one of them — it is the thing they click to see what you found.",
     });
+  }
+
+  /*
+   * The first email has to carry the findings, not just a link to them.
+   *
+   * We do the work of diagnosing a business and then the copy said "here is
+   * what we found: <link>" — so the substance was visible only to somebody
+   * curious enough to click, which is the person who needed convincing
+   * least. The findings are the reason the email is worth reading. They go
+   * in it.
+   *
+   * Checked on the FIRST email specifically: that is the one nearly everybody
+   * reads and most people only read.
+   */
+  const first = steps.find((s) => s.step === 1) ?? steps[0];
+  if (first) {
+    const carries = variablesUsed(`${first.subject}\n${first.body}`);
+    const hasFindings = ["gap_list", "gap_headline", "gap_detail"].some((v) => carries.includes(v));
+    if (!hasFindings) {
+      problems.push({
+        step: 1,
+        problem:
+          "The first email does not say what we found. Put {{gap_list}} in it, or " +
+          "{{gap_headline}} with {{gap_detail}} — an owner who has to click a link to " +
+          "learn anything will not click.",
+      });
+    }
   }
 
   if (total > MAX_TOTAL_DAYS) {
