@@ -30,13 +30,13 @@ import {
   countBlocks,
 } from "../src/lib/instantly/mapping";
 import { planRefill, dailyCounterFor, todayString } from "../src/lib/refillPlan";
+import { composeVariables } from "../src/lib/emailCompose";
 
 const step = (over: Partial<SequenceStep> = {}): SequenceStep => ({
   step: 1,
   delayDays: 0,
   subject: "Missed calls at {{business_name}}",
-  body:
-    "Hi {{owner_first_name}},\n\nWhat happens to a call you cannot get to?\n\n{{gap_list}}",
+  body: "{{greeting}}\n\nWhat happens to a call you cannot get to?\n\n{{gap_list}}",
   rationale: "Opens on the one question that matters.",
   ...over,
 });
@@ -710,5 +710,66 @@ describe("PUBLISHING VERIFIES, RATHER THAN TRUSTING THE RESPONSE", () => {
   it("the page is told what the campaign really contains", () => {
     expect(route).toMatch(/inInstantly/);
     expect(route).toMatch(/blankBodies/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* "Hey ," is what most prospects were reading                                */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Most leads are reached at a general inbox, and a general inbox rarely comes
+ * with a person's name. A template that writes its own greeting around
+ * {{owner_first_name}} therefore renders as "Hey ," — the first thing the
+ * prospect reads, announcing a mail merge before the first sentence.
+ */
+describe("THE GREETING MUST SURVIVE NOT KNOWING WHO THEY ARE", () => {
+  it("resolves to a name when there is one", () => {
+    const v = composeVariables({ businessName: "Rivera Plumbing", ownerName: "Maria Rivera" } as never);
+    expect(v.greeting).toBe("Hi Maria,");
+  });
+
+  it("resolves to a COMPLETE greeting when there is not", () => {
+    const v = composeVariables({ businessName: "Rivera Plumbing", ownerName: null } as never);
+    expect(v.greeting).toBe("Hi,");
+    // The bug this replaces, stated so it cannot come back silently.
+    expect(`Hey ${v.owner_first_name},`).toBe("Hey ,");
+  });
+
+  it("REFUSES a template that builds its own greeting from the name", () => {
+    const problems = validatePlan(
+      plan([
+        step({ body: "Hey {{owner_first_name}},\n\n{{gap_list}}" }),
+        step({ step: 2, delayDays: 3, body: "More. {{workshop_link}}" }),
+      ])
+    );
+    expect(problems.some((p) => /renders as/.test(p.problem))).toBe(true);
+  });
+
+  it("catches every way of writing it", () => {
+    for (const opener of ["Hi", "Hey", "Hello", "Dear", "hi", "HEY"]) {
+      const problems = validatePlan(
+        plan([
+          step({ body: `${opener} {{owner_first_name}},\n\n{{gap_list}}` }),
+          step({ step: 2, delayDays: 3, body: "More. {{workshop_link}}" }),
+        ])
+      );
+      expect(problems.some((p) => /\{\{greeting\}\}/.test(p.problem))).toBe(true);
+    }
+  });
+
+  it("still allows the name MID-SENTENCE, where an empty one reads fine", () => {
+    const problems = validatePlan(
+      plan([
+        step({ body: "{{greeting}}\n\n{{gap_list}}\n\nThanks {{owner_first_name}}" }),
+        step({ step: 2, delayDays: 3, body: "More. {{workshop_link}}" }),
+      ])
+    );
+    expect(problems).toEqual([]);
+  });
+
+  it("the writer is told to use it", () => {
+    const writer = readFileSync(new URL("../src/lib/sequenceWriter.ts", import.meta.url), "utf8");
+    expect(writer).toMatch(/THE GREETING IS \{\{greeting\}\}, ALWAYS/);
   });
 });

@@ -212,6 +212,8 @@ Put {{gap_list}} on its own line with a blank line either side, so the bullets k
 
 THE LINK. Every prospect gets their own page — the fuller version of what we found and what we would do about it — and its URL arrives as {{workshop_link}}. AT LEAST ONE EMAIL MUST INCLUDE IT. Introduce it the way a person would ("the rest of what we found for {{business_name}} is here: {{workshop_link}}"), not as a bare URL on its own line, and do not put it in the very first sentence of the first email.
 
+THE GREETING IS {{greeting}}, ALWAYS. It resolves to "Hi Maria," when we know who the owner is and "Hi," when we do not — on its own line, punctuation included. Never write "Hi {{owner_first_name}}," yourself: for a lead reached at a general inbox we have no name, and that renders as "Hey ," which is the first thing they read. Using {{owner_first_name}} later in a sentence is fine as long as the sentence still reads when it is empty.
+
 MERGE FIELDS you may use, and only these: ${KNOWN_VARIABLES.map((v) => `{{${v}}}`).join(", ")}
 Anything else appears literally in somebody's inbox. {{business_name}} and {{owner_first_name}} may be empty for some leads, so never build a sentence that breaks without them.
 

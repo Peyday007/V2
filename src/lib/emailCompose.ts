@@ -150,6 +150,22 @@ export function composeVariables(input: ComposeInput): Record<string, string> {
 
   return {
     owner_first_name: firstName || "",
+
+    /*
+     * THE OPENING LINE, RESOLVED HERE RATHER THAN IN THE TEMPLATE.
+     *
+     * A sequence that writes "Hey {{owner_first_name}}," renders as "Hey ,"
+     * for every lead whose name we do not have — which is most of the ones
+     * reached at a general inbox. That is the first thing the prospect reads
+     * and it announces a mail merge before the first sentence.
+     *
+     * Instantly has no conditional syntax we can rely on, so the branch has to
+     * happen on this side. "Hi," alone is not a failure state: it is how a
+     * person writes to somebody whose name they do not know, which is exactly
+     * the situation.
+     */
+    greeting: firstName ? `Hi ${firstName},` : "Hi,",
+
     business_name: input.businessName,
     city: (input.city || "").trim(),
     state: (input.state || "").trim(),

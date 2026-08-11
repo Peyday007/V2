@@ -127,6 +127,10 @@ export function containsMoneyOrTerms(text: string): string | null {
  */
 export const KNOWN_VARIABLES = [
   "owner_first_name",
+  // Resolves to "Hi Maria," or "Hi," — see composeVariables. Templates must
+  // use this rather than building a greeting around owner_first_name, which
+  // renders as "Hey ," for every lead whose name we do not hold.
+  "greeting",
   "business_name",
   "city",
   "state",
@@ -267,6 +271,29 @@ export function validatePlan(plan: SequencePlan): PlanProblem[] {
       problem:
         "No email links to the prospect's page. Put {{workshop_link}} in at least one of them — it is the thing they click to see what you found.",
     });
+  }
+
+  /*
+   * "Hey {{owner_first_name}}," renders as "Hey ," when we have no name.
+   *
+   * Which is most leads reached at a general inbox — so the very first thing
+   * a prospect reads announces a mail merge, before the first sentence. The
+   * greeting is resolved in composeVariables instead, where the branch can
+   * actually happen; templates use {{greeting}}.
+   *
+   * Checked as a pattern rather than banning owner_first_name outright: using
+   * the name mid-sentence is fine when a sentence still reads without it.
+   */
+  for (const s of steps) {
+    if (/\b(hi|hey|hello|dear)\s+\{\{\s*owner_first_name\s*\}\}/i.test(s.body || "")) {
+      problems.push({
+        step: s.step,
+        problem:
+          "This opens with a greeting built from {{owner_first_name}}, which renders as " +
+          '"Hey ," for every lead whose name we do not have. Use {{greeting}} instead — it ' +
+          'resolves to "Hi Maria," or "Hi," on its own.',
+      });
+    }
   }
 
   /*
