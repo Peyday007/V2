@@ -34,6 +34,14 @@ export type InstantlySettings = {
   last_capacity_sync_at: string | null;
   computed_daily_sends: number | null;
   computed_leads_per_day: number | null;
+
+  /* --- what the top-up last decided, from migration 0037 --- */
+  /** planRefill's own words for why it did or did not push. */
+  last_refill_note: string | null;
+  /** When it last CONSIDERED the question — distinct from last_auto_push_at. */
+  last_refill_checked_at: string | null;
+  /** How full the campaign was at that moment; null when unreadable. */
+  last_refill_active_count: number | null;
 };
 
 const BASE_COLUMNS =
@@ -45,7 +53,18 @@ const AUTOPUSH_COLUMNS =
 const CAPACITY_COLUMNS =
   "smart_capacity_enabled, auto_adjust_limits_enabled, account_limit_ceiling, capacity_headroom, last_capacity_sync_at, computed_daily_sends, computed_leads_per_day";
 
-export const SETTINGS_COLUMNS = `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}`;
+/*
+ * From 0037. Written on EVERY exit of the top-up, including the quiet ones.
+ *
+ * The whole point of these is to answer "why is nothing being pushed" without
+ * anybody reading a server log, so they are loaded here and shown on the page.
+ * They were written for months and read by nothing, which made the migration
+ * that added them pointless.
+ */
+const REFILL_NOTE_COLUMNS =
+  "last_refill_note, last_refill_checked_at, last_refill_active_count";
+
+export const SETTINGS_COLUMNS = `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}, ${REFILL_NOTE_COLUMNS}`;
 
 /**
  * What the settings are before anybody has saved any.
@@ -76,6 +95,9 @@ export const SETTINGS_DEFAULTS: InstantlySettings = {
   last_capacity_sync_at: null,
   computed_daily_sends: null,
   computed_leads_per_day: null,
+  last_refill_note: null,
+  last_refill_checked_at: null,
+  last_refill_active_count: null,
 };
 
 /** Points at the migration rather than repeating a Postgres error verbatim. */
@@ -130,6 +152,10 @@ export async function loadSettings(): Promise<SettingsLoad> {
     let autoPushAvailable = true;
     let capacityAvailable = true;
     let res = await read(SETTINGS_COLUMNS);
+    // Newest migration drops off first: 0037's note columns.
+    if (res.error && isMissingColumnError(res.error)) {
+      res = await read(`${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}`);
+    }
     if (res.error && isMissingColumnError(res.error)) {
       capacityAvailable = false;
       res = await read(`${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}`);
@@ -178,6 +204,9 @@ export async function loadSettings(): Promise<SettingsLoad> {
         last_capacity_sync_at: data.last_capacity_sync_at ?? null,
         computed_daily_sends: data.computed_daily_sends ?? null,
         computed_leads_per_day: data.computed_leads_per_day ?? null,
+        last_refill_note: data.last_refill_note ?? null,
+        last_refill_checked_at: data.last_refill_checked_at ?? null,
+        last_refill_active_count: data.last_refill_active_count ?? null,
       },
       error: null,
       autoPushAvailable,

@@ -773,3 +773,59 @@ describe("THE GREETING MUST SURVIVE NOT KNOWING WHO THEY ARE", () => {
     expect(writer).toMatch(/THE GREETING IS \{\{greeting\}\}, ALWAYS/);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* the note the top-up writes has to be READ                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Migration 0037 added last_refill_note precisely so "why is nothing being
+ * pushed" had an answer that was not a server log. The worker wrote it on
+ * every exit path for months and NOTHING READ IT — the settings loader did not
+ * select the columns and the page did not render them, which made the
+ * migration pointless. The same shape of bug as the after-call gate and the
+ * push ordering: written correctly, never wired.
+ */
+describe("WHY IT DID NOT PUSH IS READABLE WITHOUT A SERVER LOG", () => {
+  const store = readFileSync(new URL("../src/lib/instantlyStore.ts", import.meta.url), "utf8");
+  const page = readFileSync(
+    new URL("../src/app/(admin)/admin/email/page.tsx", import.meta.url),
+    "utf8"
+  );
+  const handlers = readFileSync(new URL("../src/lib/jobHandlers.ts", import.meta.url), "utf8");
+
+  it("the worker writes it", () => {
+    expect(handlers).toMatch(/last_refill_note/);
+  });
+
+  it("the settings loader SELECTS it", () => {
+    /*
+     * Asserts the columns are in the SELECT, not merely that a constant
+     * holding them exists somewhere in the file. The first version of this
+     * test checked the latter and passed happily when the constant was
+     * declared and never used — which is the precise bug being guarded
+     * against, so it was testing nothing.
+     */
+    expect(store).toMatch(
+      /SETTINGS_COLUMNS = `\$\{BASE_COLUMNS\}, \$\{AUTOPUSH_COLUMNS\}, \$\{CAPACITY_COLUMNS\}, \$\{REFILL_NOTE_COLUMNS\}`/
+    );
+    expect(store).toMatch(/last_refill_note, last_refill_checked_at, last_refill_active_count/);
+  });
+
+  it("it survives the trip through the loader into the returned settings", () => {
+    expect(store).toMatch(/last_refill_note: data\.last_refill_note \?\? null/);
+  });
+
+  it("THE PAGE RENDERS IT", () => {
+    expect(page).toMatch(/s\.last_refill_note &&/);
+    expect(page).toMatch(/Why it last did what it did/);
+  });
+
+  it("an unrun 0037 steps down a tier rather than blanking the page", () => {
+    // The failure that took the packet pipeline down: selecting a column from
+    // a migration nobody ran fails the WHOLE query.
+    expect(store).toMatch(
+      /Newest migration drops off first[\s\S]{0,200}\$\{CAPACITY_COLUMNS\}`\)/
+    );
+  });
+});

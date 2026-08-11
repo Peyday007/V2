@@ -30,6 +30,10 @@ type Settings = {
   computed_daily_sends: number | null;
   computed_leads_per_day: number | null;
   last_capacity_sync_at: string | null;
+  /** From 0037. Absent on an older database; every read defaults it. */
+  last_refill_note?: string | null;
+  last_refill_checked_at?: string | null;
+  last_refill_active_count?: number | null;
 };
 
 type Capacity = {
@@ -922,6 +926,40 @@ export default function EmailPage() {
                 ? ` Last top-up ${new Date(s.last_auto_push_at).toLocaleString()}. ${status.pushedToday} sent today.`
                 : " It has not run yet."}
             </p>
+
+            {/*
+              WHY IT DID NOT PUSH, in its own words.
+
+              The top-up runs every minute and almost always decides to do
+              nothing, which is correct — and for months that decision went to
+              a server log and nowhere else. Migration 0037 added these columns
+              precisely so the reason would be readable, and then nothing read
+              them, which made the migration pointless. "Why are more leads not
+              being fed in" is the question they exist to answer.
+            */}
+            {s.last_refill_note && (
+              <p
+                style={{
+                  lineHeight: 1.7,
+                  border: "1px solid var(--border-strong)",
+                  borderRadius: 4,
+                  padding: "10px 12px",
+                  marginTop: 0,
+                  marginBottom: 14,
+                }}
+              >
+                <strong>Why it last did what it did:</strong> {s.last_refill_note}
+                {s.last_refill_active_count !== null &&
+                  s.last_refill_active_count !== undefined &&
+                  ` The campaign held ${s.last_refill_active_count} leads at the time.`}
+                {s.last_refill_checked_at && (
+                  <span className="faint">
+                    {" "}
+                    Checked {new Date(s.last_refill_checked_at).toLocaleString()}.
+                  </span>
+                )}
+              </p>
+            )}
 
             {/*
               Kick it off by hand.
