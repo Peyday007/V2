@@ -87,6 +87,20 @@ async function runTick() {
    * change within sixty seconds. The handler no-ops entirely unless an
    * administrator switched auto_reenrich_enabled on.
    */
+  /*
+   * Keep the supply of leads going, hourly.
+   *
+   * Hourly rather than per-minute because a sourcing run takes minutes to
+   * plan and hours to enrich, and checking more often only produces the same
+   * answer more times. The handler no-ops entirely unless an administrator
+   * switched automatic sourcing on.
+   */
+  await enqueue({
+    type: "keep_funnel_full",
+    idempotencyKey: `keep_funnel_full:${new Date().toISOString().slice(0, 13)}`,
+    priority: 215,
+  }).catch(() => {});
+
   await enqueue({
     type: "auto_reenrich",
     idempotencyKey: `auto_reenrich:${new Date().toISOString().slice(0, 10)}`,

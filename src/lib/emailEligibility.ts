@@ -231,6 +231,19 @@ export type EmailAvailability = {
    * completely different programmes. Counted before anything sends.
    */
   audience: Record<EmailAudience, number>;
+  /**
+   * The address and the name crossed against each other.
+   *
+   * "personalAndNamed" is the only one that is unambiguously a personal email
+   * with a person's name on it. The other three are the compromises currently
+   * being made, counted so the choice is informed rather than assumed.
+   */
+  reach: {
+    personalAndNamed: number;
+    personalNoName: number;
+    genericButNamed: number;
+    genericNoName: number;
+  };
 };
 
 export function summarizeEmailAvailability(rows: EmailLeadRow[]): EmailAvailability {
@@ -241,12 +254,33 @@ export function summarizeEmailAvailability(rows: EmailLeadRow[]): EmailAvailabil
     personal: 0,
     generic: 0,
   };
+  /*
+   * The address and the name are DIFFERENT questions, and conflating them is
+   * why "does every email have a person's name on it" could not be answered.
+   *
+   * A general inbox can belong to a business whose owner we have named, and a
+   * personal address can arrive with no name at all. Only the first row here
+   * is unambiguously "a personal email with their name attached".
+   */
+  let personalAndNamed = 0;
+  let personalNoName = 0;
+  let genericButNamed = 0;
+  let genericNoName = 0;
+
   for (const row of rows) {
     const reason = emailUnavailableReason(row);
     if (reason === null) {
       available += 1;
       const chosen = chooseEmail(row);
-      if (chosen) audience[chosen.audience] += 1;
+      if (chosen) {
+        audience[chosen.audience] += 1;
+        const named = knowsAName(row as PushCandidate);
+        const personal = chosen.audience !== "generic";
+        if (personal && named) personalAndNamed += 1;
+        else if (personal) personalNoName += 1;
+        else if (named) genericButNamed += 1;
+        else genericNoName += 1;
+      }
     } else {
       reasons.set(reason, (reasons.get(reason) || 0) + 1);
     }
@@ -258,6 +292,7 @@ export function summarizeEmailAvailability(rows: EmailLeadRow[]): EmailAvailabil
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count),
     audience,
+    reach: { personalAndNamed, personalNoName, genericButNamed, genericNoName },
   };
 }
 
@@ -278,7 +313,7 @@ export function explainNonePushable(a: EmailAvailability): string {
  * column added by an unrun migration cannot take the whole page down.
  */
 export const EMAIL_ELIGIBILITY_COLUMNS =
-  "id, business_name, direct_email, owner_email, website_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at";
+  "id, business_name, direct_email, owner_email, website_email, website_email_kind, decision_maker_name, owner_name, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at";
 
 /**
  * The same list, minus the columns that arrive with a migration.
@@ -294,9 +329,21 @@ export const EMAIL_ELIGIBILITY_COLUMNS =
  */
 export const EMAIL_ELIGIBILITY_TIERS: string[] = [
   EMAIL_ELIGIBILITY_COLUMNS,
+  /*
+   * THE NAME COLUMNS MATTER HERE, not just the address ones.
+   *
+   * They were missing entirely, so knowsAName read undefined for every lead
+   * and any count of "how many can we greet by name" would have been zero
+   * however many names were on record — a wrong number that looks like a
+   * finding. Kept in every tier that can carry them.
+   */
+  // no website_email_kind (0036 unrun)
+  "id, business_name, direct_email, owner_email, website_email, decision_maker_name, owner_name, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
   // no website_email (0030 unrun)
-  "id, business_name, direct_email, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
-  // no direct_email either (0023 unrun)
+  "id, business_name, direct_email, owner_email, decision_maker_name, owner_name, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
+  // no decision_maker_name (0023 unrun) — owner_name predates all of this
+  "id, business_name, direct_email, owner_email, owner_name, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
+  // oldest schema this can still answer for
   "id, business_name, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
 ];
 
@@ -362,4 +409,20 @@ export function onlyNamedPeople<T extends PushCandidate>(leads: T[]): T[] {
     const chosen = chooseEmail(l);
     return !!chosen && chosen.audience !== "generic";
   });
+}
+
+/**
+ * A personal address AND a person's name behind it.
+ *
+ * Stricter than onlyNamedPeople, and separate from it because they refuse
+ * different leads: onlyNamedPeople keeps maria@ with no name on record, which
+ * still opens "Hi," rather than "Hi Maria,". This is the filter behind "I need
+ * them to be personal emails with their name attached", stated exactly.
+ *
+ * Kept as its own function rather than folded into the other so that turning
+ * it on is a visible decision with a number attached, not a quiet change of
+ * meaning to a setting somebody already ticked.
+ */
+export function onlyNamedPeopleWeCanGreet<T extends PushCandidate>(leads: T[]): T[] {
+  return onlyNamedPeople(leads).filter((l) => knowsAName(l));
 }

@@ -19,6 +19,8 @@ export type InstantlySettings = {
   auto_push_enabled: boolean;
   /** Refuse info@/office@ entirely. Off by default — see 0038. */
   named_people_only: boolean;
+  /** Also refuse a personal address with nobody named behind it. See 0042. */
+  require_named_person: boolean;
   target_active_leads: number;
   daily_push_cap: number;
   last_auto_push_at: string | null;
@@ -48,7 +50,7 @@ const BASE_COLUMNS =
   "enabled, campaign_id, campaign_name, max_push_per_run, auto_reply_enabled, reply_confidence_floor";
 
 const AUTOPUSH_COLUMNS =
-  "auto_push_enabled, named_people_only, target_active_leads, daily_push_cap, last_auto_push_at, pushed_today, pushed_today_date, active_sequence_id";
+  "auto_push_enabled, named_people_only, require_named_person, target_active_leads, daily_push_cap, last_auto_push_at, pushed_today, pushed_today_date, active_sequence_id";
 
 const CAPACITY_COLUMNS =
   "smart_capacity_enabled, auto_adjust_limits_enabled, account_limit_ceiling, capacity_headroom, last_capacity_sync_at, computed_daily_sends, computed_leads_per_day";
@@ -82,6 +84,7 @@ export const SETTINGS_DEFAULTS: InstantlySettings = {
   reply_confidence_floor: 0.7,
   auto_push_enabled: false,
   named_people_only: false,
+  require_named_person: false,
   target_active_leads: 200,
   daily_push_cap: 100,
   last_auto_push_at: null,
@@ -189,6 +192,7 @@ export async function loadSettings(): Promise<SettingsLoad> {
         ),
         auto_push_enabled: !!data.auto_push_enabled,
         named_people_only: !!data.named_people_only,
+        require_named_person: !!data.require_named_person,
         target_active_leads: Number(data.target_active_leads ?? SETTINGS_DEFAULTS.target_active_leads),
         daily_push_cap: Number(data.daily_push_cap ?? SETTINGS_DEFAULTS.daily_push_cap),
         last_auto_push_at: data.last_auto_push_at ?? null,

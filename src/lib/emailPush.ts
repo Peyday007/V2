@@ -12,6 +12,7 @@ import {
   summarizeEmailAvailability,
   orderForPush,
   onlyNamedPeople,
+  onlyNamedPeopleWeCanGreet,
   canRepush,
   type EmailLeadRow,
 } from "./emailEligibility";
@@ -209,7 +210,16 @@ export async function pushEligibleLeads(
    * addresses means refusing most of the list — a one-van operation usually
    * publishes only info@ — so it is an administrator's decision, not a default.
    */
-  const wanted = settings.named_people_only ? onlyNamedPeople(eligible) : eligible;
+  /*
+   * Two filters, applied narrowest last.
+   *
+   * named_people_only refuses info@ and office@. require_named_person also
+   * refuses a personal address with nobody named behind it — the lead whose
+   * email would open "Hi," rather than "Hi Maria,". Separate switches because
+   * they refuse different leads and each costs volume.
+   */
+  let wanted = settings.named_people_only ? onlyNamedPeople(eligible) : eligible;
+  if (settings.require_named_person) wanted = onlyNamedPeopleWeCanGreet(wanted);
   if (wanted.length === 0 && eligible.length > 0) {
     return nothing(
       `${eligible.length} lead${eligible.length === 1 ? " has" : "s have"} an address, but every one ` +

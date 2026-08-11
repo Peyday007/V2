@@ -259,6 +259,12 @@ export async function PUT(req: NextRequest) {
     patch.named_people_only = body.named_people_only;
   }
 
+  if (typeof body.require_named_person === "boolean") {
+    // Same reasoning, one notch stricter: refuses a personal address with
+    // nobody named behind it, so the greeting is always a name.
+    patch.require_named_person = body.require_named_person;
+  }
+
   if (typeof body.auto_push_enabled === "boolean") {
     /*
      * Switching this on hands over the decision to send. Same treatment as

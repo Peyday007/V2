@@ -21,6 +21,7 @@ type Settings = {
   reply_confidence_floor: number;
   auto_push_enabled: boolean;
   named_people_only: boolean;
+  require_named_person?: boolean;
   target_active_leads: number;
   daily_push_cap: number;
   last_auto_push_at: string | null;
@@ -105,6 +106,13 @@ type Status = {
     reasons: { reason: string; count: number }[];
     /** Absent until the server that returns it is deployed. */
     audience?: { decision_maker: number; personal: number; generic: number } | null;
+    /** The address crossed against the name. Absent until 0042's server ships. */
+    reach?: {
+      personalAndNamed: number;
+      personalNoName: number;
+      genericButNamed: number;
+      genericNoName: number;
+    } | null;
   };
   pushed: number;
   awaitingHuman: number;
@@ -138,6 +146,38 @@ type Health = {
   steps: { label: string; state: "ok" | "stopped" | "waiting" | "unknown"; detail: string }[];
 };
 
+/** The whole chain in one answer. Shape from /api/funnel. */
+type Funnel = {
+  health: {
+    headline: string;
+    flowing: boolean;
+    stages: {
+      key: string;
+      label: string;
+      state: "ok" | "stuck" | "working";
+      detail: string;
+      fix: string | null;
+    }[];
+  };
+  reach: {
+    personalAndNamed: number;
+    personalNoName: number;
+    genericButNamed: number;
+    genericNoName: number;
+  };
+  settings: {
+    autoSource: boolean;
+    refillWhenBelow: number;
+    leadsPerRun: number;
+    lastCheckNote: string | null;
+    lastCheckedAt: string | null;
+    autoReenrich: boolean;
+    namedPeopleOnly: boolean;
+    requireNamedPerson: boolean;
+  };
+  error: string | null;
+};
+
 /** What one worker tick reports back. Shape from /api/worker/tick. */
 type TickResult = {
   processed: number;
@@ -168,6 +208,8 @@ export default function EmailPage() {
   const [ticking, setTicking] = useState(false);
   const [tick, setTick] = useState<TickResult | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
+  const [funnel, setFunnel] = useState<Funnel | null>(null);
+  const [confirmAutoSource, setConfirmAutoSource] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -184,6 +226,12 @@ export default function EmailPage() {
         .then((r) => r.json())
         .then((h) => setHealth(h.health ?? null))
         .catch(() => setHealth(null));
+      // The whole chain. Separate and allowed to fail on its own — it counts
+      // every lead in the database, which is the slowest query on the page.
+      fetch("/api/funnel")
+        .then((r) => r.json())
+        .then(setFunnel)
+        .catch(() => setFunnel(null));
       setStatus(s);
       setDrafts(d.drafts ?? []);
       setSequences(q.sequences ?? []);
@@ -457,6 +505,121 @@ export default function EmailPage() {
         the campaign selector read "AI Dispatch — 3", and 3 is Instantly's code
         for Completed — a campaign that sends nothing to anybody.
       */}
+      {/*
+        THE WHOLE CHAIN, above everything else on the page.
+
+        Every stage here already reported on itself accurately, and that was
+        not enough. The top-up said "no leads are eligible" — true. The
+        campaign said 323 of 323 contacted — true. The enrichment page said
+        nothing was queued — true. Every screen was right and the actual
+        answer, that nothing had sourced a lead in weeks, was on none of them,
+        because no screen owned the chain. This one does, and it names only
+        the FIRST break: fixing stage four while stage one is dry is how a
+        fortnight goes by.
+      */}
+      {funnel?.health && (
+        <div
+          className="card"
+          style={{
+            marginBottom: 20,
+            borderColor: funnel.health.flowing ? "var(--amber)" : "var(--red)",
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 8 }}>The pipeline</h2>
+          <p
+            style={{
+              lineHeight: 1.7,
+              marginTop: 0,
+              marginBottom: 14,
+              fontSize: "1.05rem",
+              color: funnel.health.flowing ? "var(--amber)" : "var(--red)",
+            }}
+          >
+            {funnel.health.headline}
+          </p>
+          <div style={{ display: "grid", gap: 10 }}>
+            {funnel.health.stages.map((st) => (
+              <div key={st.key} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span
+                  aria-hidden
+                  style={{
+                    flex: "none",
+                    marginTop: 6,
+                    width: 9,
+                    height: 9,
+                    borderRadius: "50%",
+                    background:
+                      st.state === "ok"
+                        ? "var(--amber)"
+                        : st.state === "working"
+                          ? "var(--amber-dim)"
+                          : "var(--red)",
+                  }}
+                />
+                <div style={{ minWidth: 0, lineHeight: 1.6 }}>
+                  <strong>{st.label}</strong>{" "}
+                  <span className="faint">{st.detail}</span>
+                  {st.fix && (
+                    <div style={{ color: "var(--red)", marginTop: 2 }}>{st.fix}</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* --------------------- keep the supply coming ------------------- */}
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
+            <p className="faint" style={{ lineHeight: 1.7, marginTop: 0, marginBottom: 10 }}>
+              A sourcing run finds a batch of leads and then finishes, for good.
+              Switch this on and the system starts another one whenever fewer
+              than {funnel.settings.refillWhenBelow} leads are left to email —
+              after working through anything it can enrich for free first,
+              because that costs nothing and buying more would only lengthen the
+              queue.
+              {funnel.settings.lastCheckNote
+                ? ` Last check: ${funnel.settings.lastCheckNote}`
+                : ""}
+            </p>
+            {!funnel.settings.autoSource && (
+              <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", marginBottom: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={confirmAutoSource}
+                  onChange={(e) => setConfirmAutoSource(e.target.checked)}
+                />
+                <span className="faint">
+                  I understand this buys leads from Google on a schedule, without asking.
+                </span>
+              </label>
+            )}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={funnel.settings.autoSource}
+                disabled={busy || (!funnel.settings.autoSource && !confirmAutoSource)}
+                onChange={async (e) => {
+                  setBusy(true);
+                  setErr("");
+                  const res = await fetch("/api/funnel", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      auto_source_enabled: e.target.checked,
+                      acknowledge_spend: true,
+                    }),
+                  });
+                  const j = await res.json().catch(() => ({}));
+                  setBusy(false);
+                  if (!res.ok || j.error) setErr(j.error || "Could not save that.");
+                  load();
+                }}
+              />
+              <span>Go and find more leads when we run low</span>
+            </label>
+          </div>
+        </div>
+      )}
+
       {health && (
         <div
           className="card"
@@ -671,6 +834,41 @@ export default function EmailPage() {
             Off by default: most one-van operations publish only a general
             inbox, so switching this on refuses most of the list. Either way the
             push now sends named people FIRST.
+          </div>
+        </label>
+
+        {/*
+          The second half of "personal emails with their name attached".
+
+          A separate switch from the one above because they refuse different
+          leads: that one keeps maria@ with no name on record, whose email
+          still opens "Hi," rather than "Hi Maria,". Two switches, two numbers,
+          two decisions — rather than quietly making one of them stricter.
+        */}
+        <label style={{ display: "block", marginBottom: 10, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={!!status.settings.require_named_person}
+            disabled={busy}
+            onChange={(e) => save({ require_named_person: e.target.checked })}
+          />{" "}
+          <span>…and only when we know their name, so it never opens &ldquo;Hi,&rdquo;</span>
+          <div className="faint" style={{ marginLeft: 24, lineHeight: 1.6 }}>
+            {funnel?.reach ? (
+              <>
+                <strong style={{ color: "var(--amber)" }}>
+                  {funnel.reach.personalAndNamed}
+                </strong>{" "}
+                leads are a personal address with a name behind it.{" "}
+                {funnel.reach.personalNoName} are a personal address with nobody
+                named, {funnel.reach.genericButNamed} are a general inbox at a
+                business whose owner we know, and {funnel.reach.genericNoName}{" "}
+                are a general inbox with no name at all.{" "}
+              </>
+            ) : null}
+            The stricter this gets the fewer go out, and the answer to both is
+            the same: enrichment. Every name and address is found before a lead
+            is ever pushed, and no switch here can invent one.
           </div>
         </label>
         <button className="btn" onClick={push} disabled={busy || !canPush}>

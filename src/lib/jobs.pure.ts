@@ -27,7 +27,12 @@ export type JobType =
   // a diagnosis or an owner name — catch-up on old data, not a recurring
   // step for new leads, which are enriched automatically already. Only does
   // anything when an administrator switched auto_reenrich_enabled on.
-  | "auto_reenrich";
+  | "auto_reenrich"
+  // Keeps the SUPPLY of leads going. Every switch downstream of this was
+  // already correct and the programme still went quiet, because a sourcing
+  // campaign runs to its target and then completes forever. Only does
+  // anything when an administrator switched auto_source_enabled on.
+  | "keep_funnel_full";
 
 /** Exponential backoff with a ceiling: 30s, 60s, 120s, 240s… max 15 min. */
 export function backoffSeconds(attempts: number): number {

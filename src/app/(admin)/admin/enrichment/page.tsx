@@ -347,12 +347,24 @@ export default function EnrichmentPage() {
               ))}
             </ul>
           )}
-          <button className="btn" onClick={queueBackfill} disabled={queueing || !data.settings?.enabled}>
+          {/*
+            NOT gated behind the paid-enrichment switch.
+
+            That switch controls whether a contact PROVIDER may be billed. The
+            work that matters here — reading an email address and an owner's
+            name off the business's own website, and diagnosing the site — is
+            a crawl, and it costs nothing. Requiring the paid switch meant the
+            only way to find email addresses was to also authorise spending,
+            which is why the pool stayed dry. enrichLeadForOwner still gates
+            the paid stage on its own, so nothing is billed by this button.
+          */}
+          <button className="btn" onClick={queueBackfill} disabled={queueing}>
             {queueing ? "Queueing…" : `Re-enrich ${backfill.plan.queue} leads`}
           </button>
           {!data.settings?.enabled && (
             <span className="faint" style={{ marginLeft: 12 }}>
-              Switch enrichment on first.
+              Finds emails, names and diagnoses for free. Paid direct-number
+              lookups stay off until you switch enrichment on below.
             </span>
           )}
           {backfill.plan.waiting > 0 && (
@@ -389,9 +401,7 @@ export default function EnrichmentPage() {
               <input
                 type="checkbox"
                 checked={!!data.settings?.auto_reenrich_enabled}
-                disabled={
-                  busy || !data.settings?.enabled || (!data.settings?.auto_reenrich_enabled && !confirmAutoReenrich)
-                }
+                disabled={busy || (!data.settings?.auto_reenrich_enabled && !confirmAutoReenrich)}
                 onChange={(e) => save({ auto_reenrich_enabled: e.target.checked })}
               />
               <span>Catch these up without me pressing anything</span>

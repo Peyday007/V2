@@ -25,6 +25,7 @@ import { syncSendingAccounts } from "./capacitySync";
 import { recomputeKnowledge } from "./houseKnowledgeStore";
 import { appliedPriors } from "./houseKnowledge";
 import { planReenrichment } from "./reenrichPlan";
+import { keepFunnelFull } from "./funnelStore";
 import {
   readReenrichLeads,
   loadAutoReenrichSettings,
@@ -1556,6 +1557,22 @@ const autoReenrich: Handler = async () => {
   );
 };
 
+/**
+ * Keep leads coming, so the email programme never runs dry.
+ *
+ * The last stage of the chain to be automated, and the one whose absence made
+ * every other switch look broken: the top-up reported "no leads are eligible"
+ * every minute, correctly, because nothing had sourced a lead in weeks.
+ *
+ * The decision is pure and in funnelPlan.ts. This just runs it hourly and
+ * lets it act. Off unless an administrator switched it on — it spends money
+ * at Google on a schedule with nobody watching.
+ */
+const keepFunnelFullJob: Handler = async () => {
+  const decision = await keepFunnelFull();
+  console.log(`[funnel] ${decision.act}: ${decision.reason}`);
+};
+
 export const HANDLERS: Record<JobType, Handler> = {
   plan_search_tasks: planSearchTasks,
   execute_places_search: executePlacesSearch,
@@ -1570,4 +1587,5 @@ export const HANDLERS: Record<JobType, Handler> = {
   sync_sending_accounts: syncSendingAccountsJob,
   recompute_house_knowledge: recomputeHouseKnowledge,
   auto_reenrich: autoReenrich,
+  keep_funnel_full: keepFunnelFullJob,
 };
