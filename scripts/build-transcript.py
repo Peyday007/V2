@@ -98,7 +98,7 @@ HEADING = re.compile(r"^(#{1,6})(\s+\S)")
 FENCE = re.compile(r"^(`{3,}|~{3,})(.*)$")
 
 
-def nest_headings(body: str) -> str:
+def nest_headings(body: str, floor: int = 3) -> str:
     """Push any heading in a message BELOW the turn heading it sits under.
 
     Several prompts were whole documents with their own `#` and `##` structure,
@@ -109,6 +109,11 @@ def nest_headings(body: str) -> str:
     Only the number of # characters changes. Not one word moves, which is the
     whole point of this file. Fenced blocks are left completely alone: a # at
     the start of a line inside a code block is a comment, not a heading.
+
+    `floor` is the shallowest a body heading may sit. It is a parameter because
+    the topical file puts speakers at level 3 rather than 2, and a body heading
+    landing on the same level as a speaker heading is the same collision this
+    function exists to prevent.
     """
     out = []
     fence: str | None = None  # the OPENING marker, when inside a block
@@ -131,8 +136,7 @@ def nest_headings(body: str) -> str:
         if fence is None:
             m = HEADING.match(line)
             if m:
-                # Turn headings are level 2, so a body heading starts at 3.
-                level = min(6, max(3, len(m.group(1)) + 2))
+                level = min(6, max(floor, len(m.group(1)) + floor - 1))
                 out.append("#" * level + m.group(2) + line[m.end():])
                 continue
         out.append(line)

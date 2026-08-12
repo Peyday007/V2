@@ -16280,3 +16280,84 @@ Three left. Two are likely a fence-tracking flaw — let me check rather than as
 
 Confirmed — an opening fence with a language tag (` ```ts `) never matches its bare closing ` ``` `, so the tracker stayed open for the rest of that turn. Fixing it properly:
 
+Clean — the only remaining `#` is the file's own title. Final audit pass on the regenerated file:
+
+`docs/full-conversation.md` — 326 turns, 133,000 words. Everything said while building this, both sides, in order, including the wrong turns and the arguments about what was actually true.
+
+**What's stripped:** API keys and tokens, environment variable *values* (the names stay — which one is missing is half of every config conversation here), the database host, phone numbers, personal account names, and real email addresses. Where an address was a role address rather than a person, that distinction survives, since whether an email reached an owner or a front desk is the subject of several of these conversations. Notes about the live app's current auth state are out too, since the repo is public.
+
+**What's not in it:** tool calls, tool output, screenshots, attachments. Not for brevity — tool output is where credentials and customer records actually live, and none of it is conversation.
+
+**Two things worth flagging about how it was built.**
+
+The redaction list is *imported* from the handbook script rather than copied. Two scripts each with their own idea of "sensitive" is the same drift that put two different definitions of "already pushed" into the app and cost a week — a rule added to one and missed in the other is a leak.
+
+And my first fence tracker compared whole lines, so an opening ` ```ts ` never matched its bare closing ` ``` `. That left the code block open for the rest of the turn and let every heading after it escape the nesting. I only caught it because I checked the output rather than trusting the pass. Fixed to the real rule: same character, at least as long, no language tag.
+
+Body headings are nested one level below their turn heading, because several of your prompts were whole documents with their own `#` structure and pasted in flat they made the outline of a 133,000-word file unreadable. Only the number of `#` characters changed — no word moved, which matters when the whole point is every word.
+
+**You now have three files, deliberately different shapes:**
+
+- `docs/prompt-book.md` — a curated selection, generalised, for handing to someone else
+- `docs/build-record.md` — every instruction plus the standing rules and the lessons, for rebuilding from
+- `docs/full-conversation.md` — this one, literally everything
+
+Pushed (`bad1993`). Repo clean, 1587 tests passing.
+
+## 327. Operator
+
+where do i look at the workshop packets at? where are they located in the website?
+
+## 328. Claude
+
+Let me find where workshop packets are actually surfaced rather than guess.
+
+Confirmed by reading the code rather than guessing. Here's where they actually are:
+
+#### The three places you can see them today
+
+**1. On the Board (`/`) — trial agreements only.**
+`TrialAlerts` sits at the top and shows *only* packets where the owner ticked the box and agreed to a trial. It's deliberately not dismissible until someone picks it up. That's the one moment in the pipeline where a business owner has said yes and is waiting on a person — but it shows you nothing about packets that were sent and ignored, or opened and not acted on.
+
+**2. Inside a single lead — that lead's packet.**
+Click any lead on the Board to open its detail drawer, and the **Send Packet** panel shows that one lead's status: `Not sent` / `Sent` / `Opened` / `Trial requested`. Same panel appears in the caller dialer at `/dial` so callers can send one mid-call. One lead at a time.
+
+**3. `/admin/campaigns` → "See inside the workshop"** (the page I added yesterday, `/admin/campaigns/workshop`).
+That shows what the *page itself* looks like for any lead — the findings, the recommendations, what the owner reads. It's a preview of the content, not a list of packets you've sent.
+
+#### What doesn't exist
+
+**There is no page listing all workshop packets and their statuses.** I checked before answering, and this one's worth flagging: `/api/workshop-packets` already computes and returns exactly that — a `recent` list of the last 50 sorted by status, plus `counts` broken down by `not_sent` / `sent` / `opened` / `trial_requested`. The only consumer is `TrialAlerts`, and it reads `waiting` and discards the rest.
+
+So the data is being assembled on every request and thrown away. That's the same "built but never wired" pattern from the build record — the API is finished and no screen renders it.
+
+So today, to answer "how many packets have I sent, how many were opened, which ones went quiet" — you can't, without a SQL query.
+
+Want me to build that page? It's small, since the endpoint already returns everything it needs: a table of packets with status, business, when sent, when opened, and who sent it, with the counts across the top. Most useful column would be *sent but never opened* — that's your follow-up list, and right now nothing surfaces it.
+
+## 329. Operator
+
+okayineed you to take every chst that has yo do with email and put it into a file
+
+## 330. Claude
+
+Filtering 326 turns needs a defensible rule. Let me build it around exchanges rather than individual turns, then check the result by eye.
+
+Before generating the file, let me see what the rule actually selects — this is where a filter quietly gets it wrong:
+
+The report shows the rule is too loose — bare "email" catches "email/password login" and "my email". Let me tighten it:
+
+Let me see which specific term is matching rather than guess:
+
+Three precise leaks: `instantly` the adverb, `deliverab` matching "deliverables", and generic `sequence`. Fixing each:
+
+Let me check the remaining questionable early keeps, and I notice several are session-restart summaries rather than conversation:
+
+Found it — and one is my own bug: I compile every pattern with `re.I`, which destroyed the case-sensitivity that `Instantly` depended on. Fixing all four:
+
+Two exclusions are too aggressive — an image-only ask still has a real email answer after it:
+
+30 exchanges, and I've verified each by eye. Generating the file:
+
+Two body headings land at the same level as the `### Claude` speaker heading. Let me make the nesting floor configurable:
+
