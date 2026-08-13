@@ -27,6 +27,9 @@ import {
   MIN_YIELD,
   MAX_YIELD,
   DEFAULT_RESERVE_DAYS,
+  URGENT_COVER_DAYS,
+  sourcingCeilingFor,
+  ABSOLUTE_MAX_LEADS_PER_RUN,
   type Demand,
   type SupplyFacts,
 } from "../src/lib/supplyPlan";
@@ -374,7 +377,16 @@ describe("CONCURRENT WORKERS CANNOT DOUBLE-SPEND", () => {
   });
 
   it("the spacing rule stops a burst of runs within the cooldown", () => {
-    const d = planSupply(facts({ hoursSinceLastRun: 1, minHoursBetweenRuns: 6 }));
+    /*
+     * With cover in hand. The spacing yields when there is under a day of
+     * contacts left — see "THE SPACING YIELDS WHEN THE CAMPAIGN IS ABOUT TO
+     * RUN DRY" below — because the next sending window would otherwise open
+     * before the next run does. Short of a day's contacts the six hours
+     * still apply, and this is the case that proves it.
+     */
+    const d = planSupply(
+      facts({ qualifiedReady: 400, hoursSinceLastRun: 1, minHoursBetweenRuns: 6 })
+    );
     expect(d.act).toBe("hold");
     expect(d.reason).toMatch(/6h apart|spaced/i);
   });
@@ -716,5 +728,91 @@ describe("EMAIL HISTORY IS NEVER REWRITTEN", () => {
 
   it("the reserve default is the documented one", () => {
     expect(DEFAULT_RESERVE_DAYS).toBe(3);
+  });
+});
+
+/*
+ * FEEDING THE DEMAND THE SYSTEM ALREADY CALCULATED CORRECTLY.
+ *
+ * computeDemand asked for 212 leads a day. Sourcing could deliver 120 at a 10%
+ * yield — four runs a day at six-hour spacing, 300 leads each — so the supply
+ * system was structurally incapable of meeting its own target and would have
+ * sat permanently short however well every other part worked. Two ceilings did
+ * it: the size of a run, and the gap between runs.
+ */
+describe("SOURCING CAN ACTUALLY REACH THE DAILY INTAKE", () => {
+  it("a run is sized against what a day consumes, not a stored 300", () => {
+    // 212 a day at the assumed 10% needs 2,120 businesses to be worth starting.
+    expect(sourcingCeilingFor(300, 212)).toBe(2120);
+  });
+
+  it("the operator's larger figure still wins", () => {
+    expect(sourcingCeilingFor(5000, 212)).toBe(3000); // but never past the hard cap
+    expect(sourcingCeilingFor(2500, 100)).toBe(2500);
+  });
+
+  it("a hard ceiling survives any arithmetic", () => {
+    expect(sourcingCeilingFor(300, 999_999)).toBe(ABSOLUTE_MAX_LEADS_PER_RUN);
+    expect(sourcingCeilingFor(300, -5)).toBe(300);
+  });
+
+  it("the old ceiling could not have fed the demand, and the new one can", () => {
+    const runsPerDay = 4;
+    const yieldRate = 0.1;
+    expect(300 * runsPerDay * yieldRate).toBeLessThan(212); // the bug
+    expect(sourcingCeilingFor(300, 212) * yieldRate).toBeGreaterThanOrEqual(212);
+  });
+});
+
+describe("THE SPACING YIELDS WHEN THE CAMPAIGN IS ABOUT TO RUN DRY", () => {
+  const nearlyDry = facts({
+    qualifiedReady: 20, // 0.09 days of cover at 212/day
+    hoursSinceLastRun: 1,
+    minHoursBetweenRuns: 6,
+  });
+
+  it("under a day of cover sources now rather than waiting for the window", () => {
+    const d = planSupply(nearlyDry);
+    expect(d.act).toBe("source");
+    expect(d.daysOfCover).toBeLessThan(URGENT_COVER_DAYS);
+  });
+
+  it("with cover in hand the spacing still applies", () => {
+    const d = planSupply(
+      facts({ qualifiedReady: 400, hoursSinceLastRun: 1, minHoursBetweenRuns: 6 })
+    );
+    expect(d.act).toBe("hold");
+    expect(d.reason).toMatch(/spaced|apart/i);
+  });
+
+  it("THE CONCURRENCY LOCK IS NEVER RELAXED, however urgent", () => {
+    /*
+     * The distinction the whole change rests on. Two runs closer together than
+     * usual buy the same leads SOONER. Two runs at the same time buy them
+     * TWICE. Only the second is a real risk, and urgency must never touch it.
+     */
+    const d = planSupply({ ...nearlyDry, sourcingRunning: true });
+    expect(d.act).toBe("hold");
+    expect(d.sourceCount).toBe(0);
+    expect(d.reason).toMatch(/already going|twice/i);
+  });
+
+  it("urgency never overrides the switch, the capacity check or the reserve", () => {
+    // Off stays off.
+    expect(planSupply({ ...nearlyDry, sourcingEnabled: false }).act).toBe("hold");
+    // No capacity stays no capacity.
+    expect(
+      planSupply({
+        ...nearlyDry,
+        demand: computeDemand({
+          usableSends: 0,
+          sequenceSteps: 4,
+          spanDays: 12,
+          reserveDays: 3,
+        }),
+      }).act
+    ).toBe("hold");
+    // And a covered reserve is still not urgent.
+    expect(planSupply(facts({ qualifiedReady: demand212.reserveTarget })).act).toBe("hold");
   });
 });

@@ -194,6 +194,15 @@ export const YIELD_SAMPLE_FLOOR = 50;
 /** Bought on top, because some of every batch is duplicates or dead sites. */
 export const SOURCING_SAFETY_MARGIN = 1.25;
 
+/**
+ * Below this much cover, the spacing between runs stops applying.
+ *
+ * Under a day of contacts means the next sending window opens before the next
+ * scheduled run does. The inboxes then idle for a day, and a day of sending
+ * capacity is not recoverable — unlike a slightly larger Google bill.
+ */
+export const URGENT_COVER_DAYS = 1;
+
 export type YieldSample = {
   /** Leads sourced whose enrichment has finished, one way or the other. */
   resolved: number;
@@ -222,6 +231,36 @@ export function sourcingVolumeFor(wanted: number, qualificationYield: number): n
   if (wanted <= 0) return 0;
   const y = clamp(qualificationYield || ASSUMED_YIELD, MIN_YIELD, MAX_YIELD);
   return Math.ceil((wanted / y) * SOURCING_SAFETY_MARGIN);
+}
+
+/**
+ * A hard ceiling on one purchase, whatever the arithmetic asks for.
+ *
+ * Sits above the per-run figure so a bad yield measurement costs a large
+ * batch rather than an unbounded one, and is deliberately a constant rather
+ * than a setting: the thing it protects against is a number somebody typed in
+ * being wrong.
+ */
+export const ABSOLUTE_MAX_LEADS_PER_RUN = 3000;
+
+/**
+ * How big one sourcing run may be.
+ *
+ * `leads_per_run` defaults to 300, and four runs a day at six-hour spacing
+ * caps sourcing at 1,200 businesses — about 120 qualified contacts at a 10%
+ * yield. The campaign wants 212 a day. So the supply system was structurally
+ * incapable of feeding the demand it had correctly calculated, and would have
+ * sat permanently short however well every other part worked.
+ *
+ * The run is therefore sized against what a day actually consumes, not
+ * against a stored number: enough to cover a day's intake in a single run at
+ * the measured yield, or the operator's figure, whichever is larger. Still
+ * one run at a time — the concurrency lock is untouched, and it is the lock
+ * rather than the size that stops duplicate purchases.
+ */
+export function sourcingCeilingFor(configured: number, intakePerDay: number): number {
+  const needed = Math.ceil(Math.max(0, intakePerDay) / ASSUMED_YIELD);
+  return Math.min(ABSOLUTE_MAX_LEADS_PER_RUN, Math.max(configured, needed));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -386,7 +425,26 @@ export function planSupply(f: SupplyFacts): SupplyDecision {
     };
   }
 
-  if (f.hoursSinceLastRun !== null && f.hoursSinceLastRun < f.minHoursBetweenRuns) {
+  /*
+   * THE COOLDOWN YIELDS WHEN THE CAMPAIGN IS ABOUT TO RUN DRY.
+   *
+   * Six hours between runs exists so sourcing does not outpace the crawl that
+   * turns leads into contacts. That is the right rule at four runs a day when
+   * there is cover in hand — and the wrong one at 4am with under a day of
+   * contacts left, because the next window opens before the next run does and
+   * the inboxes sit idle for a day that cannot be got back.
+   *
+   * ONLY THE SPACING IS RELAXED, never the concurrency lock above it. Two runs
+   * at once buy the same leads twice; two runs closer together than usual just
+   * buy them sooner. Those are different risks and only the first is a real
+   * one.
+   */
+  const urgent = daysOfCover < URGENT_COVER_DAYS;
+  if (
+    !urgent &&
+    f.hoursSinceLastRun !== null &&
+    f.hoursSinceLastRun < f.minHoursBetweenRuns
+  ) {
     const wait = Math.ceil(f.minHoursBetweenRuns - f.hoursSinceLastRun);
     return {
       act: "hold",

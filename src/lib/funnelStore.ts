@@ -22,6 +22,7 @@ import {
   planSupply,
   measuredYield,
   DEFAULT_RESERVE_DAYS,
+  sourcingCeilingFor,
   type Demand,
 } from "./supplyPlan";
 import { nextSearchTarget, type FunnelDecision, type SearchedPair } from "./funnelPlan";
@@ -252,7 +253,7 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
     hoursSinceLastRun:
       hoursSinceLastRun !== null && Number.isFinite(hoursSinceLastRun) ? hoursSinceLastRun : null,
     minHoursBetweenRuns: settings.minHoursBetweenRuns,
-    maxLeadsPerRun: settings.leadsPerRun,
+    maxLeadsPerRun: sourcingCeilingFor(settings.leadsPerRun, supply.demand.intakePerDay),
   });
 
   /*
