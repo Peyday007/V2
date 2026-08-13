@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { campaignSendLedger } from "@/lib/instantly/client";
-import { funnelSnapshot } from "@/lib/funnelStore";
+import { funnelSnapshot, readSupplyPicture } from "@/lib/funnelStore";
+import { activeThreadCount, completedThreadCount } from "@/lib/emailPush";
 import { funnelHealth } from "@/lib/funnelHealth";
 import { loadSettings, selectEmailLeads } from "@/lib/instantlyStore";
 import { loadAutoReenrichSettings } from "@/lib/reenrichStore";
@@ -86,6 +87,34 @@ export async function GET() {
 
   const availability = summarizeEmailAvailability(leads.rows);
 
+  /*
+   * THE EIGHT NUMBERS THE PAGE ACTUALLY NEEDS.
+   *
+   * Everything above answers "what happened". This answers "is the machine
+   * keeping the inboxes busy, and if not, why not" — which is the question
+   * nobody could answer while 850 sends of capacity delivered 22.
+   *
+   * Read through readSupplyPicture so the page and the worker cannot disagree
+   * about how many contacts are ready: they call the same function.
+   */
+  let supply: Awaited<ReturnType<typeof readSupplyPicture>> | null = null;
+  let inSequence: number | null = null;
+  let completed: number | null = null;
+  try {
+    supply = await readSupplyPicture();
+    if (instantly.settings.campaign_id) {
+      [inSequence, completed] = await Promise.all([
+        activeThreadCount(instantly.settings.campaign_id, supply.spanDays),
+        completedThreadCount(instantly.settings.campaign_id, supply.spanDays),
+      ]);
+    }
+  } catch {
+    // The supply picture failing must not take the rest of the page down.
+  }
+
+  const capacity = supply?.demand.plannedSendsPerDay ?? 0;
+  const utilisation = capacity > 0 ? Math.min(1, sent / capacity) : null;
+
   const health = funnelHealth({
     totalLeads: leads.rows.length,
     awaitingEnrichment: snapshot.awaitingEnrichment,
@@ -101,6 +130,45 @@ export async function GET() {
 
   return NextResponse.json({
     health,
+    /*
+     * The operating picture, in the order the page asks the questions.
+     *
+     * `capacity` is an ESTIMATE and is labelled as one wherever it is shown —
+     * it is what the inboxes and the campaign limit say they will carry, not
+     * a measurement. `sentLast24h` is the only figure here that is measured,
+     * and it comes from Instantly's own ledger reconciled with our webhooks.
+     */
+    supply: supply
+      ? {
+          automationRunning:
+            instantly.settings.enabled && instantly.settings.auto_push_enabled,
+          sentLast24h: sent,
+          capacityPerDay: capacity,
+          capacityIsEstimate: true,
+          utilisation,
+          qualifiedReady: supply.qualifiedReady,
+          daysOfReserve:
+            supply.demand.intakePerDay > 0
+              ? Math.round((supply.qualifiedReady / supply.demand.intakePerDay) * 10) / 10
+              : null,
+          reserveTarget: supply.demand.reserveTarget,
+          reserveDays: instantly.settings.reserve_days,
+          intakePerDay: supply.demand.intakePerDay,
+          targetInCampaign: supply.demand.targetInCampaign,
+          // The four states that were one number before, and the reason a
+          // stalled campaign looked full.
+          inSequence,
+          completed,
+          enrichableNow: supply.enrichableNow,
+          givenUp: supply.givenUp,
+          sequenceSteps: supply.sequenceSteps,
+          spanDays: supply.spanDays,
+          qualificationYield: supply.qualificationYield,
+          yieldIsMeasured: supply.yieldIsMeasured,
+          sourcingNote: snapshot.settings.lastCheckNote,
+          sourcingCheckedAt: snapshot.settings.lastCheckedAt,
+        }
+      : null,
     // The address-versus-name split, which is the other question that kept
     // coming back and had no number attached to it.
     reach: availability.reach,

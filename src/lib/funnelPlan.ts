@@ -15,92 +15,31 @@
 // every other decision in this codebase: everything that could cause a SPEND
 // is gated hard, and every reason not to spend is checked first.
 
-export type FunnelFacts = {
-  /** The switch. Nothing happens while this is false. */
-  enabled: boolean;
-  /** Leads with an address that have not been pushed yet. */
-  eligibleToEmail: number;
-  /** Go looking when the pool drops below this. */
-  refillWhenBelow: number;
-  /**
-   * Leads already in hand that have never been through enrichment, or whose
-   * enrichment predates the code that reads addresses.
-   *
-   * THE MOST IMPORTANT FIELD HERE. Buying more leads while hundreds sit
-   * un-enriched is paying Google to solve a problem that a free crawl already
-   * solves. Enrichment always goes first.
-   */
-  awaitingEnrichment: number;
-  /** A sourcing campaign already running. Two at once helps nobody. */
-  sourcingRunning: boolean;
-  /** Hours since the last automatic run, or null if there has never been one. */
-  hoursSinceLastRun: number | null;
-  minHoursBetweenRuns: number;
-};
-
 export type FunnelDecision =
   | { act: "wait"; reason: string }
   | { act: "enrich"; reason: string }
   | { act: "source"; reason: string };
 
-/**
- * Should anything happen, and what?
+/*
+ * WHERE decideFunnel WENT.
  *
- * Never throws, never returns "source" on a technicality. Every branch says
- * why in a sentence somebody can read on the page, because "nothing happened
- * and nobody knows why" is the failure this whole area keeps producing.
+ * This module used to hold the sourcing decision too: compare the eligible
+ * count against a flat `refillWhenBelow` of 200, and — the fatal line —
+ * return "enrich" whenever ANY lead was awaiting enrichment, before the
+ * sourcing branch could be reached.
+ *
+ * That second rule was right when the backlog could produce what was needed
+ * in time and catastrophic when it could not. 935 leads whose websites will
+ * never name a human kept "awaiting enrichment" above zero permanently, so
+ * the gate never opened and no replacement lead was bought again. Meanwhile
+ * the flat 200 had no relationship to what the inboxes could carry.
+ *
+ * The replacement is supplyPlan.planSupply, which asks how many SENDING DAYS
+ * of qualified contacts are in hand and lets enrichment and sourcing run
+ * together when the backlog cannot arrive in time. Deleted rather than left
+ * exported and unused: a pure function nothing calls is the same trap as a
+ * setting nobody turns on.
  */
-export function decideFunnel(f: FunnelFacts): FunnelDecision {
-  if (!f.enabled) {
-    return {
-      act: "wait",
-      reason:
-        "Automatic lead sourcing is switched off, so the pool is only topped up when somebody starts a run by hand.",
-    };
-  }
-
-  if (f.eligibleToEmail >= f.refillWhenBelow) {
-    return {
-      act: "wait",
-      reason: `${f.eligibleToEmail} leads are still waiting to be emailed, which is above the ${f.refillWhenBelow} mark. Nothing needed.`,
-    };
-  }
-
-  /*
-   * ENRICH BEFORE BUYING. Always.
-   *
-   * A lead already in the database with no address is a free crawl away from
-   * being emailable. A new lead from Google costs money AND still needs the
-   * same crawl afterwards. Sourcing while there is enrichment outstanding is
-   * paying to make a queue longer.
-   */
-  if (f.awaitingEnrichment > 0) {
-    return {
-      act: "enrich",
-      reason: `${f.eligibleToEmail} leads left to email, but ${f.awaitingEnrichment} leads already here have never been through enrichment. Working those first — they are free, and buying more before they are done would be paying to lengthen the queue.`,
-    };
-  }
-
-  if (f.sourcingRunning) {
-    return {
-      act: "wait",
-      reason: "A sourcing run is already going. Waiting for it rather than starting a second.",
-    };
-  }
-
-  if (f.hoursSinceLastRun !== null && f.hoursSinceLastRun < f.minHoursBetweenRuns) {
-    const wait = Math.ceil(f.minHoursBetweenRuns - f.hoursSinceLastRun);
-    return {
-      act: "wait",
-      reason: `The last automatic run was ${Math.floor(f.hoursSinceLastRun)}h ago. Leaving at least ${f.minHoursBetweenRuns}h between them, so the next one is in about ${wait}h. Leads found now still have to be enriched before they can be emailed, and a run every few minutes would spend money faster than the crawl can turn it into addresses.`,
-    };
-  }
-
-  return {
-    act: "source",
-    reason: `Only ${f.eligibleToEmail} leads left to email and nothing waiting to be enriched, so the pool needs refilling from Google.`,
-  };
-}
 
 /* -------------------------------------------------------------------------- */
 /* what to search for next                                                    */

@@ -17,6 +17,7 @@ import {
 } from "./emailEligibility";
 import { composePersonalization, composeVariables, splitName, type ComposeInput } from "./emailCompose";
 import { appOrigin, ensurePacketsFor } from "./workshopSend";
+import { SEQUENCE_COMPLETION_GRACE_DAYS } from "./supplyPlan";
 
 // Pushing leads into the campaign.
 //
@@ -455,17 +456,89 @@ export async function countEligible(): Promise<number> {
  * The one thing it cannot see is a lead removed inside Instantly by hand: we
  * would still count it and push one fewer. That errs toward under-filling,
  * which is the safe direction.
+ *
+ * AND THE STATUS IS ONLY HALF THE QUESTION — see below.
  */
 export const IN_FLIGHT_STATUSES = ["pushed", "sent", "opened"] as const;
 
-export async function activeThreadCount(campaignId: string): Promise<number | null> {
+/**
+ * How many of our leads are STILL RECEIVING EMAILS from this campaign.
+ *
+ * THE BUG THAT STOPPED THE CAMPAIGN. There is no "finished the sequence"
+ * status and there cannot be one: Instantly does not raise an event when a
+ * lead reaches the end without replying, and that is what happens to most of
+ * them. So a lead pushed in July, sent all four emails and never heard from
+ * again keeps the status `sent` forever — and this function counted it as
+ * occupying a slot forever.
+ *
+ * The consequence was total. Once the number of leads ever emailed passed the
+ * campaign target, the top-up saw a permanently full campaign and pushed
+ * nothing, every minute, for good. Ten inboxes with 850 sends a day between
+ * them delivered 22, because the only emails left to send were the last
+ * follow-ups of a cohort that finished months ago.
+ *
+ * Elapsed time is the signal Instantly does not give us. A thread pushed
+ * longer ago than the sequence takes to run, plus a week of slack for
+ * weekends and holds, has finished sending by definition. Nothing is deleted
+ * or rewritten — the row keeps its status and its history, it simply stops
+ * counting as an occupied slot so a replacement can take it.
+ *
+ * `spanDays` of 0 disables the cutoff entirely and restores the old
+ * all-time count, which is what an unreadable sequence should fall back to:
+ * under-filling rather than double-filling.
+ */
+export async function activeThreadCount(
+  campaignId: string,
+  spanDays = 0,
+  now: Date = new Date()
+): Promise<number | null> {
   if (!campaignId) return null;
   try {
-    const { count, error } = await supabaseAdmin()
+    let q = supabaseAdmin()
       .from("email_threads")
       .select("*", { count: "exact", head: true })
       .eq("campaign_id", campaignId)
       .in("status", IN_FLIGHT_STATUSES as unknown as string[]);
+
+    if (spanDays > 0) {
+      const cutoff = new Date(
+        now.getTime() - (spanDays + SEQUENCE_COMPLETION_GRACE_DAYS) * 86_400_000
+      ).toISOString();
+      q = q.gte("created_at", cutoff);
+    }
+
+    const { count, error } = await q;
+    if (error) return null;
+    return count ?? 0;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Threads that have finished sending, counted separately.
+ *
+ * Not a number anything acts on — it exists so the page can say "1,240
+ * completed" beside "180 in sequence" instead of one number that silently
+ * meant both. Those were the two states the dashboard could not tell apart,
+ * and conflating them is what made a stalled campaign look full.
+ */
+export async function completedThreadCount(
+  campaignId: string,
+  spanDays: number,
+  now: Date = new Date()
+): Promise<number | null> {
+  if (!campaignId || spanDays <= 0) return null;
+  try {
+    const cutoff = new Date(
+      now.getTime() - (spanDays + SEQUENCE_COMPLETION_GRACE_DAYS) * 86_400_000
+    ).toISOString();
+    const { count, error } = await supabaseAdmin()
+      .from("email_threads")
+      .select("*", { count: "exact", head: true })
+      .eq("campaign_id", campaignId)
+      .in("status", IN_FLIGHT_STATUSES as unknown as string[])
+      .lt("created_at", cutoff);
     if (error) return null;
     return count ?? 0;
   } catch {

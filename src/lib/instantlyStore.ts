@@ -2,6 +2,7 @@ import "server-only";
 import { supabaseAdmin } from "./supabaseAdmin";
 import { isMissingColumnError } from "./enrichmentGrade";
 import { EMAIL_ELIGIBILITY_TIERS, type EmailLeadRow } from "./emailEligibility";
+import { DEFAULT_RESERVE_DAYS } from "./supplyPlan";
 
 // The bits of the Instantly integration that touch the database, in one place
 // so the four routes cannot disagree about what a setting means or about which
@@ -44,6 +45,10 @@ export type InstantlySettings = {
   last_refill_checked_at: string | null;
   /** How full the campaign was at that moment; null when unreadable. */
   last_refill_active_count: number | null;
+  /** Sending days of qualified contacts to keep banked. From 0044. */
+  reserve_days: number;
+  /** Derive the campaign target and daily intake from real capacity. */
+  auto_scale_supply: boolean;
 };
 
 const BASE_COLUMNS =
@@ -66,7 +71,16 @@ const CAPACITY_COLUMNS =
 const REFILL_NOTE_COLUMNS =
   "last_refill_note, last_refill_checked_at, last_refill_active_count";
 
-export const SETTINGS_COLUMNS = `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}, ${REFILL_NOTE_COLUMNS}`;
+/*
+ * From 0044. The reserve policy, which replaced the hand-set campaign target.
+ *
+ * Newest tier, so it is the first to drop off when the migration has not been
+ * run — and its absence reads as the safe defaults below rather than as a
+ * failed query that blanks the page.
+ */
+const SUPPLY_COLUMNS = "reserve_days, auto_scale_supply";
+
+export const SETTINGS_COLUMNS = `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}, ${REFILL_NOTE_COLUMNS}, ${SUPPLY_COLUMNS}`;
 
 /**
  * What the settings are before anybody has saved any.
@@ -107,6 +121,8 @@ export const SETTINGS_DEFAULTS: InstantlySettings = {
   last_refill_note: null,
   last_refill_checked_at: null,
   last_refill_active_count: null,
+  reserve_days: DEFAULT_RESERVE_DAYS,
+  auto_scale_supply: true,
 };
 
 /** Points at the migration rather than repeating a Postgres error verbatim. */
@@ -162,6 +178,12 @@ export async function loadSettings(): Promise<SettingsLoad> {
     let capacityAvailable = true;
     let res = await read(SETTINGS_COLUMNS);
     // Newest migration drops off first: 0037's note columns.
+    if (res.error && isMissingColumnError(res.error)) {
+      // Newest migration drops off first: 0044's reserve policy.
+      res = await read(
+        `${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}, ${REFILL_NOTE_COLUMNS}`
+      );
+    }
     if (res.error && isMissingColumnError(res.error)) {
       res = await read(`${BASE_COLUMNS}, ${AUTOPUSH_COLUMNS}, ${CAPACITY_COLUMNS}`);
     }
@@ -225,6 +247,8 @@ export async function loadSettings(): Promise<SettingsLoad> {
         computed_leads_per_day: data.computed_leads_per_day ?? null,
         last_refill_note: data.last_refill_note ?? null,
         last_refill_checked_at: data.last_refill_checked_at ?? null,
+        reserve_days: Number(data.reserve_days) || DEFAULT_RESERVE_DAYS,
+        auto_scale_supply: data.auto_scale_supply !== false,
         last_refill_active_count: data.last_refill_active_count ?? null,
       },
       error: null,

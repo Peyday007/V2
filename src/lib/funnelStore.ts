@@ -6,15 +6,25 @@ import { logEvent } from "./events";
 import { placesKeyConfigured } from "./places";
 import { requestBudgetFor } from "./budget";
 import { QUICK_MIX_TRADES, RECORDABLE_METROS, formatMetro } from "./metros";
-import { planReenrichment } from "./reenrichPlan";
+import {
+  planReenrichment,
+  countStillEnrichable,
+  skipReasonFor,
+  MAX_ENRICH_ATTEMPTS,
+} from "./reenrichPlan";
 import { readReenrichLeads, queueReenrichBatch } from "./reenrichStore";
 import { countEligible } from "./emailPush";
+import { passesRecipientPolicy } from "./emailEligibility";
+import { loadSettings } from "./instantlyStore";
+import { activeSequenceShape } from "./capacitySync";
 import {
-  decideFunnel,
-  nextSearchTarget,
-  type FunnelDecision,
-  type SearchedPair,
-} from "./funnelPlan";
+  computeDemand,
+  planSupply,
+  measuredYield,
+  DEFAULT_RESERVE_DAYS,
+  type Demand,
+} from "./supplyPlan";
+import { nextSearchTarget, type FunnelDecision, type SearchedPair } from "./funnelPlan";
 
 // The world-touching half of keeping the funnel full. The decisions all live
 // in funnelPlan.ts, which is pure and tested; this reads the counts, and — only
@@ -121,6 +131,89 @@ async function recentAutoSearches(): Promise<SearchedPair[]> {
   }
 }
 
+/** Roughly how many leads one day of enrichment gets through. */
+export const ENRICHMENT_PER_DAY = 200;
+
+export type SupplyPicture = {
+  demand: Demand;
+  /** Personal address, name on record, not yet pushed. */
+  qualifiedReady: number;
+  /** Leads a further crawl could still turn into a qualified contact. */
+  enrichableNow: number;
+  /** Leads enrichment has given up on — no longer counted as work. */
+  givenUp: number;
+  enrichmentPerDay: number;
+  qualificationYield: number;
+  yieldIsMeasured: boolean;
+  yieldSample: number;
+  sequenceSteps: number;
+  spanDays: number;
+};
+
+/**
+ * Everything the supply decision needs, read once.
+ *
+ * One function rather than four so the page and the worker can never disagree
+ * about how many contacts are ready — the drift that produced "47 ready to
+ * call" beside "none are available" was two readers with two definitions.
+ */
+export async function readSupplyPicture(): Promise<SupplyPicture> {
+  const [instantly, shape, qualifiedReady, reenrich] = await Promise.all([
+    loadSettings().catch(() => null),
+    activeSequenceShape().catch(() => ({ steps: 3, spanDays: 7 })),
+    countEligible().catch(() => 0),
+    readReenrichLeads().catch(() => ({ rows: null, error: "unreadable" })),
+  ]);
+
+  const demand = computeDemand({
+    usableSends: instantly?.settings.computed_daily_sends ?? 0,
+    sequenceSteps: shape.steps,
+    spanDays: shape.spanDays,
+    reserveDays: instantly?.settings.reserve_days ?? DEFAULT_RESERVE_DAYS,
+  });
+
+  const rows = reenrich.rows || [];
+  const enrichableNow = countStillEnrichable(rows);
+  const givenUp = rows.filter(
+    (l) => skipReasonFor(l) === "Enrichment has been tried enough"
+  ).length;
+
+  /*
+   * THE YIELD, measured rather than assumed.
+   *
+   * Denominator: leads enrichment has actually finished with — tried at least
+   * once and either qualified or given up on. Leads still queued are excluded,
+   * because counting work in progress as a failure understates the yield and
+   * would buy far too much.
+   */
+  let resolved = 0;
+  let qualified = 0;
+  for (const l of rows) {
+    const attempts = l.enrich_attempts ?? 0;
+    const passes = passesRecipientPolicy(l as never);
+    if (passes) {
+      resolved += 1;
+      qualified += 1;
+    } else if (attempts >= MAX_ENRICH_ATTEMPTS) {
+      resolved += 1;
+    }
+  }
+  const measured = measuredYield({ resolved, qualified });
+
+  return {
+    demand,
+    qualifiedReady,
+    enrichableNow,
+    givenUp,
+    enrichmentPerDay: ENRICHMENT_PER_DAY,
+    qualificationYield: measured.yield,
+    yieldIsMeasured: measured.measured,
+    yieldSample: resolved,
+    sequenceSteps: shape.steps,
+    spanDays: shape.spanDays,
+  };
+}
+
 /**
  * Look at the funnel, and act if it needs it.
  *
@@ -130,45 +223,71 @@ async function recentAutoSearches(): Promise<SearchedPair[]> {
 export async function keepFunnelFull(): Promise<FunnelDecision> {
   const settings = await loadFunnelSettings();
 
-  const [eligibleToEmail, awaitingEnrichment, running] = await Promise.all([
-    countEligible().catch(() => 0),
-    countAwaitingEnrichment().catch(() => 0),
-    sourcingIsRunning().catch(() => true), // unknown reads as "running": do not start a second
-  ]);
+  /*
+   * DEMAND FIRST, then supply. This used to compare the eligible count against
+   * a flat `refillWhenBelow` of 200 — a number with no relationship to what
+   * the inboxes could carry, so it was simultaneously far too high for a small
+   * account and far too low for this one.
+   *
+   * Now the question is "how many sending days of qualified contacts are in
+   * hand", which stays meaningful whatever the capacity.
+   */
+  const supply = await readSupplyPicture();
 
   const hoursSinceLastRun = settings.lastStartedAt
     ? (Date.now() - Date.parse(settings.lastStartedAt)) / 3_600_000
     : null;
 
-  const decision = decideFunnel({
-    enabled: settings.enabled,
-    eligibleToEmail,
-    refillWhenBelow: settings.refillWhenBelow,
-    awaitingEnrichment,
+  const running = await sourcingIsRunning().catch(() => true); // unknown reads as running
+
+  const plan = planSupply({
+    sourcingEnabled: settings.enabled,
+    demand: supply.demand,
+    qualifiedReady: supply.qualifiedReady,
+    enrichableNow: supply.enrichableNow,
+    enrichmentPerDay: supply.enrichmentPerDay,
+    qualificationYield: supply.qualificationYield,
+    yieldIsMeasured: supply.yieldIsMeasured,
     sourcingRunning: running,
     hoursSinceLastRun:
       hoursSinceLastRun !== null && Number.isFinite(hoursSinceLastRun) ? hoursSinceLastRun : null,
     minHoursBetweenRuns: settings.minHoursBetweenRuns,
+    maxLeadsPerRun: settings.leadsPerRun,
   });
 
-  if (decision.act === "wait") {
-    await note(decision.reason);
+  /*
+   * The measurement is written down whatever was decided, so the yield the
+   * next run scales against is visible rather than inferred from spend.
+   */
+  const yieldNote = {
+    last_yield_measured: supply.yieldIsMeasured ? supply.qualificationYield : null,
+    last_yield_sample: supply.yieldSample,
+  };
+
+  const decision: FunnelDecision =
+    plan.act === "hold"
+      ? { act: "wait", reason: plan.reason }
+      : { act: plan.act, reason: plan.reason };
+
+  if (plan.act === "hold") {
+    await note(plan.reason, yieldNote);
     return decision;
   }
 
   /* ----------------------------- free work first ------------------------- */
-  if (decision.act === "enrich") {
+  if (plan.act === "enrich") {
     const { rows, error } = await readReenrichLeads();
     if (error || !rows) {
-      await note(`Wanted to enrich, but the leads could not be read: ${error ?? "unknown"}`);
+      await note(`Wanted to enrich, but the leads could not be read: ${error ?? "unknown"}`, yieldNote);
       return decision;
     }
-    const plan = planReenrichment(rows, 200);
-    const { queued, alreadyQueued } = await queueReenrichBatch(plan);
+    const batch = planReenrichment(rows, supply.enrichmentPerDay);
+    const { queued, alreadyQueued } = await queueReenrichBatch(batch);
     await note(
       queued > 0
-        ? `${decision.reason} Queued ${queued} of them for enrichment.`
-        : `${decision.reason} ${alreadyQueued} were already queued today; waiting for the worker to get through them.`
+        ? `${plan.reason} Queued ${queued} of them for enrichment.`
+        : `${plan.reason} ${alreadyQueued} were already queued today; waiting for the worker to get through them.`,
+      yieldNote
     );
     return decision;
   }
@@ -176,7 +295,8 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
   /* ------------------------- spending money at Google -------------------- */
   if (!placesKeyConfigured()) {
     await note(
-      "The lead pool needs refilling, but GOOGLE_PLACES_API_KEY is not set on this deployment, so nothing can be sourced."
+      "The lead pool needs refilling, but GOOGLE_PLACES_API_KEY is not set on this deployment, so nothing can be sourced.",
+      yieldNote
     );
     return { act: "wait", reason: "No Places key." };
   }
@@ -199,7 +319,15 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
     industry: target.trade,
     search_terms: [target.trade.replace(/_/g, " ")],
     locations: [target.metro],
-    target_lead_count: settings.leadsPerRun,
+    /*
+     * Scaled to what recent batches actually qualified, not a flat number.
+     *
+     * Sourcing 300 businesses to close a 300-contact gap is what a 10% yield
+     * turns into 30, and it is why the reserve never filled however often this
+     * ran. planSupply has already divided the shortfall by the measured yield
+     * and capped the result at one run's worth.
+     */
+    target_lead_count: plan.sourceCount,
     // The same defaults the create form applies, so an automatic run produces
     // the same shape of lead as a hand-started one.
     min_rating: 3.5,
@@ -207,7 +335,7 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
     exclude_franchises: true,
     max_api_requests: Math.min(
       settings.maxApiRequestsPerRun,
-      requestBudgetFor(settings.leadsPerRun)
+      requestBudgetFor(plan.sourceCount)
     ),
     daily_api_request_cap: 500,
     auto_assign_packets: true,
@@ -257,8 +385,12 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
 
   await logEvent("campaign.started", "sourcing_campaign", campaign.id, { auto: true });
   await note(
-    `${decision.reason} Started "${campaign.name}" for up to ${settings.leadsPerRun} leads, capped at ${record.max_api_requests} Google requests.`,
-    { last_started_campaign_id: campaign.id, last_started_at: new Date().toISOString() }
+    `${plan.reason} Started "${campaign.name}" for up to ${plan.sourceCount} leads, capped at ${record.max_api_requests} Google requests.`,
+    {
+      last_started_campaign_id: campaign.id,
+      last_started_at: new Date().toISOString(),
+      ...yieldNote,
+    }
   );
 
   return decision;

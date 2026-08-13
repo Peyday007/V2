@@ -17,6 +17,7 @@ import {
   type RampPolicy,
   type SendingAccount,
 } from "./sendingCapacity";
+import { sequenceSpanDays } from "./supplyPlan";
 
 // Reading the inboxes, and moving their limits.
 //
@@ -320,16 +321,36 @@ export async function syncSendingAccounts(opts: {
  * daily cap, which under-uses the inboxes rather than overrunning them.
  */
 export async function activeSequenceSteps(): Promise<number> {
+  return (await activeSequenceShape()).steps;
+}
+
+/**
+ * The sequence's length AND how long it takes to run.
+ *
+ * The span is the number the supply system was missing. Steps decide the
+ * daily intake (capacity ÷ steps); the span decides how many leads must be
+ * mid-sequence at once to sustain it (intake × span), and that second number
+ * was hard-coded at 200 while the true figure was in the thousands. See
+ * supplyPlan.computeDemand.
+ *
+ * Both defaults guess in the safe direction: more steps means a smaller
+ * intake, a shorter span means a smaller campaign target. Under-filling is
+ * recoverable; overrunning ten warmed inboxes is not.
+ */
+export async function activeSequenceShape(): Promise<{ steps: number; spanDays: number }> {
   try {
     const { data } = await supabaseAdmin()
       .from("email_sequences")
       .select("steps")
       .eq("status", "active")
       .maybeSingle();
-    const steps = (data?.steps as unknown[]) || [];
-    if (Array.isArray(steps) && steps.length > 0) return steps.length;
+    const raw = (data?.steps as unknown[]) || [];
+    if (Array.isArray(raw) && raw.length > 0) {
+      const steps = raw as { step: number; delayDays: number }[];
+      return { steps: raw.length, spanDays: sequenceSpanDays(steps) };
+    }
   } catch {
-    // Falls through to the cautious default.
+    // Falls through to the cautious defaults.
   }
-  return 3;
+  return { steps: 3, spanDays: 7 };
 }

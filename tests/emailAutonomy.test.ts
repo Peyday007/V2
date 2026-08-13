@@ -806,8 +806,11 @@ describe("WHY IT DID NOT PUSH IS READABLE WITHOUT A SERVER LOG", () => {
      * declared and never used — which is the precise bug being guarded
      * against, so it was testing nothing.
      */
+    // 0044 appended SUPPLY_COLUMNS to the end of the same template. The
+    // property being guarded is unchanged: the refill-note columns must be in
+    // the SELECT, not merely declared next to it.
     expect(store).toMatch(
-      /SETTINGS_COLUMNS = `\$\{BASE_COLUMNS\}, \$\{AUTOPUSH_COLUMNS\}, \$\{CAPACITY_COLUMNS\}, \$\{REFILL_NOTE_COLUMNS\}`/
+      /SETTINGS_COLUMNS = `\$\{BASE_COLUMNS\}, \$\{AUTOPUSH_COLUMNS\}, \$\{CAPACITY_COLUMNS\}, \$\{REFILL_NOTE_COLUMNS\}(, \$\{SUPPLY_COLUMNS\})?`/
     );
     expect(store).toMatch(/last_refill_note, last_refill_checked_at, last_refill_active_count/);
   });
@@ -824,9 +827,11 @@ describe("WHY IT DID NOT PUSH IS READABLE WITHOUT A SERVER LOG", () => {
   it("an unrun 0037 steps down a tier rather than blanking the page", () => {
     // The failure that took the packet pipeline down: selecting a column from
     // a migration nobody ran fails the WHOLE query.
-    expect(store).toMatch(
-      /Newest migration drops off first[\s\S]{0,200}\$\{CAPACITY_COLUMNS\}`\)/
-    );
+    // The ladder gained a rung with 0044, so 0037's tier is now the second
+    // step down rather than the first. Both must still be there.
+    expect(store).toMatch(/Newest migration drops off first/);
+    expect(store).toMatch(/read\(\s*`\$\{BASE_COLUMNS\}, \$\{AUTOPUSH_COLUMNS\}, \$\{CAPACITY_COLUMNS\}, \$\{REFILL_NOTE_COLUMNS\}`\s*\)/);
+    expect(store).toMatch(/read\(`\$\{BASE_COLUMNS\}, \$\{AUTOPUSH_COLUMNS\}, \$\{CAPACITY_COLUMNS\}`\)/);
   });
 });
 
@@ -869,7 +874,7 @@ describe("THE RECIPIENT RULE CANNOT BE SWITCHED OFF", () => {
   });
 
   it("the settings API rejects an attempt to turn either one off", () => {
-    expect(route).toMatch(/named_people_only.*require_named_person|require_named_person/s);
+    expect(route).toMatch(/named_people_only[\s\S]*require_named_person|require_named_person/);
     expect(route).toMatch(/body\[key\] === false/);
     expect(route).toMatch(/cannot be switched off/i);
     expect(route).toMatch(/status:\s*400/);

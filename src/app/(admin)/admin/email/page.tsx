@@ -159,6 +159,33 @@ type Funnel = {
       fix: string | null;
     }[];
   };
+  /**
+   * The operating picture. Absent until the server that returns it is
+   * deployed, which is why every use of it is guarded.
+   */
+  supply?: {
+    automationRunning: boolean;
+    sentLast24h: number;
+    capacityPerDay: number;
+    capacityIsEstimate: boolean;
+    utilisation: number | null;
+    qualifiedReady: number;
+    daysOfReserve: number | null;
+    reserveTarget: number;
+    reserveDays: number;
+    intakePerDay: number;
+    targetInCampaign: number;
+    inSequence: number | null;
+    completed: number | null;
+    enrichableNow: number;
+    givenUp: number;
+    sequenceSteps: number;
+    spanDays: number;
+    qualificationYield: number;
+    yieldIsMeasured: boolean;
+    sourcingNote: string | null;
+    sourcingCheckedAt: string | null;
+  } | null;
   reach: {
     personalAndNamed: number;
     personalNoName: number;
@@ -186,6 +213,41 @@ type TickResult = {
   duration_ms: number;
   details?: { type: string; ok: boolean; error?: string }[];
 };
+
+/**
+ * One number and what it means, for the operating summary.
+ *
+ * Every figure on that card carries its own sentence. The version of this page
+ * that could not explain itself had numbers with labels like "in campaign",
+ * which meant two different things depending on which panel you read.
+ */
+function Figure(props: {
+  label: string;
+  value: number | string;
+  note: string;
+  warn?: boolean;
+}) {
+  return (
+    <div>
+      <div className="faint" style={{ fontSize: "0.85rem" }}>
+        {props.label}
+      </div>
+      <div
+        style={{
+          fontSize: "1.6rem",
+          fontWeight: 600,
+          color: props.warn ? "var(--red)" : "var(--amber)",
+          lineHeight: 1.2,
+        }}
+      >
+        {props.value}
+      </div>
+      <div className="faint" style={{ fontSize: "0.8rem", lineHeight: 1.45 }}>
+        {props.note}
+      </div>
+    </div>
+  );
+}
 
 export default function EmailPage() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -447,6 +509,32 @@ export default function EmailPage() {
     status.availability.reach?.personalAndNamed ??
     null;
 
+  /*
+   * IS ANYTHING PREVENTING FULL UTILISATION, and is it a person's problem?
+   *
+   * Ordered by what a person would actually have to do about it, and returning
+   * null — no banner at all — for everything the system clears by itself.
+   *
+   * ROUTINE FILTERING IS NOT LISTED HERE ON PURPOSE. A batch of general
+   * inboxes or contacts with no name is the recipient rule doing its job, and
+   * sourcing replaces them without being asked. Painting the card red for that
+   * is what trained everybody to ignore it.
+   */
+  const s2 = funnel?.supply;
+  const supplyBlocker: string | null = !s2
+    ? null
+    : !status.capability.available
+      ? "Instantly is not connected, so nothing can be sent. Set INSTANTLY_API_KEY in Vercel and redeploy."
+      : s2.capacityPerDay === 0
+        ? "No sending capacity was read from Instantly. Check the sending accounts are active and warmed, and that the campaign has a daily limit set."
+        : !status.settings.enabled
+          ? "The email programme is switched off, so nothing is being sent."
+          : !status.settings.auto_push_enabled
+            ? "Automatic pushing is off, so contacts only reach the campaign when somebody presses the button."
+            : !funnel.settings.autoSource && (s2.daysOfReserve ?? 0) < 1
+              ? "Under a day of qualified contacts left and automatic sourcing is off, so nothing will refill it."
+              : null;
+
   return (
     <div style={{ maxWidth: 940, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 6 }}>Email</h1>
@@ -521,7 +609,120 @@ export default function EmailPage() {
         for Completed — a campaign that sends nothing to anybody.
       */}
       {/*
-        THE WHOLE CHAIN, above everything else on the page.
+        ─────────────────────────── IS IT WORKING? ───────────────────────────
+
+        Eight questions, one card, nothing else above it.
+
+        The page this replaces had every fact on it and could not answer the
+        only question that mattered. Ten inboxes carrying 850 emails a day
+        delivered 22, and the screen showed a healthy pipeline, a green
+        campaign and a red "not sending" warning at the same time — because
+        "how much of the capacity are we actually using" was a number nobody
+        had ever computed.
+
+        WHAT IS DELIBERATELY NOT A WARNING HERE: routine filtering. A batch
+        that turned out to be mostly general inboxes is the recipient rule
+        working, and the system sources replacements for them on its own. That
+        used to paint the card red and send somebody looking for a fault that
+        did not exist. The banner is now reserved for states nothing automatic
+        can clear.
+      */}
+      {funnel?.supply && (
+        <div
+          className="card"
+          style={{
+            marginBottom: 20,
+            borderColor: supplyBlocker ? "var(--red)" : "var(--amber)",
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 4 }}>
+            {funnel.supply.automationRunning ? "Automation is running" : "Automation is off"}
+          </h2>
+          <p style={{ marginTop: 0, marginBottom: 14, lineHeight: 1.7, fontSize: "1.05rem" }}>
+            <strong style={{ color: "var(--amber)", fontSize: "1.5rem" }}>
+              {funnel.supply.sentLast24h}
+            </strong>{" "}
+            emails went out in the last 24 hours
+            {funnel.supply.capacityPerDay > 0 && (
+              <>
+                {" "}
+                — about{" "}
+                <strong>
+                  {funnel.supply.utilisation === null
+                    ? "—"
+                    : `${Math.round(funnel.supply.utilisation * 100)}%`}
+                </strong>{" "}
+                of the {funnel.supply.capacityPerDay} a day the inboxes are estimated to carry
+              </>
+            )}
+            .
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 14,
+              marginBottom: 14,
+            }}
+          >
+            <Figure
+              label="Qualified and ready"
+              value={funnel.supply.qualifiedReady}
+              note="personal address, name on record, not yet pushed"
+            />
+            <Figure
+              label="Reserve"
+              value={
+                funnel.supply.daysOfReserve === null
+                  ? "—"
+                  : `${funnel.supply.daysOfReserve} days`
+              }
+              note={`aiming for ${funnel.supply.reserveDays} days (${funnel.supply.reserveTarget} contacts)`}
+              warn={
+                funnel.supply.daysOfReserve !== null &&
+                funnel.supply.daysOfReserve < funnel.supply.reserveDays
+              }
+            />
+            <Figure
+              label="In sequence"
+              value={funnel.supply.inSequence ?? "—"}
+              note={`still receiving emails, of a target ${funnel.supply.targetInCampaign}`}
+            />
+            <Figure
+              label="Finished"
+              value={funnel.supply.completed ?? "—"}
+              note="sequence complete — these no longer hold a slot"
+            />
+          </div>
+
+          <p className="faint" style={{ lineHeight: 1.7, marginTop: 0, marginBottom: 0 }}>
+            {funnel.supply.sourcingNote ||
+              "Sourcing has not reported yet — the check runs hourly."}
+          </p>
+
+          {supplyBlocker && (
+            <p
+              style={{
+                color: "var(--red)",
+                lineHeight: 1.7,
+                marginTop: 12,
+                marginBottom: 0,
+              }}
+            >
+              <strong>Needs you:</strong> {supplyBlocker}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/*
+        THE WHOLE CHAIN, now folded away.
+
+        Six stages of pipeline detail were the first thing on the page. They
+        are diagnostics — useful when something is wrong, noise every other
+        day — so they open themselves when the chain is not flowing and stay
+        shut when it is.
 
         Every stage here already reported on itself accurately, and that was
         not enough. The top-up said "no leads are eligible" — true. The
@@ -923,18 +1124,38 @@ export default function EmailPage() {
             </p>
           )}
         </div>
-        <button className="btn" onClick={push} disabled={busy || !canPush}>
-          {busy ? "Working…" : `Push up to ${s.max_push_per_run} leads`}
-        </button>
-        {!canPush && (
-          <span className="faint" style={{ marginLeft: 12 }}>
-            {!status.capability.available
-              ? "Set INSTANTLY_API_KEY first."
-              : !s.campaign_id
-                ? "Pick a campaign first."
-                : "Switch the programme on first."}
-          </span>
-        )}
+        {/*
+          THE MANUAL PUSH IS A DIAGNOSTIC NOW, not the way this runs.
+
+          It was the primary control on the page, which quietly implied that
+          somebody pressing it was part of normal operation. It is not: the
+          refill job pushes qualified contacts every minute on its own, sized
+          to real capacity. A button somebody has to remember is exactly the
+          kind of dependency that let the campaign sit at 22 sends a day
+          without anybody noticing it had stopped.
+        */}
+        <details>
+          <summary style={{ cursor: "pointer" }} className="faint">
+            Push by hand
+          </summary>
+          <p className="faint" style={{ lineHeight: 1.6, marginTop: 8 }}>
+            Not needed for normal running — the top-up does this every minute,
+            sized to what the inboxes can carry. Use it to check the push works
+            without waiting for the next tick.
+          </p>
+          <button className="btn" onClick={push} disabled={busy || !canPush}>
+            {busy ? "Working…" : `Push up to ${s.max_push_per_run} leads`}
+          </button>
+          {!canPush && (
+            <span className="faint" style={{ marginLeft: 12 }}>
+              {!status.capability.available
+                ? "Set INSTANTLY_API_KEY first."
+                : !s.campaign_id
+                  ? "Pick a campaign first."
+                  : "Switch the programme on first."}
+            </span>
+          )}
+        </details>
       </div>
 
       {/* ------------------------- the inboxes themselves --------------------- */}

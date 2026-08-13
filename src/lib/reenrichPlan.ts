@@ -44,6 +44,13 @@ export type ReenrichLead = {
   owner_name?: string | null;
   do_not_call?: boolean | null;
   archived_at?: string | null;
+  /**
+   * How many times enrichment has already been run against this lead.
+   * Absent until 0044 is run, which reads as zero — the old behaviour, so an
+   * unrun migration degrades to "keep trying" rather than "give up on
+   * everything".
+   */
+  enrich_attempts?: number | null;
 };
 
 /**
@@ -55,7 +62,25 @@ export type ReenrichLead = {
 export type SkipReason =
   | "Already has everything"
   | "On the do-not-call list"
-  | "Binned";
+  | "Binned"
+  | "Enrichment has been tried enough";
+
+/**
+ * How many times a lead is re-crawled before it is left alone.
+ *
+ * THE SECOND HALF OF THE DEADLOCK. Enrichment retried every lead every day,
+ * forever, with no ceiling. A one-van business whose website names no human
+ * will not name one tomorrow either — but it stayed "awaiting enrichment"
+ * permanently, and sourcing was gated behind that number reaching zero, so
+ * the system spent every day re-crawling sites that could not help it and
+ * never bought a replacement.
+ *
+ * Three passes is enough to cover a site that was down, a crawl that timed
+ * out, and one genuine retry. After that the lead is not deleted and not
+ * archived — it stays callable, it just stops being counted as outstanding
+ * work, which lets the funnel go and source a replacement instead.
+ */
+export const MAX_ENRICH_ATTEMPTS = 3;
 
 export function whatIsMissing(lead: ReenrichLead): MissingThing[] {
   const missing: MissingThing[] = [];
@@ -93,7 +118,36 @@ export function skipReasonFor(lead: ReenrichLead): SkipReason | null {
   if (lead.archived_at) return "Binned";
   if (lead.do_not_call) return "On the do-not-call list";
   if (whatIsMissing(lead).length === 0) return "Already has everything";
+  if ((lead.enrich_attempts ?? 0) >= MAX_ENRICH_ATTEMPTS) {
+    return "Enrichment has been tried enough";
+  }
   return null;
+}
+
+/**
+ * Does this lead still stand a chance of becoming someone we can email?
+ *
+ * The number the funnel must gate on. "Missing something" and "still worth
+ * working" are different questions, and answering the first when you meant
+ * the second is what held sourcing shut for months: a lead is missing a name
+ * forever, but it is only worth another crawl a few times.
+ *
+ * A lead with no website can never gain an address from a free crawl, so it
+ * is not counted here however few attempts it has had.
+ */
+export function stillEnrichable(lead: ReenrichLead): boolean {
+  if (skipReasonFor(lead) !== null) return false;
+  const missing = whatIsMissing(lead);
+  const needsCrawl = missing.includes("email") || missing.includes("decision_maker");
+  if (!needsCrawl) return false;
+  return !!(lead.website || "").trim();
+}
+
+/** How many leads are genuinely still workable, for the supply decision. */
+export function countStillEnrichable(leads: ReenrichLead[]): number {
+  let n = 0;
+  for (const l of leads) if (stillEnrichable(l)) n += 1;
+  return n;
 }
 
 /**

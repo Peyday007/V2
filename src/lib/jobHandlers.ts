@@ -21,7 +21,8 @@ import { loadSettings } from "./instantlyStore";
 import { activeLeadCount } from "./instantly/client";
 import { countEligible, pushEligibleLeads, activeThreadCount } from "./emailPush";
 import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
-import { syncSendingAccounts } from "./capacitySync";
+import { syncSendingAccounts, activeSequenceShape } from "./capacitySync";
+import { computeDemand } from "./supplyPlan";
 import { recomputeKnowledge } from "./houseKnowledgeStore";
 import { appliedPriors } from "./houseKnowledge";
 import { planReenrichment } from "./reenrichPlan";
@@ -806,6 +807,28 @@ const enrichLead: Handler = async (job) => {
   const db = supabaseAdmin();
   const startedAt = Date.now();
 
+  /*
+   * COUNT THE ATTEMPT BEFORE MAKING IT.
+   *
+   * Enrichment retried every incomplete lead every day, forever, with no
+   * ceiling — and sourcing was gated behind that backlog reaching zero. A
+   * one-van business whose website names no human never stopped being
+   * "outstanding work", so 935 of them held the gate shut and no replacement
+   * lead was ever bought.
+   *
+   * Incremented at the START, not on success, and deliberately so: a crawl
+   * that times out three times is exactly the lead this needs to give up on.
+   * Counting only clean finishes would let a site that always fails retry
+   * forever, which is the bug rather than a milder version of it.
+   *
+   * Failure here is swallowed — an unrun 0044 means no column, and enrichment
+   * must still work in that case. It simply keeps the old forever-retry
+   * behaviour until the migration is run.
+   */
+  await db
+    .rpc("increment_enrich_attempts", { p_lead_id: leadId })
+    .then(undefined, () => {});
+
   const { data: lead } = await db
     .from("leads")
     .select(
@@ -1380,21 +1403,67 @@ const refillEmailCampaign: Handler = async () => {
    * ever push fewer leads, never more, so a disagreement between the two
    * systems resolves toward under-filling rather than double-filling.
    */
+  /*
+   * WHAT THE CAMPAIGN ACTUALLY NEEDS, rather than what somebody typed in.
+   *
+   * The sequence shape is read first because both of the numbers below depend
+   * on it: how many emails a lead receives sets the daily intake, and how long
+   * the sequence runs sets both the campaign target and — crucially — which
+   * threads still count as occupying a slot.
+   *
+   * Nothing here is a stored figure any more. target_active_leads of 200 with
+   * a 12-day sequence was short by an order of magnitude, and being short by
+   * an order of magnitude on that one number is what stopped the campaign.
+   */
+  const shape = await activeSequenceShape();
+  const demand = computeDemand({
+    usableSends: settings.computed_daily_sends ?? 0,
+    sequenceSteps: shape.steps,
+    spanDays: shape.spanDays,
+    reserveDays: settings.reserve_days,
+  });
+
+  /*
+   * How full the campaign is, counted from our own thread rows.
+   *
+   * Instantly's /leads/list returns a page and no total, so activeLeadCount()
+   * returned null every single minute and planRefill correctly refused to push
+   * blind. Correct, and it meant the top-up never ran.
+   *
+   * Instantly's number is still asked for and still used when it comes back —
+   * but as a CEILING, not a replacement. Taking the larger of the two can only
+   * ever push fewer leads, never more, so a disagreement between the two
+   * systems resolves toward under-filling rather than double-filling.
+   *
+   * The span is passed so threads that have finished sending stop counting.
+   * Without it this is an all-time total that only ever grows, and once it
+   * passed the target the top-up pushed nothing ever again.
+   */
   const [ours, theirs, eligible] = await Promise.all([
-    activeThreadCount(settings.campaign_id || ""),
+    activeThreadCount(settings.campaign_id || "", shape.spanDays),
     activeLeadCount(settings.campaign_id || ""),
     countEligible(),
   ]);
   const active =
     ours === null ? theirs : theirs === null ? ours : Math.max(ours, theirs);
 
+  /*
+   * Scaling is on by default and can be pinned off, in which case the stored
+   * numbers are used exactly as before. Off is the OLD behaviour, kept only
+   * so a deployment that wants hand-set caps can have them — it is not a way
+   * to weaken the recipient rule, which has no switch at all.
+   */
+  const scale = settings.auto_scale_supply !== false && demand.intakePerDay > 0;
+  const targetActive = scale ? demand.targetInCampaign : settings.target_active_leads;
+  const dailyCap = scale ? demand.intakePerDay : settings.daily_push_cap;
+
   const decision = planRefill({
     autoPushEnabled: settings.auto_push_enabled,
     programmeEnabled: settings.enabled,
     campaignId: settings.campaign_id,
     activeInCampaign: active,
-    targetActive: settings.target_active_leads,
-    dailyCap: settings.daily_push_cap,
+    targetActive,
+    dailyCap,
     pushedToday,
     eligible,
     maxPerRun: settings.max_push_per_run,

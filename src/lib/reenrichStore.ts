@@ -21,6 +21,10 @@ const CORE = "id, business_name, website, owner_name, do_not_call, archived_at";
  * collects addresses and names.
  */
 const COLUMN_TIERS = [
+  // 0044's attempt counter is the newest and so drops off first. Without it
+  // every lead reads as never tried, which is the old forever-retry behaviour
+  // — the safe direction for an unrun migration.
+  `${CORE}, website_email, direct_email, owner_email, decision_maker_name, diagnostic_findings, enrich_attempts`,
   `${CORE}, website_email, direct_email, owner_email, decision_maker_name, diagnostic_findings`,
   `${CORE}, website_email, direct_email, owner_email, decision_maker_name`,
   `${CORE}, website_email, owner_email, decision_maker_name`,
