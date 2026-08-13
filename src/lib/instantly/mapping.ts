@@ -180,6 +180,41 @@ export function toInstantlySequence(
 }
 
 /**
+ * Add up a daily analytics response.
+ *
+ * Instantly returns one row per day; the totals we want are the sums. Written
+ * tolerantly for the same reason as every other reader here — this decides
+ * whether the page shows a red "nothing is sending" warning, so a renamed
+ * field must not silently read as zero. An unreadable body returns null, and
+ * null means "could not ask", never "nothing happened".
+ *
+ * Accepts a bare array, `{ items: [] }` and `{ data: [] }`, because list
+ * endpoints change their envelope more often than their contents.
+ */
+export function sumDailyAnalytics(
+  body: unknown
+): { sent: number; replies: number } | null {
+  const container = body as { items?: unknown; data?: unknown } | unknown[];
+  const rows = Array.isArray(container)
+    ? container
+    : Array.isArray((container as { items?: unknown })?.items)
+      ? (container as { items: unknown[] }).items
+      : Array.isArray((container as { data?: unknown })?.data)
+        ? (container as { data: unknown[] }).data
+        : null;
+  if (rows === null) return null;
+
+  let sent = 0;
+  let replies = 0;
+  for (const entry of rows) {
+    const row = entry as Record<string, unknown>;
+    sent += firstNumber(row, ["sent", "sent_count", "emails_sent"]) ?? 0;
+    replies += firstNumber(row, ["replies", "replies_count", "reply_count", "replied"]) ?? 0;
+  }
+  return { sent, replies };
+}
+
+/**
  * Read the steps back OUT of a campaign, as Instantly actually stored them.
  *
  * The other half of publishing, and the half that was missing. A PATCH that

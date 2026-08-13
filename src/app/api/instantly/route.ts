@@ -253,16 +253,29 @@ export async function PUT(req: NextRequest) {
     patch.daily_push_cap = n;
   }
 
-  if (typeof body.named_people_only === "boolean") {
-    // Not a compliance switch and not automatic — it only narrows who gets
-    // emailed, never widens it, so it needs no confirmation step.
-    patch.named_people_only = body.named_people_only;
-  }
-
-  if (typeof body.require_named_person === "boolean") {
-    // Same reasoning, one notch stricter: refuses a personal address with
-    // nobody named behind it, so the greeting is always a name.
-    patch.require_named_person = body.require_named_person;
+  /*
+   * THE RECIPIENT RULE CANNOT BE TURNED OFF FROM HERE.
+   *
+   * These were switches. They are now a description of behaviour that
+   * emailPush applies unconditionally, so accepting `false` would store a
+   * value that changes nothing and contradicts what the system does — the
+   * worst kind of setting, one that lies. Setting either to true is a no-op
+   * and accepted quietly; setting either to false is refused with a reason.
+   */
+  for (const key of ["named_people_only", "require_named_person"] as const) {
+    if (body[key] === false) {
+      return NextResponse.json(
+        {
+          error:
+            "The recipient rule cannot be switched off. Only decision-makers with a personal " +
+            "address and a name on record are emailed — general inboxes like info@ and " +
+            "customercare@ are never pushed. This is enforced in the push itself, not by this " +
+            "setting.",
+        },
+        { status: 400 }
+      );
+    }
+    if (body[key] === true) patch[key] = true;
   }
 
   if (typeof body.auto_push_enabled === "boolean") {

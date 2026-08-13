@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { instantlyCapability, listCampaigns } from "@/lib/instantly/client";
+import { instantlyCapability, listCampaigns, campaignSendLedger } from "@/lib/instantly/client";
 import { loadSettings } from "@/lib/instantlyStore";
 import { emailHealth, type HealthFacts } from "@/lib/emailHealth";
 import { isMissingColumnError } from "@/lib/enrichmentGrade";
@@ -65,17 +65,38 @@ export async function GET() {
     const already = new Set((threads || []).map((t) => String(t.lead_id)));
     pushedTotal = already.size;
 
-    // Column tiers: website_email arrives with 0030, direct_email with 0023.
+    /*
+     * THE NAME COLUMNS ARE PART OF THIS QUERY, not an afterthought.
+     *
+     * `sendable` now means "meets the recipient rule" — a personal address
+     * with somebody named behind it — and without decision_maker_name and
+     * owner_name in the select, every lead reads as unnamed and the figure
+     * would be a flat zero however healthy the list is. The same omission
+     * silently zeroed the reach breakdown once already.
+     *
+     * Column tiers: website_email arrives with 0030, direct_email with 0023,
+     * decision_maker_name with 0023 as well.
+     */
+    const BASE = "id, owner_email, owner_name, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at";
     const tiers = [
-      "id, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at, direct_email, website_email, website_email_kind",
-      "id, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at, website_email",
-      "id, owner_email, do_not_call, archived_at, email_unsubscribed_at, email_bounced_at",
+      `${BASE}, decision_maker_name, direct_email, website_email, website_email_kind`,
+      `${BASE}, decision_maker_name, direct_email, website_email`,
+      `${BASE}, decision_maker_name, website_email`,
+      `${BASE}, website_email`,
+      BASE,
     ];
     for (const columns of tiers) {
       const res = await db.from("leads").select(columns).is("archived_at", null).limit(20000);
       if (!res.error) {
         const rows = res.data as unknown as (EmailLeadRow & { id: string })[];
-        sendable = summarizeEmailAvailability(rows.filter((r) => !already.has(r.id))).available;
+        /*
+         * The POLICY count, not the "has any address" count. The card's whole
+         * job is to say whether email can run; reporting contacts the push
+         * will refuse is how "323 sendable" sat next to a campaign that could
+         * not be topped up.
+         */
+        sendable = summarizeEmailAvailability(rows.filter((r) => !already.has(r.id))).reach
+          .personalAndNamed;
         return;
       }
       if (!isMissingColumnError(res.error)) return;
@@ -120,6 +141,41 @@ export async function GET() {
     sentLast24h = sent || 0;
     repliesLast7d = replies || 0;
   }, undefined);
+
+  /*
+   * RECONCILE AGAINST INSTANTLY'S OWN LEDGER.
+   *
+   * The counts above come from email_events, which is filled by webhooks.
+   * Webhooks are event detail: they arrive when they arrive, and they are
+   * silently absent if the endpoint was down or the shared secret was wrong.
+   * Reading a total off them reported "nothing sent in 24 hours" on a campaign
+   * that was sending a hundred a day, and put a red warning on a healthy
+   * programme.
+   *
+   * The larger of the two wins. A webhook we hold that analytics has not yet
+   * counted is still a real send, and an analytics figure larger than our
+   * webhook count means deliveries we simply never received. Neither can be
+   * subtracted from the other, so taking the maximum is the only reconciliation
+   * that cannot under-report.
+   *
+   * A failed read leaves the webhook figure exactly as it was — null from the
+   * ledger means "could not ask", never "nothing was sent".
+   */
+  let ledgerRead = false;
+  if (settings?.campaign_id) {
+    await safe(async () => {
+      const now = new Date();
+      const ledger = await campaignSendLedger(
+        settings!.campaign_id!,
+        new Date(now.getTime() - 24 * 3600_000),
+        now
+      );
+      if (!ledger) return;
+      ledgerRead = true;
+      sentLast24h = Math.max(sentLast24h, ledger.sent);
+      repliesLast7d = Math.max(repliesLast7d, ledger.replies);
+    }, undefined);
+  }
 
   /*
    * What the automatic top-up last decided. Reads the columns 0037 adds, and
@@ -172,5 +228,12 @@ export async function GET() {
     refillCheckedMinutesAgo,
   };
 
-  return NextResponse.json({ health: emailHealth(facts), facts, error: null });
+  return NextResponse.json({
+    health: emailHealth(facts),
+    facts,
+    // Which source the send count came from, so "0 sent" can be read as
+    // "Instantly says none" rather than "we could not ask".
+    sendCountSource: ledgerRead ? "instantly_analytics" : "webhooks_only",
+    error: null,
+  });
 }

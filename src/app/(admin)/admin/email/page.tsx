@@ -432,6 +432,21 @@ export default function EmailPage() {
   const s = status.settings;
   const canPush = status.capability.available && s.enabled && !!s.campaign_id;
 
+  /*
+   * How many contacts actually satisfy the recipient rule.
+   *
+   * Both endpoints compute it from the same summarizeEmailAvailability, so
+   * either will do; /api/funnel is preferred only because it is the newer of
+   * the two and is what the pipeline card above already read. Null means
+   * neither server has answered yet — which prints nothing rather than a
+   * zero, because "we have not asked" and "nobody qualifies" would send
+   * somebody looking for a fault that isn't there.
+   */
+  const meetsTheRule =
+    funnel?.reach?.personalAndNamed ??
+    status.availability.reach?.personalAndNamed ??
+    null;
+
   return (
     <div style={{ maxWidth: 940, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 6 }}>Email</h1>
@@ -537,35 +552,49 @@ export default function EmailPage() {
           >
             {funnel.health.headline}
           </p>
-          <div style={{ display: "grid", gap: 10 }}>
-            {funnel.health.stages.map((st) => (
-              <div key={st.key} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <span
-                  aria-hidden
-                  style={{
-                    flex: "none",
-                    marginTop: 6,
-                    width: 9,
-                    height: 9,
-                    borderRadius: "50%",
-                    background:
-                      st.state === "ok"
-                        ? "var(--amber)"
-                        : st.state === "working"
-                          ? "var(--amber-dim)"
-                          : "var(--red)",
-                  }}
-                />
-                <div style={{ minWidth: 0, lineHeight: 1.6 }}>
-                  <strong>{st.label}</strong>{" "}
-                  <span className="faint">{st.detail}</span>
-                  {st.fix && (
-                    <div style={{ color: "var(--red)", marginTop: 2 }}>{st.fix}</div>
-                  )}
+          {/*
+            The six stages, folded away while the chain is flowing.
+
+            The headline above already says which stage is broken and what to
+            do about it; six green lines underneath it are reassurance the
+            first time and noise every time after. Nothing is removed — and
+            `open` is tied to the health, so the moment something breaks the
+            detail is on screen without anyone having to know it was here.
+          */}
+          <details open={!funnel.health.flowing}>
+            <summary style={{ cursor: "pointer" }} className="faint">
+              Stage by stage ({funnel.health.stages.length})
+            </summary>
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+              {funnel.health.stages.map((st) => (
+                <div key={st.key} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <span
+                    aria-hidden
+                    style={{
+                      flex: "none",
+                      marginTop: 6,
+                      width: 9,
+                      height: 9,
+                      borderRadius: "50%",
+                      background:
+                        st.state === "ok"
+                          ? "var(--amber)"
+                          : st.state === "working"
+                            ? "var(--amber-dim)"
+                            : "var(--red)",
+                    }}
+                  />
+                  <div style={{ minWidth: 0, lineHeight: 1.6 }}>
+                    <strong>{st.label}</strong>{" "}
+                    <span className="faint">{st.detail}</span>
+                    {st.fix && (
+                      <div style={{ color: "var(--red)", marginTop: 2 }}>{st.fix}</div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </details>
 
           {/* --------------------- keep the supply coming ------------------- */}
           <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
@@ -645,34 +674,61 @@ export default function EmailPage() {
           >
             {health.headline}
           </p>
-          <ul style={{ lineHeight: 1.8, marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
-            {health.steps.map((st) => (
-              <li key={st.label}>
-                <span
-                  style={{
-                    color:
-                      st.state === "ok"
-                        ? "var(--text)"
-                        : st.state === "stopped"
-                          ? "var(--red)"
-                          : "var(--text-dim)",
-                  }}
-                >
-                  {st.state === "ok" ? "✓" : st.state === "stopped" ? "✗" : "·"} {st.label}
-                </span>
-                {st.detail && (
-                  <span className="faint"> — {st.detail}</span>
-                )}
-              </li>
-            ))}
-          </ul>
+          {/* Same reasoning as the pipeline stages: open on its own when
+              something is stopped, folded away when the answer is "running". */}
+          <details open={!health.sending}>
+            <summary style={{ cursor: "pointer" }} className="faint">
+              Check by check ({health.steps.length})
+            </summary>
+            <ul style={{ lineHeight: 1.8, marginTop: 8, marginBottom: 0, paddingLeft: 20 }}>
+              {health.steps.map((st) => (
+                <li key={st.label}>
+                  <span
+                    style={{
+                      color:
+                        st.state === "ok"
+                          ? "var(--text)"
+                          : st.state === "stopped"
+                            ? "var(--red)"
+                            : "var(--text-dim)",
+                    }}
+                  >
+                    {st.state === "ok" ? "✓" : st.state === "stopped" ? "✗" : "·"} {st.label}
+                  </span>
+                  {st.detail && (
+                    <span className="faint"> — {st.detail}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
         </div>
       )}
 
       {/* ------------------------------ connection --------------------------- */}
-      <div className="card" style={{ marginBottom: 20 }}>
-        <h2 style={{ marginTop: 0, marginBottom: 10 }}>Connection</h2>
-        <p style={{ lineHeight: 1.6, marginTop: 0 }}>
+      {/*
+        Setup detail, not daily reading.
+
+        The webhook URL and the secret matter once, on the day somebody wires
+        Instantly up, and then never again — but the paragraph explaining them
+        sat between the health card and the campaign every day afterwards.
+        Folded, and opened by the page itself whenever either half is actually
+        wrong, so a missing key or a missing secret still announces itself.
+      */}
+      <details
+        className="card"
+        style={{ marginBottom: 20 }}
+        open={!status.capability.available || !status.webhookSecretSet}
+      >
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+          Connection —{" "}
+          {status.capability.available && status.webhookSecretSet ? (
+            <span style={{ color: "var(--amber)" }}>connected, replies wired up</span>
+          ) : (
+            <span style={{ color: "var(--red)" }}>needs attention</span>
+          )}
+        </summary>
+        <p style={{ lineHeight: 1.6, marginTop: 10 }}>
           {status.capability.available ? (
             <span style={{ color: "var(--amber)" }}>Connected to Instantly.</span>
           ) : (
@@ -693,7 +749,7 @@ export default function EmailPage() {
             </span>
           )}
         </p>
-      </div>
+      </details>
 
       {/* ------------------------------- campaign ---------------------------- */}
       <div className="card" style={{ marginBottom: 20 }}>
@@ -818,59 +874,55 @@ export default function EmailPage() {
             it. Until then the only addresses are ones a caller typed in by hand.
           </p>
         )}
-        {/* Who to send to, not just how many. */}
-        <label style={{ display: "block", marginBottom: 10 }}>
-          <input
-            type="checkbox"
-            checked={!!s.named_people_only}
-            disabled={busy}
-            onChange={(e) => save({ named_people_only: e.target.checked })}
-          />{" "}
-          <span>Only email named people — skip info@, office@ and the like</span>
-          <div className="faint" style={{ marginLeft: 24, lineHeight: 1.6 }}>
-            {status.availability.audience
-              ? `Leaves ${status.availability.audience.decision_maker + status.availability.audience.personal} of ${status.availability.available}. `
-              : ""}
-            Off by default: most one-van operations publish only a general
-            inbox, so switching this on refuses most of the list. Either way the
-            push now sends named people FIRST.
-          </div>
-        </label>
-
         {/*
-          The second half of "personal emails with their name attached".
+          THE RECIPIENT RULE — stated, not offered.
 
-          A separate switch from the one above because they refuse different
-          leads: that one keeps maria@ with no name on record, whose email
-          still opens "Hi," rather than "Hi Maria,". Two switches, two numbers,
-          two decisions — rather than quietly making one of them stricter.
+          This was two checkboxes with two explanations that disagreed with
+          each other: one said general inboxes were skipped, the other said
+          they were skipped only when a name was missing, and both shipped
+          off. A reader had to work out which combination was live before they
+          could know who the campaign was actually writing to, and the honest
+          answer for months was "everyone with an address, addressed to
+          nobody".
+
+          There is nothing to decide here any more. pushEligibleLeads and
+          countEligible both apply onlyNamedPeopleWeCanGreet unconditionally
+          and the settings API refuses to store false, so a switch on this
+          page would be a lie about what the code does. What is left is the
+          rule in one line and the number of contacts that currently meet it.
         */}
-        <label style={{ display: "block", marginBottom: 10, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={!!status.settings.require_named_person}
-            disabled={busy}
-            onChange={(e) => save({ require_named_person: e.target.checked })}
-          />{" "}
-          <span>…and only when we know their name, so it never opens &ldquo;Hi,&rdquo;</span>
-          <div className="faint" style={{ marginLeft: 24, lineHeight: 1.6 }}>
-            {funnel?.reach ? (
-              <>
-                <strong style={{ color: "var(--amber)" }}>
-                  {funnel.reach.personalAndNamed}
-                </strong>{" "}
-                leads are a personal address with a name behind it.{" "}
-                {funnel.reach.personalNoName} are a personal address with nobody
-                named, {funnel.reach.genericButNamed} are a general inbox at a
-                business whose owner we know, and {funnel.reach.genericNoName}{" "}
-                are a general inbox with no name at all.{" "}
-              </>
-            ) : null}
-            The stricter this gets the fewer go out, and the answer to both is
-            the same: enrichment. Every name and address is found before a lead
-            is ever pushed, and no switch here can invent one.
-          </div>
-        </label>
+        <div
+          style={{
+            marginTop: 14,
+            marginBottom: 14,
+            padding: "12px 14px",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+          }}
+        >
+          <div style={{ fontWeight: 600 }}>Recipient rule: decision-maker only.</div>
+          <p className="faint" style={{ lineHeight: 1.7, marginTop: 6, marginBottom: 0 }}>
+            General inboxes are excluded — info@, office@, support@,
+            customercare@ and the like are never pushed — and a name has to be
+            on record, so an email never opens &ldquo;Hi,&rdquo;. This applies to
+            every push and cannot be switched off.
+          </p>
+          {meetsTheRule !== null && (
+            <p style={{ lineHeight: 1.7, marginTop: 8, marginBottom: 0 }}>
+              <strong style={{ color: "var(--amber)", fontSize: "1.3rem" }}>{meetsTheRule}</strong>{" "}
+              {meetsTheRule === 1 ? "contact meets" : "contacts meet"} the rule right now
+              {typeof status.availability.available === "number"
+                ? `, out of ${status.availability.available} with an address of any kind`
+                : ""}
+              .{" "}
+              <span className="faint">
+                The gap is general inboxes and contacts with no name. The way to
+                close it is enrichment — every name and address is found before a
+                lead is pushed, and nothing on this page can invent one.
+              </span>
+            </p>
+          )}
+        </div>
         <button className="btn" onClick={push} disabled={busy || !canPush}>
           {busy ? "Working…" : `Push up to ${s.max_push_per_run} leads`}
         </button>
@@ -1166,7 +1218,20 @@ export default function EmailPage() {
               that sentence is where somebody notices nothing is happening and
               has, until now, had nowhere to go from there.
             */}
-            <div style={{ marginBottom: 14 }}>
+            {/*
+              Folded, and opened by anything it reports.
+
+              Running a tick by hand is a diagnostic — the schedule does it
+              every minute without being asked, so the button is only ever
+              pressed by somebody who already suspects a fault. `open` follows
+              the result: press it and the outcome, failures included, is on
+              screen rather than hidden inside a collapsed section.
+            */}
+            <details open={!!tick || ticking} style={{ marginBottom: 14 }}>
+              <summary style={{ cursor: "pointer" }} className="faint">
+                Worker diagnostics
+              </summary>
+              <div style={{ marginTop: 10 }}>
               <button className="btn-ghost" onClick={runWorker} disabled={ticking}>
                 {ticking ? "Running…" : "Run the worker now"}
               </button>
@@ -1199,7 +1264,8 @@ export default function EmailPage() {
                   )}
                 </p>
               )}
-            </div>
+              </div>
+            </details>
             <div style={{ display: "grid", gap: 12 }}>
               <label>
                 <div className="faint" style={{ marginBottom: 4 }}>

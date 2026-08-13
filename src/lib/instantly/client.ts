@@ -1,5 +1,11 @@
 import "server-only";
-import type { Campaign, InstantlyCapability, PushResult, PushSubject } from "./types";
+import type {
+  Campaign,
+  CampaignSendLedger,
+  InstantlyCapability,
+  PushResult,
+  PushSubject,
+} from "./types";
 import {
   explainStatus,
   hasVisibleText,
@@ -7,6 +13,7 @@ import {
   normaliseCampaigns,
   pushBody,
   readCampaignSteps,
+  sumDailyAnalytics,
   toInstantlySequence,
   countBlocks,
   formatBody,
@@ -25,6 +32,7 @@ export {
   normaliseCampaigns,
   pushBody,
   readCampaignSteps,
+  sumDailyAnalytics,
   toInstantlySequence,
 } from "./mapping";
 
@@ -159,6 +167,49 @@ export async function campaignDailyLimit(campaignId: string): Promise<number | n
   // in Instantly's field names is fixed in one place.
   const [campaign] = normaliseCampaigns([res.body]);
   return campaign?.dailyLimit ?? null;
+}
+
+/**
+ * What Instantly's own ledger says this campaign sent, over a window.
+ *
+ * THE AUTHORITATIVE SEND COUNT, and the fix for a red warning on a healthy
+ * campaign. The Email page read "sent in the last 24 hours" off our own
+ * email_events table — which is filled by webhooks. Webhooks are event
+ * DETAIL: they arrive when they arrive, they are silently absent if the
+ * endpoint was down or the shared secret was wrong, and they were never a
+ * total. A campaign sending a hundred a day showed zero and reported itself
+ * broken.
+ *
+ * Dates are sent as YYYY-MM-DD because that is what the endpoint takes; the
+ * caller passes real dates and this does the formatting, so no caller can get
+ * it subtly wrong in its own way.
+ *
+ * NULL ON ANY FAILURE, NEVER ZERO. "We could not ask" and "nothing was sent"
+ * are different answers and the whole point of this function is that
+ * conflating them is what produced the false alarm.
+ */
+export async function campaignSendLedger(
+  campaignId: string,
+  start: Date,
+  end: Date
+): Promise<CampaignSendLedger | null> {
+  if (!campaignId || !instantlyCapability().available) return null;
+
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+  const from = day(start);
+  const to = day(end);
+
+  const query = new URLSearchParams({
+    campaign_id: campaignId,
+    start_date: from,
+    end_date: to,
+  });
+  const res = await call(`/campaigns/analytics/daily?${query.toString()}`, { method: "GET" });
+  if (!res.ok) return null;
+
+  const totals = sumDailyAnalytics(res.body);
+  if (!totals) return null;
+  return { ...totals, from, to };
 }
 
 /* -------------------------------------------------------------------------- */

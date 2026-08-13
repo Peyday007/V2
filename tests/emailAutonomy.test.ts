@@ -829,3 +829,115 @@ describe("WHY IT DID NOT PUSH IS READABLE WITHOUT A SERVER LOG", () => {
     );
   });
 });
+
+/*
+ * AN OLD SETTINGS ROW MUST NOT BE ABLE TO WEAKEN THE RECIPIENT RULE.
+ *
+ * The rule is enforced in emailPush unconditionally (see emailEligibility's
+ * tests), but two stored booleans still described it, and both shipped false.
+ * A stored false that contradicts the behaviour is worse than no setting at
+ * all: it is a screen telling somebody the campaign will email info@ when the
+ * code refuses to. So the defaults are true, the loader pins them true
+ * whatever the row says, and the API refuses to write false.
+ */
+describe("THE RECIPIENT RULE CANNOT BE SWITCHED OFF", () => {
+  const store = readFileSync(new URL("../src/lib/instantlyStore.ts", import.meta.url), "utf8");
+  const route = readFileSync(
+    new URL("../src/app/api/instantly/route.ts", import.meta.url),
+    "utf8"
+  );
+  const page = readFileSync(
+    new URL("../src/app/(admin)/admin/email/page.tsx", import.meta.url),
+    "utf8"
+  );
+
+  it("the safe defaults are both true", () => {
+    const defaults = store.slice(
+      store.indexOf("SETTINGS_DEFAULTS"),
+      store.indexOf("SETTINGS_DEFAULTS") + 1200
+    );
+    expect(defaults).toMatch(/named_people_only:\s*true/);
+    expect(defaults).toMatch(/require_named_person:\s*true/);
+  });
+
+  it("the loader pins them true whatever the stored row says", () => {
+    // Not `data.named_people_only ?? true` — that trusts a stored false.
+    expect(store).not.toMatch(/named_people_only:\s*data\./);
+    expect(store).not.toMatch(/require_named_person:\s*data\./);
+    expect(store).toMatch(/named_people_only:\s*true/);
+    expect(store).toMatch(/require_named_person:\s*true/);
+  });
+
+  it("the settings API rejects an attempt to turn either one off", () => {
+    expect(route).toMatch(/named_people_only.*require_named_person|require_named_person/s);
+    expect(route).toMatch(/body\[key\] === false/);
+    expect(route).toMatch(/cannot be switched off/i);
+    expect(route).toMatch(/status:\s*400/);
+  });
+
+  it("0043 makes the stored row agree, and leaves the threads alone", () => {
+    const sql = readFileSync(
+      new URL("../supabase/migrations/0043_dm_only_email_policy.sql", import.meta.url),
+      "utf8"
+    );
+    expect(sql).toMatch(/update instantly_settings/i);
+    expect(sql).toMatch(/named_people_only\s*=\s*true/i);
+    expect(sql).toMatch(/require_named_person\s*=\s*true/i);
+    // History is not rewritten to match a rule adopted afterwards.
+    expect(sql).not.toMatch(/(update|delete\s+from|alter\s+table)\s+email_threads/i);
+  });
+
+  it("THE PAGE STATES THE RULE INSTEAD OF OFFERING IT", () => {
+    expect(page).toMatch(/Recipient rule: decision-maker only\./);
+    // The two checkboxes that disagreed with each other are gone.
+    expect(page).not.toMatch(/save\(\{ named_people_only:/);
+    expect(page).not.toMatch(/save\(\{ require_named_person:/);
+  });
+
+  it("the page shows how many contacts meet the rule", () => {
+    expect(page).toMatch(/meetsTheRule/);
+    expect(page).toMatch(/personalAndNamed/);
+  });
+
+  it("EVERY SUPPLY NUMBER COUNTS THE SAME LEADS THE PUSH WOULD TAKE", () => {
+    /*
+     * Automatic refill, automatic sourcing and the funnel snapshot all had to
+     * go through countEligible for this to hold — a second counter with its
+     * own filter is how "323 leads eligible" and "nothing pushable" were both
+     * true at once, and how a top-up could buy leads for a supply the push
+     * then refused.
+     */
+    const funnelStore = readFileSync(
+      new URL("../src/lib/funnelStore.ts", import.meta.url),
+      "utf8"
+    );
+    const handlers = readFileSync(
+      new URL("../src/lib/jobHandlers.ts", import.meta.url),
+      "utf8"
+    );
+    // keepFunnelFull (sourcing) and funnelSnapshot (funnel health) both.
+    expect((funnelStore.match(/countEligible\(\)/g) || []).length).toBeGreaterThanOrEqual(2);
+    // The refill job.
+    expect(handlers).toMatch(/countEligible\(\)/);
+    // And the health card's own "sendable", which counted addresses before.
+    const health = readFileSync(
+      new URL("../src/app/api/instantly/health/route.ts", import.meta.url),
+      "utf8"
+    );
+    expect(health).toMatch(/\.reach[\s\S]{0,20}\.personalAndNamed/);
+    // Not the old count, which was "has an address of any kind".
+    expect(health).not.toMatch(/sendable = summarizeEmailAvailability\([^)]*\)\.available/);
+  });
+
+  it("the detail is folded away, not deleted", () => {
+    // Collapsed sections that open themselves when something is wrong — the
+    // error text is secondary, never missing.
+    expect(page).toMatch(/<details open=\{!funnel\.health\.flowing\}/);
+    expect(page).toMatch(/<details open=\{!health\.sending\}/);
+    expect(page).toMatch(/open=\{!status\.capability\.available \|\| !status\.webhookSecretSet\}/);
+    expect(page).toMatch(/<details open=\{!!tick \|\| ticking\}/);
+    // Still rendering the fix line and the failed-tick errors.
+    expect(page).toMatch(/st\.fix &&/);
+    expect(page).toMatch(/\.filter\(\(d\) => !d\.ok\)/);
+  });
+});

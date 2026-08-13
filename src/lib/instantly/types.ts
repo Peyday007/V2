@@ -82,6 +82,27 @@ export type NormalisedEvent = {
   idempotencyKey: string;
 };
 
+/**
+ * What Instantly's own ledger says went out.
+ *
+ * THE AUTHORITATIVE SEND COUNT. Webhooks are event detail — they arrive when
+ * they arrive, they can be missed entirely if the endpoint was down or the
+ * secret was wrong, and they were never designed to be a total. Reading
+ * "nothing sent in 24 hours" off our own webhook table produced a red warning
+ * on a campaign that was sending perfectly well.
+ *
+ * Null on any failure, never zero: "we could not ask" and "nothing was sent"
+ * are different answers, and reporting the second for the first is exactly the
+ * false alarm this exists to end.
+ */
+export type CampaignSendLedger = {
+  sent: number;
+  replies: number;
+  /** The window asked for, so a caller can say what the number covers. */
+  from: string;
+  to: string;
+};
+
 /** Whether the integration can talk to Instantly at all, said in words. */
 export type InstantlyCapability = {
   available: boolean;

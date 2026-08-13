@@ -11,7 +11,6 @@ import {
   explainNonePushable,
   summarizeEmailAvailability,
   orderForPush,
-  onlyNamedPeople,
   onlyNamedPeopleWeCanGreet,
   canRepush,
   type EmailLeadRow,
@@ -199,32 +198,29 @@ export async function pushEligibleLeads(
   }
 
   /*
-   * Best leads first, rather than whatever order the database returned.
+   * THE RECIPIENT POLICY, ENFORCED HERE AND NOT NEGOTIABLE.
    *
-   * This was the gap: chooseEmail picked the best address WITHIN a lead, but
-   * nothing decided which leads to send. `slice(0, cap)` over an unordered list
-   * filled a campaign with repair@, sales@, office@ and service@ while named
-   * people sat unpushed behind them.
+   * This used to be two optional switches, both off by default, so the
+   * shipped behaviour was: push anything with an address. The result was a
+   * campaign of info@, office@ and customercare@ addressed to nobody, and
+   * emails that opened "Hi," because no name was on record.
    *
-   * The optional filter is separate and off by default. Refusing generic
-   * addresses means refusing most of the list — a one-van operation usually
-   * publishes only info@ — so it is an administrator's decision, not a default.
+   * A setting cannot relax this. It is applied unconditionally, before the
+   * ordering, so no row in instantly_settings — however old, however it was
+   * left — can put a general inbox back into the campaign.
+   *
+   * Ordering still matters underneath it: chooseEmail picks the best address
+   * within a lead, orderForPush decides which leads go first. Slicing an
+   * unordered list is what filled the campaign with front desks even when
+   * named owners were available.
    */
-  /*
-   * Two filters, applied narrowest last.
-   *
-   * named_people_only refuses info@ and office@. require_named_person also
-   * refuses a personal address with nobody named behind it — the lead whose
-   * email would open "Hi," rather than "Hi Maria,". Separate switches because
-   * they refuse different leads and each costs volume.
-   */
-  let wanted = settings.named_people_only ? onlyNamedPeople(eligible) : eligible;
-  if (settings.require_named_person) wanted = onlyNamedPeopleWeCanGreet(wanted);
+  const wanted = onlyNamedPeopleWeCanGreet(eligible);
   if (wanted.length === 0 && eligible.length > 0) {
     return nothing(
-      `${eligible.length} lead${eligible.length === 1 ? " has" : "s have"} an address, but every one ` +
-        `of them is a general inbox like info@ or office@, and "only named people" is switched on. ` +
-        `Turn it off to email them, or enrich further to find named contacts.`,
+      `${eligible.length} lead${eligible.length === 1 ? " has" : "s have"} an address, but none of ` +
+        `them meets the recipient rule — a personal address with a name on record. They are ` +
+        `general inboxes, or contacts we cannot greet by name. Enrich further to find named ` +
+        `decision-makers; the rule is deliberate and cannot be switched off.`,
       cap
     );
   }
@@ -419,7 +415,18 @@ export async function countEligible(): Promise<number> {
         .filter((t) => !canRepush(t.status as string | null))
         .map((t) => String(t.lead_id))
     );
-    return rows.filter((l) => !already.has(l.id) && emailUnavailableReason(l) === null).length;
+    /*
+     * THE SAME POLICY THE PUSH APPLIES, for the same reason the "already
+     * pushed" rule is shared: two places deciding who is emailable is how they
+     * disagree, and this number drives the top-up, the automatic sourcing and
+     * the funnel health card. Counting general inboxes here would report
+     * supply that the push will refuse, and send the funnel off buying leads
+     * to solve a shortage that was never real.
+     */
+    const usable = rows.filter(
+      (l) => !already.has(l.id) && emailUnavailableReason(l) === null
+    );
+    return onlyNamedPeopleWeCanGreet(usable).length;
   }
   return 0;
 }

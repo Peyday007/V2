@@ -71,11 +71,18 @@ export type ChosenEmail = {
  * explainer, and it must stay free of the crawler's dependencies.
  */
 const GENERIC_LOCAL_PARTS = new Set([
-  "info", "contact", "hello", "hi", "office", "admin", "sales", "service",
-  "support", "enquiries", "inquiries", "bookings", "booking", "schedule",
-  "scheduling", "dispatch", "team", "help", "customerservice", "accounts",
-  "accounting", "billing", "estimates", "quotes", "jobs", "careers", "hr",
-  "mail", "general", "reception", "frontdesk", "main",
+  "info", "contact", "contactus", "hello", "hi", "office", "admin", "sales",
+  "service", "services", "support", "enquiries", "inquiries", "inquiry",
+  "enquiry", "bookings", "booking", "schedule", "scheduling", "dispatch",
+  "team", "help", "accounts", "accounting", "billing", "estimates", "quotes",
+  "quote", "jobs", "careers", "hr", "mail", "email", "general", "reception",
+  "frontdesk", "front", "main", "orders", "order", "marketing", "webmaster",
+  "postmaster", "noreply", "donotreply", "newbusiness", "feedback",
+  // The customer-facing desks, in every spelling seen in the wild. These are
+  // the ones that most often look personal at a glance — "customercare@" reads
+  // like somebody's job title rather than a shared mailbox.
+  "customerservice", "customercare", "customersupport", "custserv", "custcare",
+  "clientcare", "clientservices", "clientservice", "care",
 ]);
 
 /** Does this address reach a person, judged from the address alone. */
@@ -412,6 +419,32 @@ export function onlyNamedPeople<T extends PushCandidate>(leads: T[]): T[] {
 }
 
 /**
+ * THE RECIPIENT POLICY, in one place: a decision-maker we can greet by name.
+ *
+ * Two conditions, and both are required:
+ *
+ *   the address reaches a PERSON — not info@, office@, customercare@ or any
+ *   other shared desk, judged from the address itself rather than from which
+ *   column it arrived in;
+ *
+ *   and we hold a NAME for that person, so the email opens "Hi Maria," rather
+ *   than "Hi,".
+ *
+ * This is not a preference and there is no setting that relaxes it. It used to
+ * be two optional switches, both off by default, and the result was a campaign
+ * of general inboxes addressed to nobody. Keeping the rule in code means an
+ * old settings row cannot weaken it.
+ */
+export function passesRecipientPolicy(lead: PushCandidate): boolean {
+  const chosen = chooseEmail(lead);
+  return !!chosen && chosen.audience !== "generic" && knowsAName(lead);
+}
+
+/** Said once, so the page and the code cannot describe the rule differently. */
+export const RECIPIENT_POLICY_SUMMARY =
+  "Decision-maker only: a personal address, never a general inbox, and a name on record to greet them by.";
+
+/**
  * A personal address AND a person's name behind it.
  *
  * Stricter than onlyNamedPeople, and separate from it because they refuse
@@ -424,5 +457,5 @@ export function onlyNamedPeople<T extends PushCandidate>(leads: T[]): T[] {
  * meaning to a setting somebody already ticked.
  */
 export function onlyNamedPeopleWeCanGreet<T extends PushCandidate>(leads: T[]): T[] {
-  return onlyNamedPeople(leads).filter((l) => knowsAName(l));
+  return leads.filter(passesRecipientPolicy);
 }

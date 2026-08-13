@@ -10,6 +10,7 @@
 //   whatever the settings say.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   composePersonalization,
   composeVariables,
@@ -26,7 +27,12 @@ import {
 } from "../src/lib/instantly/events";
 // From ./mapping rather than ./client: client.ts imports server-only, which a
 // test cannot load. That split is exactly why the pure parts live separately.
-import { normaliseCampaigns, pushBody, explainStatus } from "../src/lib/instantly/mapping";
+import {
+  normaliseCampaigns,
+  pushBody,
+  explainStatus,
+  sumDailyAnalytics,
+} from "../src/lib/instantly/mapping";
 
 /* -------------------------------------------------------------------------- */
 /* composing                                                                  */
@@ -384,5 +390,99 @@ describe("the Instantly client, without a network", () => {
     expect(explainStatus(404, "")).toMatch(/campaign/i);
     expect(explainStatus(429, "")).toMatch(/rate-limit/i);
     expect(explainStatus(500, "")).toMatch(/Nothing was pushed/i);
+  });
+});
+
+/*
+ * "EMAIL IS NOT SENDING" ON A CAMPAIGN THAT WAS SENDING FINE.
+ *
+ * Both the health card and the pipeline counted sends out of `email_events`,
+ * a table filled entirely by webhooks. A webhook missed — endpoint down,
+ * secret wrong, delivery dropped — reads as zero, and zero reads as broken.
+ * Instantly's daily analytics is the ledger: it knows what it sent whether or
+ * not anything reached us.
+ */
+describe("THE SEND LEDGER, NOT THE WEBHOOK TABLE", () => {
+  const day = (d: string, sent: number, replies: number) => ({ date: d, sent, replies });
+
+  it("sums a run of days", () => {
+    expect(sumDailyAnalytics([day("2026-08-10", 100, 2), day("2026-08-11", 60, 1)])).toEqual({
+      sent: 160,
+      replies: 3,
+    });
+  });
+
+  it("reads the same three shapes the rest of the API arrives in", () => {
+    const rows = [day("2026-08-10", 5, 1)];
+    for (const body of [rows, { items: rows }, { data: rows }]) {
+      expect(sumDailyAnalytics(body)).toEqual({ sent: 5, replies: 1 });
+    }
+  });
+
+  it("accepts the field names Instantly has used for the same number", () => {
+    expect(sumDailyAnalytics([{ emails_sent: 12, reply_count: 4 }])).toEqual({
+      sent: 12,
+      replies: 4,
+    });
+    expect(sumDailyAnalytics([{ sent_count: 7, replied: 2 }])).toEqual({ sent: 7, replies: 2 });
+  });
+
+  it("an empty window is zero sent, which is a real answer", () => {
+    expect(sumDailyAnalytics([])).toEqual({ sent: 0, replies: 0 });
+  });
+
+  it("NULL WHEN IT CANNOT BE READ, NEVER ZERO", () => {
+    // The distinction the whole fix rests on: "we could not ask Instantly" and
+    // "Instantly sent nothing" are different answers, and reporting the second
+    // for the first is the false alarm this replaces.
+    expect(sumDailyAnalytics(null)).toBeNull();
+    expect(sumDailyAnalytics("nope")).toBeNull();
+    expect(sumDailyAnalytics({ error: "unauthorised" })).toBeNull();
+  });
+});
+
+/*
+ * Reading the ledger is worthless if neither route asks for it. Both of these
+ * were written and unwired once already, which is how the campaign spent a
+ * fortnight reporting a stage that was not broken.
+ */
+describe("BOTH ROUTES RECONCILE AGAINST THE LEDGER", () => {
+  const health = readFileSync(
+    new URL("../src/app/api/instantly/health/route.ts", import.meta.url),
+    "utf8"
+  );
+  const funnel = readFileSync(
+    new URL("../src/app/api/funnel/route.ts", import.meta.url),
+    "utf8"
+  );
+
+  it("the client exposes the daily analytics endpoint", () => {
+    const client = readFileSync(
+      new URL("../src/lib/instantly/client.ts", import.meta.url),
+      "utf8"
+    );
+    expect(client).toMatch(/campaigns\/analytics\/daily/);
+    expect(client).toMatch(/campaign_id/);
+    expect(client).toMatch(/start_date/);
+    expect(client).toMatch(/end_date/);
+  });
+
+  it("the health route takes the larger of the two counts", () => {
+    expect(health).toMatch(/campaignSendLedger\(/);
+    expect(health).toMatch(/Math\.max\([\s\S]{0,60}ledger\.sent/);
+    expect(health).toMatch(/Math\.max\([\s\S]{0,60}ledger\.replies/);
+  });
+
+  it("the funnel route takes the larger of the two counts", () => {
+    expect(funnel).toMatch(/campaignSendLedger\(/);
+    expect(funnel).toMatch(/Math\.max\(sent, ledger\.sent\)/);
+  });
+
+  it("the health route says which source the number came from", () => {
+    // Otherwise a reconciled figure and a webhook-only figure look identical,
+    // and the next person to debug this has no way to tell them apart.
+    expect(health).toMatch(/sendCountSource/);
+    expect(health).toMatch(/instantly_analytics/);
+    expect(health).toMatch(/webhooks_only/);
   });
 });

@@ -17,6 +17,9 @@ import {
   isGenericAddress,
   orderForPush,
   onlyNamedPeople,
+  onlyNamedPeopleWeCanGreet,
+  passesRecipientPolicy,
+  RECIPIENT_POLICY_SUMMARY,
   pushRank,
   knowsAName,
 } from "../src/lib/emailEligibility";
@@ -345,9 +348,97 @@ describe("THE PUSH ACTUALLY USES THE ORDERING", () => {
     expect(src).not.toMatch(/const batch = (eligible|wanted)\.slice\(0, cap\)/);
   });
 
-  it("honours the named-people-only switch", () => {
-    expect(src).toMatch(/settings\.named_people_only/);
-    expect(src).toMatch(/onlyNamedPeople\(/);
+  /*
+   * THE RECIPIENT RULE IS NOT A SETTING ANY MORE.
+   *
+   * This test used to assert the opposite: that the push read
+   * `settings.named_people_only` and applied the filter only when it was on.
+   * Both switches shipped off, nobody found them, and the campaign filled with
+   * info@ and office@ addressed to nobody — the behaviour the switch existed
+   * to prevent, passing its own test the whole time.
+   *
+   * So it asserts the shape of the fix instead: the filter applied to
+   * `eligible` with no condition attached, and no settings lookup left in the
+   * module that could put a general inbox back.
+   */
+  it("filters the batch through the recipient rule unconditionally", () => {
+    expect(src).toMatch(/onlyNamedPeopleWeCanGreet\(eligible\)/);
+  });
+
+  it("no setting can switch the recipient rule off", () => {
+    expect(src).not.toMatch(/settings\.named_people_only/);
+    expect(src).not.toMatch(/settings\.require_named_person/);
+    // The old shape: filter applied only when a stored flag said so.
+    expect(src).not.toMatch(/if\s*\([^)]*named[^)]*\)\s*\{?\s*\n?\s*\w+ = onlyNamed/);
+  });
+
+  it("counts the same rule it pushes", () => {
+    // countEligible feeds the refill decision. If it counted leads the push
+    // then refuses, automatic top-up spends its budget on a number that was
+    // never sendable and reports supply the campaign cannot use.
+    expect(src).toMatch(/return onlyNamedPeopleWeCanGreet\(usable\)\.length/);
+  });
+});
+
+/*
+ * The rule itself, on leads rather than on source text.
+ *
+ * The guards above prove the production path calls it; these prove what it
+ * decides. Both are needed — a filter that is wired in and wrong is no better
+ * than one that is right and unused.
+ */
+describe("THE RECIPIENT RULE", () => {
+  const named = { decision_maker_name: "Maria Diaz" };
+
+  it("refuses every generic local part, named or not", () => {
+    for (const local of [
+      "info",
+      "office",
+      "customercare",
+      "support",
+      "sales",
+      "contact",
+      "admin",
+      "hello",
+      "enquiries",
+      "noreply",
+    ]) {
+      expect(
+        passesRecipientPolicy({ ...named, website_email: `${local}@example.com` }),
+        local
+      ).toBe(false);
+    }
+  });
+
+  it("refuses a personal address with nobody named behind it", () => {
+    expect(passesRecipientPolicy({ direct_email: "maria@example.com" })).toBe(false);
+  });
+
+  it("accepts a personal address with a name on record", () => {
+    expect(passesRecipientPolicy({ ...named, direct_email: "maria@example.com" })).toBe(true);
+    expect(
+      passesRecipientPolicy({ owner_name: "Sam Reed", direct_email: "sam@example.com" })
+    ).toBe(true);
+  });
+
+  it("refuses a lead with no address at all", () => {
+    expect(passesRecipientPolicy({ ...named })).toBe(false);
+  });
+
+  it("onlyNamedPeopleWeCanGreet keeps exactly what passes the rule", () => {
+    const leads = [
+      { id: "ok", ...named, direct_email: "maria@example.com" },
+      { id: "no-name", direct_email: "someone@example.com" },
+      { id: "generic", ...named, website_email: "info@example.com" },
+      { id: "nothing", business_name: "Acme" },
+    ];
+    expect(onlyNamedPeopleWeCanGreet(leads).map((l) => l.id)).toEqual(["ok"]);
+  });
+
+  it("the page and the code state the same rule", () => {
+    // Two checkboxes with two explanations that disagreed is what this
+    // replaced; the summary exists so there is one sentence to point at.
+    expect(RECIPIENT_POLICY_SUMMARY).toMatch(/decision-maker only/i);
   });
 });
 

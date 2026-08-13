@@ -83,8 +83,14 @@ export const SETTINGS_DEFAULTS: InstantlySettings = {
   auto_reply_enabled: false,
   reply_confidence_floor: 0.7,
   auto_push_enabled: false,
-  named_people_only: false,
-  require_named_person: false,
+  /*
+   * BOTH TRUE, and they stay true. The recipient policy — a personal address
+   * with a name on record — is enforced in emailPush regardless of what these
+   * say, so a false here could only ever misdescribe the behaviour on the
+   * page. They ship true so the defaults and the code agree.
+   */
+  named_people_only: true,
+  require_named_person: true,
   target_active_leads: 200,
   daily_push_cap: 100,
   last_auto_push_at: null,
@@ -191,8 +197,17 @@ export async function loadSettings(): Promise<SettingsLoad> {
           data.reply_confidence_floor ?? SETTINGS_DEFAULTS.reply_confidence_floor
         ),
         auto_push_enabled: !!data.auto_push_enabled,
-        named_people_only: !!data.named_people_only,
-        require_named_person: !!data.require_named_person,
+        /*
+         * READ AS TRUE WHATEVER THE ROW SAYS.
+         *
+         * An old settings row carries false for both — that was the shipped
+         * default for weeks. The push no longer consults them, so a false
+         * reaching the page would tell an operator that general inboxes are
+         * being emailed when they are not. Pinned rather than trusted, so an
+         * unrun 0043 changes nothing about what actually happens.
+         */
+        named_people_only: true,
+        require_named_person: true,
         target_active_leads: Number(data.target_active_leads ?? SETTINGS_DEFAULTS.target_active_leads),
         daily_push_cap: Number(data.daily_push_cap ?? SETTINGS_DEFAULTS.daily_push_cap),
         last_auto_push_at: data.last_auto_push_at ?? null,

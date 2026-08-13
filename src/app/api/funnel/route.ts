@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { campaignSendLedger } from "@/lib/instantly/client";
 import { funnelSnapshot } from "@/lib/funnelStore";
 import { funnelHealth } from "@/lib/funnelHealth";
 import { loadSettings, selectEmailLeads } from "@/lib/instantlyStore";
@@ -46,7 +47,7 @@ async function inCampaign(): Promise<number> {
 }
 
 export async function GET() {
-  const [snapshot, instantly, reenrich, sent, live, leads] = await Promise.all([
+  const [snapshot, instantly, reenrich, webhookSent, live, leads] = await Promise.all([
     funnelSnapshot(),
     loadSettings(),
     loadAutoReenrichSettings(),
@@ -54,6 +55,34 @@ export async function GET() {
     inCampaign(),
     selectEmailLeads(),
   ]);
+
+  /*
+   * INSTANTLY'S LEDGER OUTRANKS OUR WEBHOOK TABLE.
+   *
+   * sentLast24h() counts email_events, which webhooks fill. A missed webhook —
+   * endpoint down, secret wrong, delivery dropped — reads as "nothing sent",
+   * and the pipeline card would then name SENDING as the broken stage on a
+   * campaign that is sending fine, sending somebody to debug the wrong end.
+   *
+   * The larger of the two, for the same reason as the health card: neither
+   * source can be subtracted from the other, and taking the maximum is the
+   * only reconciliation that cannot under-report. Null from the ledger means
+   * "could not ask" and leaves the webhook figure alone.
+   */
+  let sent = webhookSent;
+  if (instantly.settings.campaign_id) {
+    try {
+      const now = new Date();
+      const ledger = await campaignSendLedger(
+        instantly.settings.campaign_id,
+        new Date(now.getTime() - 24 * 3600_000),
+        now
+      );
+      if (ledger) sent = Math.max(sent, ledger.sent);
+    } catch {
+      // A failed read never lowers the number, and never fails the page.
+    }
+  }
 
   const availability = summarizeEmailAvailability(leads.rows);
 
