@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { campaignSendLedger } from "@/lib/instantly/client";
 import { funnelSnapshot, readSupplyPicture } from "@/lib/funnelStore";
-import { activeThreadCount, completedThreadCount } from "@/lib/emailPush";
+import {
+  activeThreadCount,
+  completedThreadCount,
+  threadsInSequence,
+  sentTodayCount,
+} from "@/lib/emailPush";
+import { firstTouchCapacity, followUpsDueToday } from "@/lib/supplyPlan";
 import { funnelHealth } from "@/lib/funnelHealth";
 import { loadSettings, selectEmailLeads } from "@/lib/instantlyStore";
 import { loadAutoReenrichSettings } from "@/lib/reenrichStore";
@@ -112,8 +118,37 @@ export async function GET() {
     // The supply picture failing must not take the rest of the page down.
   }
 
-  const capacity = supply?.demand.plannedSendsPerDay ?? 0;
+  /*
+   * TODAY'S ACTUAL HEADROOM, not the steady-state forecast.
+   *
+   * `capacity` is what the inboxes and the campaign limit will carry today.
+   * The forecast figure (capacity ÷ steps) is still computed for reserve
+   * planning and is reported separately and labelled as such — it is not a
+   * ceiling on anything and displaying it as one is what wasted the capacity.
+   */
+  const capacity = instantly.settings.computed_daily_sends ?? 0;
   const utilisation = capacity > 0 ? Math.min(1, sent / capacity) : null;
+
+  let todayCapacity: ReturnType<typeof firstTouchCapacity> | null = null;
+  let followUps: ReturnType<typeof followUpsDueToday> | null = null;
+  if (supply && instantly.settings.campaign_id) {
+    try {
+      const [scheduled, sentToday] = await Promise.all([
+        threadsInSequence(instantly.settings.campaign_id, supply.spanDays),
+        sentTodayCount(),
+      ]);
+      followUps = followUpsDueToday(scheduled || [], supply.offsets);
+      todayCapacity = firstTouchCapacity({
+        usableToday: capacity,
+        followUpsDue: followUps.due,
+        alreadySentToday: sentToday,
+        firstTouchesSentToday: instantly.settings.pushed_today ?? 0,
+        qualifiedReady: supply.qualifiedReady,
+      });
+    } catch {
+      // The breakdown failing must not take the page down.
+    }
+  }
 
   const health = funnelHealth({
     totalLeads: leads.rows.length,
@@ -146,6 +181,28 @@ export async function GET() {
           capacityPerDay: capacity,
           capacityIsEstimate: true,
           utilisation,
+          /*
+           * TODAY, broken down. Every figure the dashboard needs to explain
+           * where the day's capacity is going and what is left of it.
+           */
+          today: todayCapacity
+            ? {
+                safeCapacity: todayCapacity.usableToday,
+                sentSoFar: todayCapacity.alreadySentToday,
+                followUpsDue: todayCapacity.followUpsDue,
+                firstTouchRemaining: todayCapacity.firstTouchAllowed,
+                expectedUnused: todayCapacity.expectedUnused,
+                unusedCause: todayCapacity.unusedCause,
+                followUpConfidence: followUps?.confidence ?? "unknown",
+                followUpCaveat: followUps?.caveat ?? null,
+              }
+            : null,
+          /*
+           * STEADY-STATE FORECAST ONLY. Explicitly not a daily ceiling — it
+           * was used as one and threw away every send the follow-up load did
+           * not claim.
+           */
+          forecastIntakePerDay: supply.demand.intakePerDay,
           qualifiedReady: supply.qualifiedReady,
           daysOfReserve:
             supply.demand.intakePerDay > 0
@@ -153,7 +210,6 @@ export async function GET() {
               : null,
           reserveTarget: supply.demand.reserveTarget,
           reserveDays: instantly.settings.reserve_days,
-          intakePerDay: supply.demand.intakePerDay,
           targetInCampaign: supply.demand.targetInCampaign,
           // The four states that were one number before, and the reason a
           // stalled campaign looked full.

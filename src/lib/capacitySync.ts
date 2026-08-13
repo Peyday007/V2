@@ -17,7 +17,7 @@ import {
   type RampPolicy,
   type SendingAccount,
 } from "./sendingCapacity";
-import { sequenceSpanDays } from "./supplyPlan";
+import { sequenceSpanDays, cumulativeStepOffsets } from "./supplyPlan";
 
 // Reading the inboxes, and moving their limits.
 //
@@ -337,7 +337,12 @@ export async function activeSequenceSteps(): Promise<number> {
  * intake, a shorter span means a smaller campaign target. Under-filling is
  * recoverable; overrunning ten warmed inboxes is not.
  */
-export async function activeSequenceShape(): Promise<{ steps: number; spanDays: number }> {
+export async function activeSequenceShape(): Promise<{
+  steps: number;
+  spanDays: number;
+  /** Day each step lands on, counted from the push. [0, 3, 7, 12] and so on. */
+  offsets: number[];
+}> {
   try {
     const { data } = await supabaseAdmin()
       .from("email_sequences")
@@ -347,10 +352,16 @@ export async function activeSequenceShape(): Promise<{ steps: number; spanDays: 
     const raw = (data?.steps as unknown[]) || [];
     if (Array.isArray(raw) && raw.length > 0) {
       const steps = raw as { step: number; delayDays: number }[];
-      return { steps: raw.length, spanDays: sequenceSpanDays(steps) };
+      return {
+        steps: raw.length,
+        spanDays: sequenceSpanDays(steps),
+        offsets: cumulativeStepOffsets(steps),
+      };
     }
   } catch {
     // Falls through to the cautious defaults.
   }
-  return { steps: 3, spanDays: 7 };
+  // Cautious defaults: more steps means a smaller forecast intake, and no
+  // known offsets means no follow-ups are claimed against today.
+  return { steps: 3, spanDays: 7, offsets: [] };
 }

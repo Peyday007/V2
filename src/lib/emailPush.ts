@@ -516,6 +516,74 @@ export async function activeThreadCount(
 }
 
 /**
+ * Every thread still inside its sequence, with the day it was pushed.
+ *
+ * Feeds followUpsDueToday. Instantly's API has no "what is scheduled for
+ * today" endpoint — /campaigns/analytics/daily reports what it HAS sent, not
+ * what it is about to — so the day's follow-up load has to be derived, and
+ * this is the half of the derivation we own. The other half is the sequence's
+ * step offsets.
+ *
+ * Bounded rather than unbounded: a campaign at steady state holds a few
+ * thousand of these, and the cap stops one enormous campaign turning the
+ * refill into a slow query every minute.
+ */
+export async function threadsInSequence(
+  campaignId: string,
+  spanDays: number,
+  now: Date = new Date()
+): Promise<{ pushedAt: string | null; status: string | null }[] | null> {
+  if (!campaignId) return null;
+  try {
+    let q = supabaseAdmin()
+      .from("email_threads")
+      .select("created_at, status")
+      .eq("campaign_id", campaignId)
+      .in("status", IN_FLIGHT_STATUSES as unknown as string[]);
+
+    if (spanDays > 0) {
+      const cutoff = new Date(
+        now.getTime() - (spanDays + SEQUENCE_COMPLETION_GRACE_DAYS) * 86_400_000
+      ).toISOString();
+      q = q.gte("created_at", cutoff);
+    }
+
+    const { data, error } = await q.limit(20000);
+    if (error || !data) return null;
+    return data.map((r) => ({
+      pushedAt: (r.created_at as string) ?? null,
+      status: (r.status as string) ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many emails Instantly has already put out today, from our own events.
+ *
+ * The refill reconciles this against Instantly's ledger before using it — see
+ * the handler — for the same reason the health card does: a missed webhook
+ * reads as zero, and a zero here would hand the day's whole capacity back to
+ * first touches that Instantly has in fact already spent.
+ */
+export async function sentTodayCount(now: Date = new Date()): Promise<number> {
+  try {
+    const start = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    ).toISOString();
+    const { count } = await supabaseAdmin()
+      .from("email_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "sent")
+      .gte("occurred_at", start);
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Threads that have finished sending, counted separately.
  *
  * Not a number anything acts on — it exists so the page can say "1,240

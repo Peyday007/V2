@@ -173,7 +173,18 @@ type Funnel = {
     daysOfReserve: number | null;
     reserveTarget: number;
     reserveDays: number;
-    intakePerDay: number;
+    today: {
+      safeCapacity: number;
+      sentSoFar: number;
+      followUpsDue: number;
+      firstTouchRemaining: number;
+      expectedUnused: number;
+      unusedCause: string | null;
+      followUpConfidence: "measured" | "unknown";
+      followUpCaveat: string | null;
+    } | null;
+    /** Steady-state planning estimate. NOT a daily ceiling. */
+    forecastIntakePerDay: number;
     targetInCampaign: number;
     inSequence: number | null;
     completed: number | null;
@@ -696,10 +707,100 @@ export default function EmailPage() {
             />
           </div>
 
+          {/*
+            WHERE TODAY'S CAPACITY IS GOING.
+
+            The row that was missing, and whose absence hid the whole fault.
+            The page reported a capacity and a sent count and nothing in
+            between, so "212 new leads a day" looked like a limit somebody had
+            chosen rather than an arithmetic accident — capacity ÷ steps
+            applied as a daily ceiling, throwing away every send the follow-up
+            load did not actually claim.
+
+            These four numbers add up in public: capacity, less what has gone,
+            less what follow-ups still need, leaves what first touches can
+            have.
+          */}
+          {funnel.supply.today && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+                gap: 14,
+                marginBottom: 14,
+                paddingTop: 14,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <Figure
+                label="Safe capacity today"
+                value={funnel.supply.today.safeCapacity}
+                note="what the inboxes and campaign limit will carry (estimate)"
+              />
+              <Figure
+                label="Sent so far today"
+                value={funnel.supply.today.sentSoFar}
+                note="measured, reconciled with Instantly's ledger"
+              />
+              <Figure
+                label="Follow-ups due today"
+                value={funnel.supply.today.followUpsDue}
+                note={
+                  funnel.supply.today.followUpConfidence === "measured"
+                    ? "worked out from push dates and sequence timings"
+                    : "could not be worked out — treated as none"
+                }
+              />
+              <Figure
+                label="First touches left"
+                value={funnel.supply.today.firstTouchRemaining}
+                note="new leads today can still carry"
+                warn={funnel.supply.today.firstTouchRemaining === 0}
+              />
+            </div>
+          )}
+
+          {funnel.supply.today?.unusedCause && (
+            <p className="faint" style={{ lineHeight: 1.7, marginTop: 0, marginBottom: 10 }}>
+              <strong style={{ color: "var(--red)" }}>
+                ~{funnel.supply.today.expectedUnused} sends likely unused today.
+              </strong>{" "}
+              {funnel.supply.today.unusedCause}
+            </p>
+          )}
+
           <p className="faint" style={{ lineHeight: 1.7, marginTop: 0, marginBottom: 0 }}>
             {funnel.supply.sourcingNote ||
               "Sourcing has not reported yet — the check runs hourly."}
           </p>
+
+          {/*
+            The forecast, kept well away from the daily numbers above.
+
+            It reads like a limit and is not one. It was applied as one, which
+            is exactly why it now says what it is on the same line as the
+            number.
+          */}
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ cursor: "pointer" }} className="faint">
+              How these numbers are worked out
+            </summary>
+            <p className="faint" style={{ lineHeight: 1.7, marginTop: 8, marginBottom: 8 }}>
+              <strong>{funnel.supply.forecastIntakePerDay} new leads a day</strong> is a
+              long-term planning estimate only — {funnel.supply.today?.safeCapacity ?? 0}{" "}
+              sends ÷ {funnel.supply.sequenceSteps} emails per lead, the rate this
+              capacity sustains once every cohort is mid-sequence. It sizes the
+              reserve and the sourcing runs. <strong>It is not a daily limit</strong>,
+              and nothing caps the day at it: today&rsquo;s first-touch allowance is
+              whatever capacity is left after follow-ups and sends already made,
+              which is the number shown above.
+            </p>
+            {funnel.supply.today?.followUpCaveat && (
+              <p className="faint" style={{ lineHeight: 1.7, marginTop: 0, marginBottom: 0 }}>
+                <strong>On the follow-up count:</strong> {funnel.supply.today.followUpCaveat}
+              </p>
+            )}
+          </details>
 
           {supplyBlocker && (
             <p

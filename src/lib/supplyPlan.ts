@@ -101,11 +101,238 @@ export function sequenceIsFinished(
 }
 
 /* -------------------------------------------------------------------------- */
+/* HOW MANY FIRST-TOUCH EMAILS TODAY CAN CARRY                                */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * THE CORRECTION.
+ *
+ * `capacity ÷ steps` answers "how many new leads a day can this sustain
+ * forever" and it is right for that. It was then used as a HARD DAILY CAP on
+ * pushing, which is a different question with a different answer, and using
+ * one for the other throws capacity away every single day.
+ *
+ * With 850 sends and a four-step sequence it allowed 212 new leads a day, on
+ * the reasoning that the other 638 sends are follow-ups. That reasoning only
+ * holds once the pipeline is full. Today there might be 250 follow-ups due,
+ * or 40, or none — and on a day with 250 due, 600 first-touch emails could go
+ * out and only 212 were allowed to. Nearly 400 sends of paid, warmed capacity
+ * discarded, every day, by arithmetic that was never about today.
+ *
+ * What today can carry is simply what is left:
+ *
+ *     first touch today = usable today − follow-ups due today − already sent
+ *
+ * The steady-state figure keeps its job — forecasting how much to source and
+ * how large a reserve to hold — and loses the one it should never have had.
+ */
+
+export type TodayCapacity = {
+  /** First-touch emails today can still carry. The push cap. */
+  firstTouchAllowed: number;
+  /** What the inboxes and campaign limit will carry today, before deductions. */
+  usableToday: number;
+  followUpsDue: number;
+  alreadySentToday: number;
+  /** How much is expected to go unused, and why. */
+  expectedUnused: number;
+  unusedCause: string | null;
+  reason: string;
+};
+
+export function firstTouchCapacity(input: {
+  usableToday: number;
+  /** The WHOLE day's follow-up load, sent and unsent alike. */
+  followUpsDue: number;
+  /** Everything Instantly has already put out today, of either kind. */
+  alreadySentToday: number;
+  /** Of those, how many were first touches — i.e. leads we pushed today. */
+  firstTouchesSentToday?: number;
+  /** Qualified contacts on hand. Only used to explain unused capacity. */
+  qualifiedReady?: number;
+}): TodayCapacity {
+  const usableToday = Math.max(0, Math.floor(input.usableToday || 0));
+  const followUpsDue = Math.max(0, Math.floor(input.followUpsDue || 0));
+  const alreadySentToday = Math.max(0, Math.floor(input.alreadySentToday || 0));
+  const firstTouchesSent = Math.max(0, Math.floor(input.firstTouchesSentToday || 0));
+
+  /*
+   * NO DOUBLE-COUNTING, and this is the subtle part.
+   *
+   * `followUpsDue` is the whole day's follow-up load and `alreadySentToday`
+   * is everything already out — which INCLUDES whichever of those follow-ups
+   * have gone already. Subtracting both charges the morning's follow-ups
+   * twice and needlessly starves the afternoon: by 2pm a day with 250
+   * follow-ups, 200 of them already sent, would deduct 450 instead of 250.
+   *
+   * Splitting today's sends is possible because we know one half exactly: a
+   * first touch happens only when we push a lead, and pushedToday counts
+   * those. Everything else Instantly sent today was a follow-up.
+   */
+  const followUpsAlreadySent = Math.max(0, alreadySentToday - firstTouchesSent);
+  const followUpsRemaining = Math.max(0, followUpsDue - followUpsAlreadySent);
+
+  const firstTouchAllowed = Math.max(
+    0,
+    usableToday - alreadySentToday - followUpsRemaining
+  );
+
+  const ready = input.qualifiedReady;
+  const shortOfContacts = typeof ready === "number" && ready < firstTouchAllowed;
+  const expectedUnused = shortOfContacts ? firstTouchAllowed - ready! : 0;
+
+  return {
+    firstTouchAllowed,
+    usableToday,
+    followUpsDue,
+    alreadySentToday,
+    expectedUnused,
+    unusedCause: shortOfContacts
+      ? `Only ${ready} qualified contacts are ready against ${firstTouchAllowed} first-touch sends today, so about ${expectedUnused} sends will go unused unless sourcing and enrichment catch up.`
+      : null,
+    reason:
+      usableToday === 0
+        ? "No sending capacity was read for today."
+        : `${usableToday} sends today, less ${alreadySentToday} already sent and ${followUpsRemaining} follow-ups still due, leaves ${firstTouchAllowed} for first-touch emails.`,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* how many follow-ups are actually due today                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The day each step lands on, counting from the day the lead was pushed.
+ *
+ * A four-step sequence with waits of 3, 4 and 5 days gives [0, 3, 7, 12]. Step
+ * one is day zero — it is the first touch, not a follow-up — so only the rest
+ * are follow-ups and only they are counted below.
+ */
+export function cumulativeStepOffsets(
+  steps: { step: number; delayDays: number }[]
+): number[] {
+  const offsets: number[] = [];
+  let running = 0;
+  for (const s of [...steps].sort((a, b) => a.step - b.step)) {
+    if (s.step !== 1) {
+      const d = Number(s.delayDays);
+      running += Number.isFinite(d) && d > 0 ? Math.floor(d) : 0;
+    }
+    offsets.push(running);
+  }
+  return offsets;
+}
+
+/** A thread as far as follow-up scheduling is concerned. */
+export type ScheduledThread = {
+  /** When the lead was pushed, which is when step one went. */
+  pushedAt: string | null;
+  /** Ended threads send nothing further. */
+  status: string | null;
+};
+
+/** Statuses that stop a sequence dead. No further step is ever sent. */
+const ENDED_STATUSES = new Set(["replied", "bounced", "unsubscribed", "failed"]);
+
+export type FollowUpEstimate = {
+  due: number;
+  /**
+   * How much to trust it.
+   *
+   * "measured" — computed from our own push dates and the live sequence.
+   * "unknown" — the sequence or the threads could not be read.
+   */
+  confidence: "measured" | "unknown";
+  /** The limitation, in words, for anywhere this number is displayed. */
+  caveat: string;
+};
+
+/**
+ * How many follow-ups Instantly should send today.
+ *
+ * WHY THIS IS COMPUTED RATHER THAN ASKED FOR. Instantly's API exposes what it
+ * HAS sent — /campaigns/analytics/daily — and not what it is ABOUT to send.
+ * There is no endpoint for "steps scheduled for today", so the only honest
+ * options are to derive it or to guess, and dividing capacity by four was the
+ * guess this replaces.
+ *
+ * Deriving it is sound because we own both halves: the day each lead was
+ * pushed, and the day offsets of the live sequence. A lead pushed eight days
+ * ago on a [0, 3, 7, 12] sequence has no step falling today; one pushed seven
+ * days ago has step three due.
+ *
+ * WHAT IT CANNOT KNOW, and why every caller must show the caveat: Instantly
+ * sends inside the campaign's schedule, so a step whose nominal day lands on a
+ * weekend or a holiday goes on the next sending day instead. Real sends
+ * therefore drift later than these offsets, by roughly two days a week. The
+ * estimate is good to within a day or so on a weekday and worst on a Monday.
+ *
+ * Being wrong here is bounded on both sides and neither side is dangerous:
+ * Instantly's own campaign and per-inbox limits are the hard ceiling, so an
+ * under-estimate cannot produce an unsafe send — it can only queue a few
+ * leads into tomorrow. An over-estimate leaves a little capacity unused, which
+ * the dashboard reports rather than hides.
+ */
+export function followUpsDueToday(
+  threads: ScheduledThread[],
+  offsets: number[],
+  now: Date = new Date()
+): FollowUpEstimate {
+  const followUpOffsets = offsets.filter((d) => d > 0);
+  if (followUpOffsets.length === 0) {
+    return {
+      due: 0,
+      confidence: threads.length === 0 ? "unknown" : "measured",
+      caveat:
+        "The sequence has no follow-up steps, so every send today is a first touch.",
+    };
+  }
+
+  const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  let due = 0;
+  for (const t of threads) {
+    if (!t.pushedAt) continue;
+    if (t.status && ENDED_STATUSES.has(t.status)) continue;
+    const pushed = Date.parse(t.pushedAt);
+    if (Number.isNaN(pushed)) continue;
+    const pushedDay = Date.UTC(
+      new Date(pushed).getUTCFullYear(),
+      new Date(pushed).getUTCMonth(),
+      new Date(pushed).getUTCDate()
+    );
+    const age = Math.round((startOfToday - pushedDay) / 86_400_000);
+    if (age <= 0) continue; // pushed today: that was the first touch
+    // One step per lead per day. A sequence with two steps on the same day is
+    // refused by validatePlan, so this cannot silently under-count.
+    if (followUpOffsets.includes(age)) due += 1;
+  }
+
+  return {
+    due,
+    confidence: "measured",
+    caveat:
+      "Worked out from when each lead was pushed and the live sequence timings. " +
+      "Instantly only sends inside the campaign schedule, so a step falling on a " +
+      "non-sending day moves to the next one — real follow-ups drift a little later " +
+      "than this. Instantly's own daily limits remain the hard ceiling either way.",
+  };
+}
+
+/* -------------------------------------------------------------------------- */
 /* what the campaign will consume                                             */
 /* -------------------------------------------------------------------------- */
 
 export type Demand = {
-  /** New leads to start per day to keep the inboxes busy. */
+  /**
+   * STEADY-STATE PLANNING ONLY. NOT A DAILY DISPATCH CAP.
+   *
+   * How many new leads a day this capacity sustains once the pipeline is full
+   * and every cohort is mid-sequence. It is the right number for deciding how
+   * much to source and how large a reserve to hold, and the wrong number for
+   * deciding how many to push today — see firstTouchCapacity, which is what
+   * actually caps the push. Using this as a daily ceiling discarded hundreds
+   * of sends a day on every day the follow-up load was light.
+   */
   intakePerDay: number;
   /** How many leads are mid-sequence at steady state. The real campaign target. */
   targetInCampaign: number;
@@ -501,7 +728,12 @@ export function pushBatchSize(input: {
   activeInCampaign: number | null;
   targetInCampaign: number;
   qualifiedReady: number;
-  dailyIntakeCap: number;
+  /**
+   * TODAY's remaining first-touch capacity, from firstTouchCapacity — not the
+   * steady-state intake. This parameter was `dailyIntakeCap` and was fed
+   * capacity ÷ steps, which is what wasted the unused capacity.
+   */
+  firstTouchAllowed: number;
   pushedToday: number;
   maxPerRun: number;
 }): { count: number; reason: string } {
@@ -521,11 +753,17 @@ export function pushBatchSize(input: {
     };
   }
 
-  const dailyRoom = input.dailyIntakeCap - input.pushedToday;
+  /*
+   * firstTouchAllowed already has today's sends subtracted, so `pushedToday`
+   * is not deducted a second time — that would charge each push twice and
+   * halve the day.
+   */
+  const dailyRoom = input.firstTouchAllowed;
   if (dailyRoom <= 0) {
     return {
       count: 0,
-      reason: `Today's intake of ${input.dailyIntakeCap} is used up. It resets tomorrow.`,
+      reason:
+        "Today's sending capacity is fully committed to follow-ups and emails already sent. More first touches would queue into tomorrow.",
     };
   }
 
@@ -542,7 +780,7 @@ export function pushBatchSize(input: {
     count === room
       ? `filling the campaign to ${input.targetInCampaign}`
       : count === dailyRoom
-        ? `what is left of today's intake of ${input.dailyIntakeCap}`
+        ? `all ${dailyRoom} first-touch sends today can still carry`
         : count === input.qualifiedReady
           ? "every qualified contact there is"
           : `the per-run cap of ${input.maxPerRun}`;

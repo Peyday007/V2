@@ -30,6 +30,9 @@ import {
   URGENT_COVER_DAYS,
   sourcingCeilingFor,
   ABSOLUTE_MAX_LEADS_PER_RUN,
+  firstTouchCapacity,
+  followUpsDueToday,
+  cumulativeStepOffsets,
   type Demand,
   type SupplyFacts,
 } from "../src/lib/supplyPlan";
@@ -515,7 +518,7 @@ describe("PUSHING IS AUTOMATIC", () => {
       activeInCampaign: 400,
       targetInCampaign: 2756,
       qualifiedReady: 500,
-      dailyIntakeCap: 212,
+      firstTouchAllowed: 212,
       pushedToday: 0,
       maxPerRun: 50,
     });
@@ -529,7 +532,7 @@ describe("PUSHING IS AUTOMATIC", () => {
       activeInCampaign: 323,
       targetInCampaign: 2756,
       qualifiedReady: 29,
-      dailyIntakeCap: 212,
+      firstTouchAllowed: 212,
       pushedToday: 0,
       maxPerRun: 50,
     });
@@ -541,7 +544,7 @@ describe("PUSHING IS AUTOMATIC", () => {
       activeInCampaign: null,
       targetInCampaign: 2756,
       qualifiedReady: 500,
-      dailyIntakeCap: 212,
+      firstTouchAllowed: 212,
       pushedToday: 0,
       maxPerRun: 50,
     });
@@ -549,17 +552,23 @@ describe("PUSHING IS AUTOMATIC", () => {
     expect(b.reason).toMatch(/double-fill/i);
   });
 
-  it("stops at the day's intake", () => {
+  it("stops when the day's capacity is committed", () => {
+    /*
+     * firstTouchAllowed is already net of today's sends and the follow-ups
+     * still due — see firstTouchCapacity — so a spent day arrives here as
+     * zero rather than as a separate counter to subtract. Deducting
+     * pushedToday here as well would charge every push twice.
+     */
     const b = pushBatchSize({
       activeInCampaign: 100,
       targetInCampaign: 2756,
       qualifiedReady: 500,
-      dailyIntakeCap: 212,
+      firstTouchAllowed: 0,
       pushedToday: 212,
       maxPerRun: 50,
     });
     expect(b.count).toBe(0);
-    expect(b.reason).toMatch(/used up/i);
+    expect(b.reason).toMatch(/fully committed|queue into tomorrow/i);
   });
 
   it("the worker enqueues the push itself, no button involved", () => {
@@ -584,7 +593,13 @@ describe("PUSHING IS AUTOMATIC", () => {
     );
     expect(handlers).toMatch(/computeDemand\(/);
     expect(handlers).toMatch(/targetActive = scale \? demand\.targetInCampaign/);
-    expect(handlers).toMatch(/dailyCap = scale \? demand\.intakePerDay/);
+    /*
+     * The daily cap deliberately NO LONGER comes from demand.intakePerDay.
+     * That was the forecast being used as a ceiling, and it threw away every
+     * send the follow-up load did not claim. See "THE FORECAST STILL COUNTS
+     * EVERY SEQUENCE STEP" for the assertions that replaced this one.
+     */
+    expect(handlers).toMatch(/dailyCap = todayCapacity \? todayCapacity\.firstTouchAllowed/);
   });
 });
 
@@ -814,5 +829,301 @@ describe("THE SPACING YIELDS WHEN THE CAMPAIGN IS ABOUT TO RUN DRY", () => {
     ).toBe("hold");
     // And a covered reserve is still not urgent.
     expect(planSupply(facts({ qualifiedReady: demand212.reserveTarget })).act).toBe("hold");
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE CORRECTION: capacity ÷ steps IS A FORECAST, NOT A DISPATCH CAP.
+ *
+ * It was used as a hard daily ceiling on pushing. With 850 sends and a
+ * four-step sequence that allowed 212 new leads a day on the reasoning that
+ * the other 638 are follow-ups — reasoning that only holds once the pipeline
+ * is full. On a real day with 250 follow-ups due, 600 first touches could have
+ * gone out and 212 were allowed. Roughly 400 sends of paid, warmed capacity
+ * thrown away daily by arithmetic that was never about today.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+describe("TODAY'S FIRST-TOUCH CAPACITY IS WHAT IS ACTUALLY LEFT", () => {
+  const day = (followUpsDue: number, alreadySentToday = 0) =>
+    firstTouchCapacity({ usableToday: 850, followUpsDue, alreadySentToday });
+
+  /* 1-4: the four cases stated in the brief. */
+  it("850 capacity, 250 follow-ups -> 600 first touches", () => {
+    expect(day(250).firstTouchAllowed).toBe(600);
+  });
+
+  it("850 capacity, 450 follow-ups -> 400 first touches", () => {
+    expect(day(450).firstTouchAllowed).toBe(400);
+  });
+
+  it("850 capacity, 650 follow-ups -> 200 first touches", () => {
+    expect(day(650).firstTouchAllowed).toBe(200);
+  });
+
+  it("850 capacity, NO follow-ups -> 850 first touches, not 212", () => {
+    // The whole point. The old model allowed 212 on this day and discarded 638.
+    expect(day(0).firstTouchAllowed).toBe(850);
+    expect(day(0).firstTouchAllowed).not.toBe(212);
+  });
+
+  /* 5: already-sent reduces what is left. */
+  it("emails already sent today come off the top", () => {
+    // 300 sent, of which 300 were follow-ups (none pushed today), against a
+    // 250-follow-up day: the day's follow-up load is already covered.
+    const c = firstTouchCapacity({
+      usableToday: 850,
+      followUpsDue: 250,
+      alreadySentToday: 300,
+      firstTouchesSentToday: 0,
+    });
+    expect(c.firstTouchAllowed).toBe(550);
+  });
+
+  it("DOES NOT DOUBLE-COUNT follow-ups already sent this morning", () => {
+    /*
+     * The subtle one. By 2pm with 250 follow-ups due and 200 of them out,
+     * naively subtracting both the day's follow-up load AND everything sent
+     * deducts 450 from 850 and needlessly starves the afternoon. Only the 50
+     * still to come should be reserved.
+     */
+    const c = firstTouchCapacity({
+      usableToday: 850,
+      followUpsDue: 250,
+      alreadySentToday: 200,
+      firstTouchesSentToday: 0,
+    });
+    expect(c.firstTouchAllowed).toBe(600); // 850 - 200 sent - 50 still due
+    expect(c.firstTouchAllowed).not.toBe(400); // the double-counted answer
+  });
+
+  it("separates first touches already pushed today from follow-ups", () => {
+    // 300 sent today of which 100 were our pushes, so 200 were follow-ups.
+    // 250 due means 50 left to reserve.
+    const c = firstTouchCapacity({
+      usableToday: 850,
+      followUpsDue: 250,
+      alreadySentToday: 300,
+      firstTouchesSentToday: 100,
+    });
+    expect(c.firstTouchAllowed).toBe(500); // 850 - 300 - 50
+  });
+
+  /* 6: never exceeds the real limit. */
+  it("NEVER EXCEEDS THE DAY'S REAL CAPACITY, whatever the inputs", () => {
+    for (const [cap, fu, sent] of [
+      [850, 0, 0],
+      [850, 900, 0],
+      [850, 250, 900],
+      [0, 0, 0],
+      [100, 50, 60],
+    ] as [number, number, number][]) {
+      const c = firstTouchCapacity({
+        usableToday: cap,
+        followUpsDue: fu,
+        alreadySentToday: sent,
+      });
+      expect(c.firstTouchAllowed).toBeGreaterThanOrEqual(0);
+      expect(c.firstTouchAllowed + sent).toBeLessThanOrEqual(Math.max(cap, sent));
+    }
+  });
+
+  it("a day already fully spent allows nothing more", () => {
+    expect(
+      firstTouchCapacity({ usableToday: 850, followUpsDue: 0, alreadySentToday: 850 })
+        .firstTouchAllowed
+    ).toBe(0);
+    expect(
+      firstTouchCapacity({ usableToday: 850, followUpsDue: 850, alreadySentToday: 0 })
+        .firstTouchAllowed
+    ).toBe(0);
+  });
+
+  it("reports expected unused capacity and names its cause", () => {
+    const c = firstTouchCapacity({
+      usableToday: 850,
+      followUpsDue: 250,
+      alreadySentToday: 0,
+      qualifiedReady: 100,
+    });
+    expect(c.firstTouchAllowed).toBe(600);
+    expect(c.expectedUnused).toBe(500);
+    expect(c.unusedCause).toMatch(/only 100 qualified/i);
+  });
+
+  it("no unused capacity reported when contacts cover the day", () => {
+    const c = firstTouchCapacity({
+      usableToday: 850,
+      followUpsDue: 250,
+      alreadySentToday: 0,
+      qualifiedReady: 900,
+    });
+    expect(c.expectedUnused).toBe(0);
+    expect(c.unusedCause).toBeNull();
+  });
+});
+
+describe("HOW MANY FOLLOW-UPS ARE REALLY DUE TODAY", () => {
+  const offsets = cumulativeStepOffsets(fourStep); // [0, 3, 7, 12]
+  const now = new Date("2026-08-14T12:00:00Z");
+  const pushedDaysAgo = (n: number) =>
+    new Date(Date.UTC(2026, 7, 14 - n, 9, 0, 0)).toISOString();
+
+  it("works out which day each step lands on", () => {
+    expect(offsets).toEqual([0, 3, 7, 12]);
+  });
+
+  it("counts only leads whose step falls today", () => {
+    const threads = [
+      { pushedAt: pushedDaysAgo(3), status: "sent" }, // step 2 due
+      { pushedAt: pushedDaysAgo(7), status: "sent" }, // step 3 due
+      { pushedAt: pushedDaysAgo(12), status: "opened" }, // step 4 due
+      { pushedAt: pushedDaysAgo(5), status: "sent" }, // nothing due
+      { pushedAt: pushedDaysAgo(1), status: "sent" }, // nothing due
+    ];
+    expect(followUpsDueToday(threads, offsets, now).due).toBe(3);
+  });
+
+  it("DOES NOT ASSUME EVERY ACTIVE LEAD HAS ONE DUE TODAY", () => {
+    // The lazy approximation this replaces. 100 leads mid-sequence produce a
+    // handful of follow-ups on any given day, not 100.
+    const threads = Array.from({ length: 100 }, (_, i) => ({
+      pushedAt: pushedDaysAgo((i % 11) + 1),
+      status: "sent",
+    }));
+    const due = followUpsDueToday(threads, offsets, now).due;
+    expect(due).toBeGreaterThan(0);
+    expect(due).toBeLessThan(30);
+  });
+
+  it("a lead pushed today counts as a first touch, never a follow-up", () => {
+    expect(
+      followUpsDueToday([{ pushedAt: pushedDaysAgo(0), status: "pushed" }], offsets, now).due
+    ).toBe(0);
+  });
+
+  it("an ended thread sends nothing further", () => {
+    for (const status of ["replied", "bounced", "unsubscribed", "failed"]) {
+      expect(
+        followUpsDueToday([{ pushedAt: pushedDaysAgo(3), status }], offsets, now).due
+      ).toBe(0);
+    }
+  });
+
+  it("EXPOSES ITS CONFIDENCE AND ITS LIMITATION, rather than pretending", () => {
+    const e = followUpsDueToday(
+      [{ pushedAt: pushedDaysAgo(3), status: "sent" }],
+      offsets,
+      now
+    );
+    expect(e.confidence).toBe("measured");
+    expect(e.caveat).toMatch(/schedule|drift|later/i);
+  });
+
+  it("a sequence with no follow-up steps claims nothing", () => {
+    const e = followUpsDueToday(
+      [{ pushedAt: pushedDaysAgo(3), status: "sent" }],
+      [0],
+      now
+    );
+    expect(e.due).toBe(0);
+    expect(e.caveat).toMatch(/no follow-up steps/i);
+  });
+
+  it("NEVER SILENTLY FALLS BACK TO capacity ÷ 4", () => {
+    // An unreadable sequence claims no follow-ups, so the day's whole capacity
+    // goes to first touches — the opposite of the old guess, and the honest
+    // answer given Instantly exposes no "scheduled today" endpoint.
+    const e = followUpsDueToday([], [], now);
+    expect(e.due).toBe(0);
+    expect(e.confidence).toBe("unknown");
+
+    const src = readFileSync(new URL("../src/lib/supplyPlan.ts", import.meta.url), "utf8");
+    const fn = src.slice(src.indexOf("export function followUpsDueToday"));
+    expect(fn.slice(0, 2000)).not.toMatch(/\/\s*4|\/\s*steps|intakePerDay/);
+  });
+});
+
+/* 7: long-term forecasting still accounts for every step. */
+describe("THE FORECAST STILL COUNTS EVERY SEQUENCE STEP", () => {
+  it("reserve planning still divides by the steps", () => {
+    const d = computeDemand({
+      usableSends: 850,
+      sequenceSteps: 4,
+      spanDays: 12,
+      reserveDays: 3,
+    });
+    expect(d.intakePerDay).toBe(212);
+    expect(d.reserveTarget).toBe(636);
+    expect(d.targetInCampaign).toBe(2756);
+  });
+
+  it("but that number is labelled a forecast, not a cap", () => {
+    const src = readFileSync(new URL("../src/lib/supplyPlan.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/STEADY-STATE PLANNING ONLY\. NOT A DAILY DISPATCH CAP/);
+  });
+
+  it("THE PUSH NO LONGER READS IT AS A CEILING", () => {
+    const handlers = readFileSync(
+      new URL("../src/lib/jobHandlers.ts", import.meta.url),
+      "utf8"
+    );
+    // The cap must come from firstTouchCapacity, not from the forecast.
+    expect(handlers).toMatch(/firstTouchCapacity\(/);
+    expect(handlers).toMatch(/dailyCap = todayCapacity \? todayCapacity\.firstTouchAllowed/);
+    expect(handlers).not.toMatch(/dailyCap = scale \? demand\.intakePerDay/);
+  });
+
+  it("and the page says so in as many words", () => {
+    const page = readFileSync(
+      new URL("../src/app/(admin)/admin/email/page.tsx", import.meta.url),
+      "utf8"
+    );
+    expect(page).toMatch(/long-term planning estimate only/i);
+    expect(page).toMatch(/It is not a daily limit/);
+    expect(page).toMatch(/First touches left/);
+    expect(page).toMatch(/Follow-ups due today/);
+  });
+});
+
+/* 8: the protections that must survive all of this. */
+describe("THE PROTECTIONS SURVIVE THE CORRECTION", () => {
+  const push = readFileSync(new URL("../src/lib/emailPush.ts", import.meta.url), "utf8");
+  const handlers = readFileSync(
+    new URL("../src/lib/jobHandlers.ts", import.meta.url),
+    "utf8"
+  );
+
+  it("recipient rule still unconditional", () => {
+    expect(push).toMatch(/onlyNamedPeopleWeCanGreet\(eligible\)/);
+    expect(push).toMatch(/return onlyNamedPeopleWeCanGreet\(usable\)\.length/);
+    expect(push).not.toMatch(/settings\.named_people_only/);
+  });
+
+  it("suppression still checked before anything is pushed", () => {
+    expect(push).toMatch(/emailUnavailableReason/);
+  });
+
+  it("deduplication still excludes leads already in a campaign", () => {
+    expect(push).toMatch(/canRepush\(t\.status/);
+  });
+
+  it("the per-tick idempotency key is unchanged", () => {
+    const tick = readFileSync(
+      new URL("../src/app/api/worker/tick/route.ts", import.meta.url),
+      "utf8"
+    );
+    expect(tick).toMatch(/refill_email_campaign:\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 16\)\}/);
+  });
+
+  it("today's send count is reconciled with Instantly rather than trusted blind", () => {
+    // A missed webhook reading as zero would hand the whole day to first
+    // touches that Instantly has already spent, and overrun the campaign limit.
+    expect(handlers).toMatch(/sentToday = Math\.max\(sentToday, ledger\.sent\)/);
+  });
+
+  it("pushedToday is not deducted twice", () => {
+    // firstTouchCapacity already subtracts today's sends.
+    expect(handlers).toMatch(/pushedToday: todayCapacity \? 0 : pushedToday/);
   });
 });

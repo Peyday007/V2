@@ -149,6 +149,8 @@ export type SupplyPicture = {
   yieldSample: number;
   sequenceSteps: number;
   spanDays: number;
+  /** Day each step lands on, counted from the push. */
+  offsets: number[];
 };
 
 /**
@@ -161,7 +163,7 @@ export type SupplyPicture = {
 export async function readSupplyPicture(): Promise<SupplyPicture> {
   const [instantly, shape, qualifiedReady, reenrich] = await Promise.all([
     loadSettings().catch(() => null),
-    activeSequenceShape().catch(() => ({ steps: 3, spanDays: 7 })),
+    activeSequenceShape().catch(() => ({ steps: 3, spanDays: 7, offsets: [] as number[] })),
     countEligible().catch(() => 0),
     readReenrichLeads().catch(() => ({ rows: null, error: "unreadable" })),
   ]);
@@ -212,6 +214,7 @@ export async function readSupplyPicture(): Promise<SupplyPicture> {
     yieldSample: resolved,
     sequenceSteps: shape.steps,
     spanDays: shape.spanDays,
+    offsets: shape.offsets,
   };
 }
 

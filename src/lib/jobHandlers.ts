@@ -18,11 +18,17 @@ import { logEvent, recordEvent } from "./events";
 import { decideSearching } from "./leadYield";
 import { enrichLeadForOwner } from "./ownerEnrichment";
 import { loadSettings } from "./instantlyStore";
-import { activeLeadCount } from "./instantly/client";
-import { countEligible, pushEligibleLeads, activeThreadCount } from "./emailPush";
+import { activeLeadCount, campaignSendLedger } from "./instantly/client";
+import {
+  countEligible,
+  pushEligibleLeads,
+  activeThreadCount,
+  threadsInSequence,
+  sentTodayCount,
+} from "./emailPush";
 import { dailyCounterFor, planRefill, todayString } from "./refillPlan";
 import { syncSendingAccounts, activeSequenceShape } from "./capacitySync";
-import { computeDemand } from "./supplyPlan";
+import { computeDemand, firstTouchCapacity, followUpsDueToday } from "./supplyPlan";
 import { recomputeKnowledge } from "./houseKnowledgeStore";
 import { appliedPriors } from "./houseKnowledge";
 import { planReenrichment } from "./reenrichPlan";
@@ -1439,13 +1445,41 @@ const refillEmailCampaign: Handler = async () => {
    * Without it this is an all-time total that only ever grows, and once it
    * passed the target the top-up pushed nothing ever again.
    */
-  const [ours, theirs, eligible] = await Promise.all([
+  const [ours, theirs, eligible, scheduled, webhookSentToday] = await Promise.all([
     activeThreadCount(settings.campaign_id || "", shape.spanDays),
     activeLeadCount(settings.campaign_id || ""),
     countEligible(),
+    threadsInSequence(settings.campaign_id || "", shape.spanDays),
+    sentTodayCount(),
   ]);
   const active =
     ours === null ? theirs : theirs === null ? ours : Math.max(ours, theirs);
+
+  /*
+   * WHAT TODAY HAS ALREADY SPENT, and what it still owes to follow-ups.
+   *
+   * The send count is reconciled against Instantly's own ledger for the same
+   * reason the health card is: our email_events table is filled by webhooks,
+   * and a missed webhook reads as zero. A zero here would hand the day's whole
+   * capacity to first touches that Instantly has in fact already sent, and
+   * overrun the campaign limit. The larger of the two is the only
+   * reconciliation that cannot under-report.
+   */
+  let sentToday = webhookSentToday;
+  if (settings.campaign_id) {
+    try {
+      const now = new Date();
+      const start = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+      );
+      const ledger = await campaignSendLedger(settings.campaign_id, start, now);
+      if (ledger) sentToday = Math.max(sentToday, ledger.sent);
+    } catch {
+      // A failed read never lowers the number.
+    }
+  }
+
+  const followUps = followUpsDueToday(scheduled || [], shape.offsets);
 
   /*
    * Scaling is on by default and can be pinned off, in which case the stored
@@ -1455,7 +1489,31 @@ const refillEmailCampaign: Handler = async () => {
    */
   const scale = settings.auto_scale_supply !== false && demand.intakePerDay > 0;
   const targetActive = scale ? demand.targetInCampaign : settings.target_active_leads;
-  const dailyCap = scale ? demand.intakePerDay : settings.daily_push_cap;
+
+  /*
+   * TODAY'S CAP IS WHAT TODAY CAN CARRY, not the steady-state intake.
+   *
+   * demand.intakePerDay was used here and it was wrong. It answers "how many
+   * new leads a day does this sustain once the pipeline is full" — 212 on a
+   * four-step sequence at 850 sends — and applying it as a daily ceiling
+   * discarded every send the follow-up load did not actually claim. On a day
+   * with 250 follow-ups due, 600 first touches could go out and 212 were
+   * allowed.
+   *
+   * So the cap is now the real remainder: capacity, less what has already
+   * gone, less the follow-ups still to come. The steady-state figure keeps
+   * its proper job of sizing the reserve and the sourcing runs, above.
+   */
+  const todayCapacity = scale
+    ? firstTouchCapacity({
+        usableToday: settings.computed_daily_sends ?? 0,
+        followUpsDue: followUps.due,
+        alreadySentToday: sentToday,
+        firstTouchesSentToday: pushedToday,
+        qualifiedReady: eligible,
+      })
+    : null;
+  const dailyCap = todayCapacity ? todayCapacity.firstTouchAllowed : settings.daily_push_cap;
 
   const decision = planRefill({
     autoPushEnabled: settings.auto_push_enabled,
@@ -1464,7 +1522,12 @@ const refillEmailCampaign: Handler = async () => {
     activeInCampaign: active,
     targetActive,
     dailyCap,
-    pushedToday,
+    /*
+     * firstTouchCapacity has already deducted today's sends, so passing
+     * pushedToday again would charge every push twice and halve the day.
+     * Zero here when scaling; the stored-cap path still needs the counter.
+     */
+    pushedToday: todayCapacity ? 0 : pushedToday,
     eligible,
     maxPerRun: settings.max_push_per_run,
   });
