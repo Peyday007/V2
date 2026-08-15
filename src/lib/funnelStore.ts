@@ -26,6 +26,12 @@ import {
   type Demand,
 } from "./supplyPlan";
 import { nextSearchTarget, type FunnelDecision, type SearchedPair } from "./funnelPlan";
+import {
+  assessRun,
+  productionStatus,
+  type RunFacts,
+  type RunAssessment,
+} from "./sourcingHealth";
 
 // The world-touching half of keeping the funnel full. The decisions all live
 // in funnelPlan.ts, which is pure and tested; this reads the counts, and — only
@@ -110,12 +116,125 @@ async function countAwaitingEnrichment(): Promise<number> {
   return plan.queue.length + plan.waiting;
 }
 
-async function sourcingIsRunning(): Promise<boolean> {
-  const { count } = await supabaseAdmin()
+/**
+ * The run that is supposedly in progress, and whether it is actually alive.
+ *
+ * THE LOCK THAT HAD NO LEASE. This used to be a bare count of campaigns with
+ * status 'running', and that count was the only thing gating sourcing. The
+ * status column is set when a run starts and cleared only by
+ * finishCampaignIfDone — which is called exclusively from inside a job handler
+ * for that campaign. Exhaust max_attempts on those jobs, or lose the worker
+ * mid-run, and nothing is left alive to clear it.
+ *
+ * The result was a campaign marked running for days, sourcingIsRunning
+ * returning true forever, planSupply holding forever, and the page reporting
+ * "A sourcing run is already going" beside zero qualified contacts and 989
+ * unused sends. Every statement true; the pipeline dead.
+ *
+ * The jobs table already solved this — claim_jobs reclaims any lease older
+ * than 300 seconds. This gives the campaign lock the same property, using
+ * updated_at as the heartbeat, and RECOVERS rather than merely reporting: a
+ * dead run is marked failed so the next check is free to start a real one.
+ */
+export type ActiveRun = {
+  run: RunFacts | null;
+  assessment: RunAssessment;
+  /** True when this call released a wedged lock. */
+  recovered: boolean;
+};
+
+const RUN_COLUMNS =
+  "id, name, status, started_at, updated_at, searches_planned, searches_completed, " +
+  "api_requests_used, businesses_returned, unique_saved, duplicates_skipped, " +
+  "qualification_failures, enrichment_queued, error_count, last_error";
+
+export async function activeSourcingRun(now: Date = new Date()): Promise<ActiveRun> {
+  const db = supabaseAdmin();
+  const { data, error } = await db
     .from("sourcing_campaigns")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "running");
-  return (count ?? 0) > 0;
+    .select(RUN_COLUMNS)
+    .eq("status", "running")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  /*
+   * An unreadable table is treated as "a run is going", exactly as before:
+   * not knowing must never authorise a spend.
+   */
+  if (error) {
+    return {
+      run: null,
+      assessment: {
+        state: "progressing",
+        minutesSinceProgress: null,
+        minutesSinceStart: null,
+        shouldRecover: false,
+        blocksNewRun: true,
+        reason: `Could not read the sourcing runs, so nothing was started: ${error.message}`,
+      },
+      recovered: false,
+    };
+  }
+
+  if (!data) {
+    return { run: null, assessment: assessRun(null, now), recovered: false };
+  }
+
+  const r = data as unknown as Record<string, unknown>;
+  const num = (k: string) => Number(r[k]) || 0;
+  const run: RunFacts = {
+    id: String(r.id),
+    name: String(r.name ?? "unnamed run"),
+    status: String(r.status),
+    startedAt: (r.started_at as string) ?? null,
+    updatedAt: (r.updated_at as string) ?? null,
+    counters: {
+      searchesPlanned: num("searches_planned"),
+      searchesCompleted: num("searches_completed"),
+      apiRequestsUsed: num("api_requests_used"),
+      businessesReturned: num("businesses_returned"),
+      uniqueSaved: num("unique_saved"),
+      duplicatesSkipped: num("duplicates_skipped"),
+      qualificationFailures: num("qualification_failures"),
+      enrichmentQueued: num("enrichment_queued"),
+      errorCount: num("error_count"),
+      lastError: (r.last_error as string) ?? null,
+    },
+  };
+
+  const assessment = assessRun(run, now);
+  let recovered = false;
+
+  if (assessment.shouldRecover) {
+    /*
+     * Released, with the reason written down. Marked `failed` rather than
+     * `completed` so the history is honest about what happened, and guarded on
+     * status = 'running' so two workers recovering at once cannot both act.
+     */
+    const { error: recoverError, data: updated } = await db
+      .from("sourcing_campaigns")
+      .update({
+        status: "failed",
+        finished_at: new Date().toISOString(),
+        completion_reason: assessment.reason,
+      })
+      .eq("id", run.id)
+      .eq("status", "running")
+      .select("id");
+    recovered = !recoverError && (updated?.length ?? 0) > 0;
+    if (recovered) {
+      await logEvent("campaign.recovered", "sourcing_campaign", run.id, {
+        state: assessment.state,
+        minutes_since_progress: assessment.minutesSinceProgress,
+        searches_completed: run.counters.searchesCompleted,
+        unique_saved: run.counters.uniqueSaved,
+        last_error: run.counters.lastError,
+      }).catch(() => {});
+    }
+  }
+
+  return { run, assessment, recovered };
 }
 
 async function recentAutoSearches(): Promise<SearchedPair[]> {
@@ -242,7 +361,24 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
     ? (Date.now() - Date.parse(settings.lastStartedAt)) / 3_600_000
     : null;
 
-  const running = await sourcingIsRunning().catch(() => true); // unknown reads as running
+  /*
+   * A lock only counts while something is behind it. activeSourcingRun
+   * assesses the run against its own heartbeat and RELEASES it when dead, so
+   * a crashed job can no longer wedge sourcing indefinitely.
+   */
+  const active = await activeSourcingRun().catch(() => ({
+    run: null,
+    assessment: {
+      state: "progressing" as const,
+      minutesSinceProgress: null,
+      minutesSinceStart: null,
+      shouldRecover: false,
+      blocksNewRun: true,
+      reason: "Could not read the sourcing runs, so nothing was started.",
+    },
+    recovered: false,
+  }));
+  const running = active.assessment.blocksNewRun;
 
   const plan = planSupply({
     sourcingEnabled: settings.enabled,
@@ -403,12 +539,26 @@ export async function keepFunnelFull(): Promise<FunnelDecision> {
 /** Exported for the status view, which needs the numbers without acting. */
 export async function funnelSnapshot() {
   const settings = await loadFunnelSettings();
-  const [eligibleToEmail, awaitingEnrichment, running] = await Promise.all([
+  const [eligibleToEmail, awaitingEnrichment, active] = await Promise.all([
     countEligible().catch(() => 0),
     countAwaitingEnrichment().catch(() => 0),
-    sourcingIsRunning().catch(() => false),
+    activeSourcingRun().catch(() => null),
   ]);
-  return { settings, eligibleToEmail, awaitingEnrichment, sourcingRunning: running };
+  /*
+   * "Running" here means VERIFIED PROGRESS, not the presence of a lock. A
+   * status view reporting a stalled run as running is how the page said
+   * "A sourcing run is already going" for days after the run had died.
+   */
+  const progressing = active?.assessment.state === "progressing";
+  return {
+    settings,
+    eligibleToEmail,
+    awaitingEnrichment,
+    sourcingRunning: progressing,
+    run: active?.run ?? null,
+    runAssessment: active?.assessment ?? null,
+    runRecovered: active?.recovered ?? false,
+  };
 }
 
 /** Re-exported so callers do not need to know which module owns it. */

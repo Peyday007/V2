@@ -375,8 +375,15 @@ describe("CONCURRENT WORKERS CANNOT DOUBLE-SPEND", () => {
   });
 
   it("an unreadable running-state is treated as running", () => {
+    /*
+     * Same property, new shape. The bare sourcingIsRunning count became
+     * activeSourcingRun, which assesses the lock against its own heartbeat —
+     * but an unreadable table must STILL block, because not knowing may never
+     * authorise a spend.
+     */
     const store = readFileSync(new URL("../src/lib/funnelStore.ts", import.meta.url), "utf8");
-    expect(store).toMatch(/sourcingIsRunning\(\)\.catch\(\(\) => true\)/);
+    expect(store).toMatch(/activeSourcingRun\(\)\.catch\(/);
+    expect(store).toMatch(/blocksNewRun: true/);
   });
 
   it("the spacing rule stops a burst of runs within the cooldown", () => {
@@ -612,8 +619,15 @@ describe("UTILISATION IS MEASURED, CAPACITY IS ESTIMATED", () => {
 
   it("the numerator is the reconciled send count, not a projection", () => {
     expect(route).toMatch(/utilisation = capacity > 0 \? Math\.min\(1, sent \/ capacity\)/);
-    // `sent` is the webhook count reconciled with Instantly's own ledger.
-    expect(route).toMatch(/Math\.max\(sent, ledger\.sent\)/);
+    /*
+     * `sent` is still our count reconciled against Instantly's own ledger —
+     * but reconciliation moved into sendWindows.reconcile so that the window
+     * it was measured over travels with the number. Comparing a rolling 24
+     * hours against Instantly's calendar Friday is what produced 3 beside
+     * their 51.
+     */
+    expect(route).toMatch(/const sent = rollingRec\.reported/);
+    expect(route).toMatch(/reconcileWindow\(/);
     expect(route).toMatch(/sentLast24h: sent/);
   });
 

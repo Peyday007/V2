@@ -191,17 +191,51 @@ export function toInstantlySequence(
  * Accepts a bare array, `{ items: [] }` and `{ data: [] }`, because list
  * endpoints change their envelope more often than their contents.
  */
-export function sumDailyAnalytics(
-  body: unknown
-): { sent: number; replies: number } | null {
+/** One day's row from /campaigns/analytics/daily, normalised. */
+export type DailyAnalyticsRow = { date: string; sent: number; replies: number };
+
+/**
+ * The per-day breakdown, kept rather than summed away.
+ *
+ * sumDailyAnalytics collapses the whole window into one total, which is fine
+ * for "how many in the last 24 hours" and useless for "how many on Friday" —
+ * and Friday is the number the Instantly dashboard shows, so it is the number
+ * a person compares against. Reporting 3 against their 51 and having no way to
+ * line the two up is what made the send ledger untrustworthy.
+ */
+export function dailyAnalyticsRows(body: unknown): DailyAnalyticsRow[] | null {
+  const rows = analyticsRows(body);
+  if (rows === null) return null;
+  const out: DailyAnalyticsRow[] = [];
+  for (const entry of rows) {
+    const row = entry as Record<string, unknown>;
+    const date = firstString(row, ["date", "day", "sent_date", "analytics_date"]);
+    if (!date) continue;
+    out.push({
+      // Instantly has returned both "2026-08-14" and full timestamps.
+      date: date.slice(0, 10),
+      sent: firstNumber(row, ["sent", "sent_count", "emails_sent"]) ?? 0,
+      replies: firstNumber(row, ["replies", "replies_count", "reply_count", "replied"]) ?? 0,
+    });
+  }
+  return out;
+}
+
+function analyticsRows(body: unknown): unknown[] | null {
   const container = body as { items?: unknown; data?: unknown } | unknown[];
-  const rows = Array.isArray(container)
+  return Array.isArray(container)
     ? container
     : Array.isArray((container as { items?: unknown })?.items)
       ? (container as { items: unknown[] }).items
       : Array.isArray((container as { data?: unknown })?.data)
         ? (container as { data: unknown[] }).data
         : null;
+}
+
+export function sumDailyAnalytics(
+  body: unknown
+): { sent: number; replies: number } | null {
+  const rows = analyticsRows(body);
   if (rows === null) return null;
 
   let sent = 0;

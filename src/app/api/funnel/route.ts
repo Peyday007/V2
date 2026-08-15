@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { campaignSendLedger } from "@/lib/instantly/client";
+import { campaignDailyRows } from "@/lib/instantly/client";
 import { funnelSnapshot, readSupplyPicture } from "@/lib/funnelStore";
 import {
   activeThreadCount,
@@ -9,6 +9,19 @@ import {
   sentTodayCount,
 } from "@/lib/emailPush";
 import { firstTouchCapacity, followUpsDueToday } from "@/lib/supplyPlan";
+import {
+  rollingDayWindow,
+  todayWindow,
+  calendarDayWindow,
+  localDateKey,
+  sentInWindow,
+  reconcile,
+  DEFAULT_REPORT_TIMEZONE,
+  type SendWindow,
+} from "@/lib/sendWindows";
+import { productionStatus } from "@/lib/sourcingHealth";
+import { placesKeyConfigured } from "@/lib/places";
+import { instantlyCapability } from "@/lib/instantly/client";
 import { funnelHealth } from "@/lib/funnelHealth";
 import { loadSettings, selectEmailLeads } from "@/lib/instantlyStore";
 import { loadAutoReenrichSettings } from "@/lib/reenrichStore";
@@ -35,6 +48,21 @@ async function sentLast24h(): Promise<number> {
       .select("id", { count: "exact", head: true })
       .eq("event_type", "sent")
       .gte("occurred_at", since);
+    return count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Our own recorded sends between two instants. One window, stated by caller. */
+async function sentBetween(fromIso: string, toIso: string): Promise<number> {
+  try {
+    const { count } = await supabaseAdmin()
+      .from("email_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "sent")
+      .gte("occurred_at", fromIso)
+      .lt("occurred_at", toIso);
     return count ?? 0;
   } catch {
     return 0;
@@ -76,20 +104,48 @@ export async function GET() {
    * only reconciliation that cannot under-report. Null from the ledger means
    * "could not ask" and leaves the webhook figure alone.
    */
-  let sent = webhookSent;
-  if (instantly.settings.campaign_id) {
-    try {
-      const now = new Date();
-      const ledger = await campaignSendLedger(
-        instantly.settings.campaign_id,
-        new Date(now.getTime() - 24 * 3600_000),
-        now
-      );
-      if (ledger) sent = Math.max(sent, ledger.sent);
-    } catch {
-      // A failed read never lowers the number, and never fails the page.
+  const now = new Date();
+  const tz = DEFAULT_REPORT_TIMEZONE;
+
+  /*
+   * EVERY SEND FIGURE CARRIES ITS WINDOW.
+   *
+   * Instantly reported 51 for Friday while this page reported 3, and both were
+   * right about different questions. Three windows are now computed and each
+   * is labelled with its kind, its timezone and its endpoints, so no two
+   * numbers can be compared without their definitions attached.
+   */
+  const windows = {
+    rolling: rollingDayWindow(now),
+    today: todayWindow(now, tz),
+    yesterday: calendarDayWindow(
+      localDateKey(new Date(now.getTime() - 86_400_000), tz),
+      tz
+    ),
+  };
+
+  async function reconcileWindow(w: SendWindow, ourCount: number) {
+    let rows: Awaited<ReturnType<typeof campaignDailyRows>> = null;
+    if (instantly.settings.campaign_id) {
+      try {
+        rows = await campaignDailyRows(instantly.settings.campaign_id, w);
+      } catch {
+        // A failed read leaves the webhook figure alone and says so below.
+      }
     }
+    return reconcile({ window: w, webhookSent: ourCount, ledger: sentInWindow(rows, w) });
   }
+
+  const [rollingRec, todayRec, yesterdayRec] = await Promise.all([
+    reconcileWindow(windows.rolling, webhookSent),
+    reconcileWindow(windows.today, await sentBetween(windows.today.fromIso, windows.today.toIso)),
+    reconcileWindow(
+      windows.yesterday,
+      await sentBetween(windows.yesterday.fromIso, windows.yesterday.toIso)
+    ),
+  ]);
+
+  const sent = rollingRec.reported;
 
   const availability = summarizeEmailAvailability(leads.rows);
 
@@ -163,7 +219,95 @@ export async function GET() {
     sourcingRunning: snapshot.sourcingRunning,
   });
 
+  /*
+   * WHAT IS ACTUALLY HAPPENING, in one line with its numbers.
+   *
+   * A provider that cannot work outranks everything, because it explains the
+   * rest. Note the deliberate exclusion: a lock on its own never produces
+   * "sourcing and making progress" — snapshot.runAssessment has already
+   * decided whether the lock is backed by movement.
+   */
+  const providerBlocker = !placesKeyConfigured()
+    ? "GOOGLE_PLACES_API_KEY is not set on this deployment, so no lead can be sourced. Add it in the Vercel dashboard and redeploy."
+    : !instantlyCapability().available
+      ? instantlyCapability().reason
+      : null;
+
+  const status = productionStatus({
+    qualifiedReady: supply?.qualifiedReady ?? 0,
+    run: snapshot.runAssessment ?? {
+      state: "not_running",
+      minutesSinceProgress: null,
+      minutesSinceStart: null,
+      shouldRecover: false,
+      blocksNewRun: false,
+      reason: "No sourcing run is marked as running.",
+    },
+    enrichmentResolved: supply?.yieldSample ?? 0,
+    enrichmentQualified: supply
+      ? Math.round(supply.qualificationYield * supply.yieldSample)
+      : 0,
+    providerBlocker,
+    sourcingEnabled: snapshot.settings.enabled,
+  });
+
   return NextResponse.json({
+    status,
+    /*
+     * The sourcing run's live state, every counter it keeps. Written out in
+     * full because "a sourcing run is already going" told nobody whether it
+     * had ever done anything, and that was the whole question.
+     */
+    sourcingRun: snapshot.run
+      ? {
+          name: snapshot.run.name,
+          startedAt: snapshot.run.startedAt,
+          lastProgressAt: snapshot.run.updatedAt,
+          minutesSinceProgress: snapshot.runAssessment?.minutesSinceProgress ?? null,
+          state: snapshot.runAssessment?.state ?? null,
+          searchesPlanned: snapshot.run.counters.searchesPlanned,
+          searchesCompleted: snapshot.run.counters.searchesCompleted,
+          apiRequestsUsed: snapshot.run.counters.apiRequestsUsed,
+          businessesFound: snapshot.run.counters.businessesReturned,
+          duplicatesRejected: snapshot.run.counters.duplicatesSkipped,
+          leadsInserted: snapshot.run.counters.uniqueSaved,
+          qualificationFailures: snapshot.run.counters.qualificationFailures,
+          enrichmentQueued: snapshot.run.counters.enrichmentQueued,
+          errorCount: snapshot.run.counters.errorCount,
+          lastError: snapshot.run.counters.lastError,
+          reason: snapshot.runAssessment?.reason ?? null,
+        }
+      : null,
+    /** True when this request released a wedged lock. Visible, not silent. */
+    staleLockRecovered: snapshot.runRecovered,
+    /** Enrichment's own yield, so "producing zero" is evidenced. */
+    enrichment: supply
+      ? {
+          resolved: supply.yieldSample,
+          qualified: Math.round(supply.qualificationYield * supply.yieldSample),
+          stillWorkable: supply.enrichableNow,
+          givenUp: supply.givenUp,
+          yield: supply.qualificationYield,
+          yieldIsMeasured: supply.yieldIsMeasured,
+        }
+      : null,
+    /*
+     * Every send figure with its window spelled out. Three of them, because
+     * "51 on Friday" and "3 in the last 24 hours" are different questions and
+     * comparing them without labels is what broke trust in this number.
+     */
+    sendWindows: [rollingRec, todayRec, yesterdayRec].map((r) => ({
+      label: r.window.label,
+      kind: r.window.kind,
+      timezone: r.window.timezone,
+      from: r.window.fromIso,
+      to: r.window.toIso,
+      ourEvents: r.webhookSent,
+      instantlyLedger: r.ledgerSent,
+      reported: r.reported,
+      source: r.source,
+      discrepancy: r.discrepancy,
+    })),
     health,
     /*
      * The operating picture, in the order the page asks the questions.

@@ -14,6 +14,8 @@ import {
   pushBody,
   readCampaignSteps,
   sumDailyAnalytics,
+  dailyAnalyticsRows,
+  type DailyAnalyticsRow,
   toInstantlySequence,
   countBlocks,
   formatBody,
@@ -33,6 +35,7 @@ export {
   pushBody,
   readCampaignSteps,
   sumDailyAnalytics,
+  dailyAnalyticsRows,
   toInstantlySequence,
 } from "./mapping";
 
@@ -188,6 +191,29 @@ export async function campaignDailyLimit(campaignId: string): Promise<number | n
  * are different answers and the whole point of this function is that
  * conflating them is what produced the false alarm.
  */
+/**
+ * Instantly's own per-day figures across a named window.
+ *
+ * The window carries the widened request range, because their rows are keyed
+ * by date in the campaign's timezone and a UTC-bounded request can miss the
+ * very day being asked about — the mismatch behind "Instantly says 51, we say
+ * 3". Returns raw rows; sendWindows.sentInWindow decides which of them count.
+ */
+export async function campaignDailyRows(
+  campaignId: string,
+  window: { requestFrom: string; requestTo: string }
+): Promise<DailyAnalyticsRow[] | null> {
+  if (!campaignId || !instantlyCapability().available) return null;
+  const query = new URLSearchParams({
+    campaign_id: campaignId,
+    start_date: window.requestFrom,
+    end_date: window.requestTo,
+  });
+  const res = await call(`/campaigns/analytics/daily?${query.toString()}`, { method: "GET" });
+  if (!res.ok) return null;
+  return dailyAnalyticsRows(res.body);
+}
+
 export async function campaignSendLedger(
   campaignId: string,
   start: Date,

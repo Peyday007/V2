@@ -148,6 +148,49 @@ type Health = {
 
 /** The whole chain in one answer. Shape from /api/funnel. */
 type Funnel = {
+  /** The one-line production status. Absent until the server ships. */
+  status?: {
+    status: string;
+    detail: string;
+    needsHuman: boolean;
+  } | null;
+  sourcingRun?: {
+    name: string;
+    startedAt: string | null;
+    lastProgressAt: string | null;
+    minutesSinceProgress: number | null;
+    state: string | null;
+    searchesPlanned: number;
+    searchesCompleted: number;
+    apiRequestsUsed: number;
+    businessesFound: number;
+    duplicatesRejected: number;
+    leadsInserted: number;
+    qualificationFailures: number;
+    enrichmentQueued: number;
+    errorCount: number;
+    lastError: string | null;
+    reason: string | null;
+  } | null;
+  staleLockRecovered?: boolean;
+  enrichment?: {
+    resolved: number;
+    qualified: number;
+    stillWorkable: number;
+    givenUp: number;
+    yield: number;
+    yieldIsMeasured: boolean;
+  } | null;
+  sendWindows?: {
+    label: string;
+    kind: string;
+    timezone: string;
+    ourEvents: number;
+    instantlyLedger: number | null;
+    reported: number;
+    source: string;
+    discrepancy: string | null;
+  }[];
   health: {
     headline: string;
     flowing: boolean;
@@ -646,9 +689,48 @@ export default function EmailPage() {
             borderColor: supplyBlocker ? "var(--red)" : "var(--amber)",
           }}
         >
-          <h2 style={{ marginTop: 0, marginBottom: 4 }}>
-            {funnel.supply.automationRunning ? "Automation is running" : "Automation is off"}
+          {/*
+            THE STATUS LINE, and what it deliberately is not.
+
+            This said "Automation is running" whenever the switches were on. It
+            said it while a sourcing run had been dead for days, zero qualified
+            contacts existed and 989 sends went unused — because a lock existed
+            and nothing checked whether anything was behind it.
+
+            Running now means recent verified progress. A wedged run reads
+            SOURCING STALLED, and the recovery that releases it is reported
+            rather than done quietly.
+          */}
+          <h2
+            style={{
+              marginTop: 0,
+              marginBottom: 4,
+              color: funnel.status?.needsHuman
+                ? "var(--red)"
+                : funnel.status?.status === "QUALIFIED CONTACTS READY" ||
+                    funnel.status?.status === "SOURCING AND MAKING PROGRESS"
+                  ? "var(--amber)"
+                  : undefined,
+            }}
+          >
+            {funnel.status?.status ??
+              (funnel.supply.automationRunning ? "Automation is on" : "Automation is off")}
           </h2>
+          {funnel.status?.detail && (
+            <p style={{ marginTop: 0, marginBottom: 12, lineHeight: 1.7 }}>
+              {funnel.status.detail}
+            </p>
+          )}
+          {funnel.staleLockRecovered && (
+            <p
+              className="faint"
+              style={{ marginTop: 0, marginBottom: 12, lineHeight: 1.7, color: "var(--amber)" }}
+            >
+              A sourcing run that had stopped making progress was just released, so the next
+              check is free to start a fresh one. Nothing was lost — the leads it had already
+              saved are still here.
+            </p>
+          )}
           <p style={{ marginTop: 0, marginBottom: 14, lineHeight: 1.7, fontSize: "1.05rem" }}>
             <strong style={{ color: "var(--amber)", fontSize: "1.5rem" }}>
               {funnel.supply.sentLast24h}
@@ -781,6 +863,90 @@ export default function EmailPage() {
             is exactly why it now says what it is on the same line as the
             number.
           */}
+          {/*
+            The sourcing run, counter by counter.
+
+            "A sourcing run is already going" told nobody whether it had ever
+            done anything. These are the numbers that answer it — and the row
+            that would have shown, days earlier, that nothing had moved.
+          */}
+          {funnel.sourcingRun && (
+            <details
+              style={{ marginTop: 12 }}
+              open={funnel.sourcingRun.state !== "progressing"}
+            >
+              <summary style={{ cursor: "pointer" }} className="faint">
+                Sourcing run — {funnel.sourcingRun.state ?? "unknown"}
+                {funnel.sourcingRun.minutesSinceProgress !== null
+                  ? `, last progress ${funnel.sourcingRun.minutesSinceProgress} min ago`
+                  : ""}
+              </summary>
+              <ul className="faint" style={{ lineHeight: 1.8, marginTop: 8 }}>
+                <li>Started: {funnel.sourcingRun.startedAt ?? "unknown"}</li>
+                <li>Last progress: {funnel.sourcingRun.lastProgressAt ?? "never"}</li>
+                <li>
+                  Searches: {funnel.sourcingRun.searchesCompleted} of{" "}
+                  {funnel.sourcingRun.searchesPlanned} · {funnel.sourcingRun.apiRequestsUsed}{" "}
+                  Google requests used
+                </li>
+                <li>
+                  Businesses found: {funnel.sourcingRun.businessesFound} ·{" "}
+                  {funnel.sourcingRun.duplicatesRejected} duplicates rejected ·{" "}
+                  {funnel.sourcingRun.leadsInserted} leads inserted
+                </li>
+                <li>
+                  Enrichment queued: {funnel.sourcingRun.enrichmentQueued} ·{" "}
+                  {funnel.sourcingRun.qualificationFailures} failed qualification
+                </li>
+                {funnel.enrichment && (
+                  <li>
+                    Enrichment finished with {funnel.enrichment.resolved} leads →{" "}
+                    <strong>{funnel.enrichment.qualified}</strong> qualified (
+                    {Math.round(funnel.enrichment.yield * 100)}%
+                    {funnel.enrichment.yieldIsMeasured ? " measured" : " assumed"}) ·{" "}
+                    {funnel.enrichment.stillWorkable} still workable ·{" "}
+                    {funnel.enrichment.givenUp} given up on
+                  </li>
+                )}
+                {funnel.sourcingRun.errorCount > 0 && (
+                  <li style={{ color: "var(--red)" }}>
+                    {funnel.sourcingRun.errorCount} errors
+                    {funnel.sourcingRun.lastError
+                      ? ` — last: ${funnel.sourcingRun.lastError}`
+                      : ""}
+                  </li>
+                )}
+              </ul>
+            </details>
+          )}
+
+          {/*
+            Send counts, each with the window it was measured over.
+
+            Instantly said 51 for Friday while this page said 3 for "the last
+            24 hours". Both correct, neither comparable. Every figure now
+            carries its kind, its timezone and both endpoints.
+          */}
+          {funnel.sendWindows && funnel.sendWindows.length > 0 && (
+            <details style={{ marginTop: 8 }} open={funnel.sendWindows.some((w) => w.discrepancy)}>
+              <summary style={{ cursor: "pointer" }} className="faint">
+                Sends by window — how our count compares to Instantly&rsquo;s
+              </summary>
+              <ul className="faint" style={{ lineHeight: 1.8, marginTop: 8 }}>
+                {funnel.sendWindows.map((w) => (
+                  <li key={w.label}>
+                    <strong>{w.label}</strong> — Instantly{" "}
+                    {w.instantlyLedger === null ? "could not be read" : w.instantlyLedger}, our
+                    events {w.ourEvents}, reporting {w.reported}
+                    {w.discrepancy && (
+                      <div style={{ color: "var(--red)", marginTop: 2 }}>{w.discrepancy}</div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+
           <details style={{ marginTop: 12 }}>
             <summary style={{ cursor: "pointer" }} className="faint">
               How these numbers are worked out

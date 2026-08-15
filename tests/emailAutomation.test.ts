@@ -474,8 +474,19 @@ describe("BOTH ROUTES RECONCILE AGAINST THE LEDGER", () => {
   });
 
   it("the funnel route takes the larger of the two counts", () => {
-    expect(funnel).toMatch(/campaignSendLedger\(/);
-    expect(funnel).toMatch(/Math\.max\(sent, ledger\.sent\)/);
+    /*
+     * The reconciliation moved into sendWindows.reconcile, which still takes
+     * the larger — and now also NAMES the window and reports the gap, because
+     * "Instantly says 51, we recorded 3" is the sentence that would have
+     * exposed the broken webhook months earlier.
+     */
+    expect(funnel).toMatch(/campaignDailyRows\(/);
+    expect(funnel).toMatch(/reconcile\(/);
+    const recon = readFileSync(
+      new URL("../src/lib/sendWindows.ts", import.meta.url),
+      "utf8"
+    );
+    expect(recon).toMatch(/Math\.max\(webhookSent, ledgerSent\)/);
   });
 
   it("the health route says which source the number came from", () => {
