@@ -747,14 +747,45 @@ describe("SEEING INSIDE THE WORKSHOP CHANGES NOTHING", () => {
     expect(preview).toMatch(/buildRecommendations\(gapInput\)/);
   });
 
-  it("both pages render through the ONE shared component", () => {
-    expect(page).toMatch(/<WorkshopBody data=/);
-    expect(live).toMatch(/<WorkshopBody data=/);
+  /*
+   * SUPERSEDED BY SOMETHING STRONGER.
+   *
+   * This used to assert that the admin preview and the live page both rendered
+   * a shared <WorkshopBody>, which kept two renderers in step. The rebuild
+   * removed the second renderer entirely: an operator now previews the REAL
+   * public page with ?preview=1, so there is nothing left to drift out of
+   * step. The property the old test protected is satisfied by construction.
+   */
+  it("the operator previews the REAL page, so there is no second renderer to drift", () => {
+    expect(live).toMatch(/<WorkshopMiniSite/);
+    // The admin section links to the live page rather than re-rendering it.
+    expect(page).toMatch(/\/workshop\/\$\{.*token.*\}|workshop\/\$\{p\.token\}/);
+    expect(page).toMatch(/\?preview=1/);
+    expect(page).not.toMatch(/<WorkshopBody/);
   });
 
-  it("the trial wording lives in one place and is marked not to be edited", () => {
+  it("AND THAT PREVIEW CANNOT COUNT AS PROSPECT ACTIVITY", () => {
     const view = readFileSync(new URL("../src/components/WorkshopView.tsx", import.meta.url), "utf8");
-    expect(view).toMatch(/NOT TO BE EDITED/);
-    expect(view).toMatch(/I agree to a free 7-day trial, no cost, cancel anytime/);
+    const route = readFileSync(
+      new URL("../src/app/api/workshop/[token]/route.ts", import.meta.url),
+      "utf8"
+    );
+    expect(view).toMatch(/preview: isPreview/);
+    expect(route).toMatch(/const isAdminPreview = body\?\.preview === true/);
+  });
+
+  it("the consent wording lives in one place, and the trial wording is gone", () => {
+    /*
+     * The old assertion pinned the exact trial sentence. That sentence was
+     * removed on purpose: pressing the button no longer starts anything, so
+     * copy saying it does would be false. What still has to hold is that the
+     * wording is centralised and never varied by an experiment.
+     */
+    const view = readFileSync(new URL("../src/components/WorkshopView.tsx", import.meta.url), "utf8");
+    const rendered = view.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+    expect(rendered).not.toMatch(/free 7-day trial|I agree to a free/i);
+    expect(view).toMatch(/export const INTEREST_CTA = "I'm interested in seeing more"/);
+    // Used, not re-typed — one string, so no variant can reword the promise.
+    expect(view.match(/INTEREST_CTA/g)?.length).toBeGreaterThanOrEqual(3);
   });
 });

@@ -57,6 +57,21 @@ export const EVENT_TYPES = [
   "workshop.trial_requested",
   "workshop.acknowledged",
 
+  /*
+   * The assessment rebuild. The workshop stopped being a product packet and
+   * became a business assessment, so the journey has more steps worth naming —
+   * and, critically, interest is its own event distinct from any permission.
+   */
+  "workshop.needs_attention",
+  "workshop.engaged",
+  "workshop.interested",
+  "workshop.audit_completed",
+  "workshop.private_example_requested",
+  "workshop.walkthrough_requested",
+  "workshop.live_change_approved",
+  "workshop.converted",
+  "workshop.regenerated",
+
   // cold email, via Instantly. Instantly sends; this app decides who, and
   // reads what comes back. Named "email.*" so the phone history and the inbox
   // history are legible side by side on one lead.

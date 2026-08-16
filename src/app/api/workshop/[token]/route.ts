@@ -1,217 +1,256 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { recordEvent } from "@/lib/events";
 import {
-  advanceStatus,
-  buildRecommendations,
-  computeGaps,
-  looksLikeToken,
-  type PacketStatus,
-} from "@/lib/workshopPacket";
+  publicAssessment,
+  packetByToken,
+  trackWorkshopEvent,
+  saveBottleneckAnswer,
+  completeAudit,
+  recordInterestDetails,
+} from "@/lib/workshopAssessment";
+import { AREA_ORDER, type BottleneckAnswer } from "@/lib/bottleneckAudit";
+import { WORKSHOP_EVENTS, type WorkshopEvent } from "@/lib/workshopLifecycle";
 
 export const dynamic = "force-dynamic";
 
-// The only endpoint a business owner can reach, and the only one with no
-// authentication in front of it.
+// The only API a member of the public reaches.
 //
-// Three rules, because this is the app's single public surface:
+// TWO PROPERTIES, above everything else in this file.
 //
-//   1. The token is the credential. A malformed one is rejected before it
-//      reaches the database.
-//   2. Nothing about any other lead is ever returned. The response is built
-//      field by field from an allow-list, never by spreading a row — a
-//      `select *` here would publish the owner's phone, the enrichment
-//      provider, the do-not-call flag and every internal id.
-//   3. Not found and expired look identical from outside. Distinguishing them
-//      turns this into an oracle for guessing tokens.
+// A TOKEN SEES ONE WORKSHOP. Every read and every write is resolved through
+// packetByToken and then scoped to that packet's id. There is no branch where
+// a body parameter chooses which packet is written to — if there were, one
+// prospect could reach another's assessment by guessing an id, which is the
+// whole reason the token is long and random in the first place.
+//
+// NOTHING INTERNAL LEAVES. The response is built by publicAssessment, which
+// runs every finding through stripInternal. The operator's notes, the caller's
+// talk track and the internal ranking commentary are absent from the payload
+// rather than hidden by the component that renders it.
+//
+// AND ONE THING THIS ENDPOINT DELIBERATELY CANNOT DO: change a finding. The
+// public surface is read-plus-append — events, questionnaire answers, contact
+// preference. No request from this page can alter what was observed.
 
-function notFound() {
-  return NextResponse.json({ error: "not_found" }, { status: 404 });
+/* -------------------------------------------------------------------------- */
+
+export async function GET(_req: NextRequest, ctx: { params: Promise<{ token: string }> }) {
+  const { token } = await ctx.params;
+  const assessment = await publicAssessment(token);
+  if (!assessment) {
+    return NextResponse.json({ error: "This link is no longer available." }, { status: 404 });
+  }
+  if (assessment.status === "revoked" || assessment.status === "expired") {
+    return NextResponse.json({ error: "This link is no longer available." }, { status: 404 });
+  }
+  return NextResponse.json(assessment);
 }
 
-async function packetByToken(token: string) {
-  const { data } = await supabaseAdmin()
-    .from("workshop_packets")
-    .select(
-      "id, lead_id, token, status, owner_name, owner_phone, owner_email, trial_requested_at, leads(business_name, city, state, website, rating, review_count, answering_setup, diagnostic_findings)"
-    )
-    .eq("token", token)
-    .maybeSingle();
-  return data;
-}
+/* -------------------------------------------------------------------------- */
 
-/** Supabase types a to-one relation as an object or an array depending on the join. */
-function one<T>(rel: T | T[] | null | undefined): T | null {
-  if (Array.isArray(rel)) return rel[0] ?? null;
-  return rel ?? null;
-}
+type Action =
+  | "track"
+  | "save_answer"
+  | "complete_audit"
+  | "interested"
+  | "request_walkthrough"
+  | "request_private_example";
 
-type LeadBits = {
-  business_name: string;
-  city: string | null;
-  state: string | null;
-  website: string | null;
-  rating: number | null;
-  review_count: number | null;
-  answering_setup: string | null;
-  /**
-   * The findings, cached by the diagnostic. Present for any lead enriched
-   * since migration 0032; absent for older ones, which fall back to the three
-   * original checks in computeGaps.
-   */
-  diagnostic_findings?: { key: string; headline: string; detail: string; basis: string[] }[] | null;
+const WALKTHROUGH_EVENT: Record<string, WorkshopEvent> = {
+  phone: "workshop.walkthrough_phone_requested",
+  video: "workshop.walkthrough_video_requested",
+  recorded: "workshop.walkthrough_recorded_requested",
 };
 
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: Promise<{ token: string }> }
-) {
-  const { token } = await params;
-  if (!looksLikeToken(token)) return notFound();
-
-  let row;
-  try {
-    row = await packetByToken(token);
-  } catch {
-    // Never leak a database error to a prospect's browser.
-    return NextResponse.json({ error: "unavailable" }, { status: 503 });
-  }
-  if (!row) return notFound();
-
-  const lead = one(row.leads as LeadBits | LeadBits[] | null);
-  if (!lead) return notFound();
-
-  // Mark it opened — but only forwards. This runs on every load, so without
-  // advanceStatus a refresh after agreeing would knock trial_requested back
-  // down to opened and lose the only state anybody cares about.
-  const current = row.status as PacketStatus;
-  const next = advanceStatus(current, "opened");
-  if (next !== current) {
-    await supabaseAdmin()
-      .from("workshop_packets")
-      .update({ status: next, opened_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq("id", row.id);
-    await recordEvent({
-      type: "workshop.opened",
-      entityType: "lead",
-      entityId: row.lead_id,
-      leadId: row.lead_id,
-      actorType: "system",
-      source: "api",
-      newValue: { status: next },
-    });
-  }
-
-  /*
-   * One input for both, so the page cannot show findings that the
-   * recommendations do not answer.
-   *
-   * `findings` is the diagnosis when one exists. Note what is NOT passed:
-   * nothing from affordability.ts. The size estimate is internal, it never
-   * reaches this response, and there is a test asserting no budget figure or
-   * band word appears in any owner-facing string.
-   */
-  const gapInput = {
-    businessName: lead.business_name,
-    city: lead.city,
-    website: lead.website,
-    rating: lead.rating,
-    reviewCount: lead.review_count,
-    answeringSetup: lead.answering_setup,
-    findings: lead.diagnostic_findings ?? undefined,
-  };
-
-  return NextResponse.json({
-    businessName: lead.business_name,
-    city: lead.city,
-    state: lead.state,
-    gaps: computeGaps(gapInput),
-    recommendations: buildRecommendations(gapInput),
-    // Prefilled into the form. These are values this owner supplied or that a
-    // caller recorded about them — nothing about any other business.
-    contact: {
-      name: row.owner_name || "",
-      phone: row.owner_phone || "",
-      email: row.owner_email || "",
-    },
-    alreadyRequested: (row.status as PacketStatus) === "trial_requested",
-    requestedAt: row.trial_requested_at,
-  });
+function clean(v: unknown, max = 200): string {
+  return typeof v === "string" ? v.trim().slice(0, max) : "";
 }
 
-/**
- * The owner agrees to the trial.
- *
- * No OTP, no identity check — by design. This is a checkbox on a public page,
- * and its value is that a human is alerted and follows up, not that it is
- * binding. Nothing downstream treats it as a signed contract.
- */
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ token: string }> }
-) {
-  const { token } = await params;
-  if (!looksLikeToken(token)) return notFound();
+export async function POST(req: NextRequest, ctx: { params: Promise<{ token: string }> }) {
+  const { token } = await ctx.params;
+  const found = await packetByToken(token);
+  if (!found) {
+    return NextResponse.json({ error: "This link is no longer available." }, { status: 404 });
+  }
+  const packetId = found.packet.id as string;
+  const status = String(found.packet.status ?? "");
+  if (status === "revoked" || status === "expired") {
+    return NextResponse.json({ error: "This link is no longer available." }, { status: 404 });
+  }
+  const variant = (found.packet.variant as string) ?? null;
 
   const body = await req.json().catch(() => ({}));
-  const name = String(body.name || "").trim().slice(0, 120);
-  const phone = String(body.phone || "").trim().slice(0, 40);
-  const email = String(body.email || "").trim().slice(0, 160);
+  const action = String(body?.action ?? "") as Action;
+  /*
+   * A preview never counts. It is recorded — an operator should be able to see
+   * that they looked — but trackWorkshopEvent refuses to advance the status
+   * for one, so no preview can create interest, engagement or a conversion.
+   */
+  const isAdminPreview = body?.preview === true;
 
-  if (!body.agreed) {
-    return NextResponse.json({ error: "Please tick the box to start the trial." }, { status: 400 });
+  switch (action) {
+    /* ---------------------------------------------------------------- */
+    case "track": {
+      const event = String(body.event ?? "");
+      if (!(WORKSHOP_EVENTS as readonly string[]).includes(event)) {
+        return NextResponse.json({ error: "Unknown event." }, { status: 400 });
+      }
+      /*
+       * The public page may only report that something was LOOKED AT. The
+       * events that change the lifecycle — interest, a demo request, a
+       * walkthrough, an approval — have their own actions below, with their
+       * own validation. Accepting them here would let a crafted request
+       * manufacture a conversion.
+       */
+      const viewOnly = event.match(
+        /_viewed$|_expanded$|^workshop\.opened$|^workshop\.audit_(started|option_selected)$/
+      );
+      if (!viewOnly) {
+        return NextResponse.json({ error: "That event is not reportable here." }, { status: 400 });
+      }
+      const { recorded } = await trackWorkshopEvent({
+        packetId,
+        event: event as WorkshopEvent,
+        target: clean(body.target, 120) || null,
+        variant,
+        isAdminPreview,
+      });
+      return NextResponse.json({ ok: true, recorded, preview: isAdminPreview });
+    }
+
+    /* ---------------------------------------------------------------- */
+    case "save_answer": {
+      if (isAdminPreview) {
+        return NextResponse.json({ ok: true, preview: true, firstTime: false, grantsAccess: false });
+      }
+      const area = clean(body.area, 60);
+      if (!AREA_ORDER.includes(area as BottleneckAnswer["area"])) {
+        return NextResponse.json({ error: "Unknown area." }, { status: 400 });
+      }
+      const freq = clean(body.frequency, 20);
+      const affects = clean(body.affects, 20);
+      const ok = await saveBottleneckAnswer(packetId, {
+        area: area as BottleneckAnswer["area"],
+        detail: clean(body.detail, 2000) || null,
+        frequency: (["daily", "weekly", "occasionally", "unsure"].includes(freq)
+          ? freq
+          : null) as BottleneckAnswer["frequency"],
+        affects: (["revenue", "time", "customers", "employees", "costs", "visibility"].includes(
+          affects
+        )
+          ? affects
+          : null) as BottleneckAnswer["affects"],
+      });
+      // Saved as they go, so a refresh mid-questionnaire loses nothing.
+      await trackWorkshopEvent({
+        packetId,
+        event: "workshop.audit_option_selected",
+        target: area,
+        variant,
+      });
+      return NextResponse.json({ ok });
+    }
+
+    /* ---------------------------------------------------------------- */
+    case "complete_audit": {
+      if (isAdminPreview) {
+        return NextResponse.json({ ok: true, preview: true, firstTime: false, grantsAccess: false });
+      }
+      const map = await completeAudit(packetId);
+      await trackWorkshopEvent({
+        packetId,
+        event: "workshop.audit_completed",
+        variant,
+      });
+      /*
+       * If the map comes back empty because the answers could not be read,
+       * the answers themselves are still saved — the owner's work is never
+       * lost to a failure further down. They can retry and get their map.
+       */
+      return NextResponse.json({ ok: true, map, recoverable: map.length === 0 });
+    }
+
+    /* ---------------------------------------------------------------- */
+    case "interested": {
+      if (isAdminPreview) {
+        return NextResponse.json({ ok: true, preview: true, firstTime: false, grantsAccess: false });
+      }
+      /*
+       * THE BUTTON. What it does and, more importantly, what it does not.
+       *
+       * It records that somebody would like to see more. It does not begin a
+       * trial, authorise access to anything, permit a change to a live system,
+       * or constitute a purchase. Those are four separate acts with four
+       * separate states, and none of them is reachable from here.
+       */
+      await recordInterestDetails(packetId, {
+        name: clean(body.name),
+        email: clean(body.email),
+        phone: clean(body.phone, 50),
+        preferred: ["phone", "email", "text"].includes(clean(body.preferred, 10))
+          ? (clean(body.preferred, 10) as "phone" | "email" | "text")
+          : undefined,
+      });
+      const { recorded } = await trackWorkshopEvent({
+        packetId,
+        event: "workshop.interest_clicked",
+        variant,
+      });
+      // `recorded` false means the idempotency key rejected a repeat. That is
+      // the system working: one click, one conversion, however many taps.
+      return NextResponse.json({
+        ok: true,
+        firstTime: recorded,
+        grantsAccess: false,
+        startsTrial: false,
+        message:
+          "Thanks — we will put together the private example and get back to you. " +
+          "Nothing in your business changes unless you explicitly ask us to.",
+      });
+    }
+
+    /* ---------------------------------------------------------------- */
+    case "request_private_example": {
+      if (isAdminPreview) {
+        return NextResponse.json({ ok: true, preview: true, firstTime: false, grantsAccess: false });
+      }
+      const { recorded } = await trackWorkshopEvent({
+        packetId,
+        event: "workshop.private_example_requested",
+        target: clean(body.target, 120) || null,
+        variant,
+      });
+      return NextResponse.json({ ok: true, firstTime: recorded, grantsAccess: false });
+    }
+
+    /* ---------------------------------------------------------------- */
+    case "request_walkthrough": {
+      if (isAdminPreview) {
+        return NextResponse.json({ ok: true, preview: true, firstTime: false, grantsAccess: false });
+      }
+      const kind = clean(body.kind, 20);
+      const event = WALKTHROUGH_EVENT[kind];
+      if (!event) {
+        return NextResponse.json({ error: "Unknown walkthrough type." }, { status: 400 });
+      }
+      await recordInterestDetails(packetId, {
+        name: clean(body.name),
+        email: clean(body.email),
+        phone: clean(body.phone, 50),
+        preferred: kind === "phone" ? "phone" : "email",
+      });
+      const { recorded } = await trackWorkshopEvent({ packetId, event, variant });
+      return NextResponse.json({
+        ok: true,
+        firstTime: recorded,
+        grantsAccess: false,
+        message:
+          kind === "recorded"
+            ? "We will record a walkthrough and send you the link — nothing to attend."
+            : "We will be in touch to find a time that suits you.",
+      });
+    }
+
+    default:
+      return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   }
-  if (!name || !phone) {
-    return NextResponse.json({ error: "We need a name and a phone number." }, { status: 400 });
-  }
-
-  let row;
-  try {
-    row = await packetByToken(token);
-  } catch {
-    return NextResponse.json({ error: "unavailable" }, { status: 503 });
-  }
-  if (!row) return notFound();
-
-  // Agreeing twice is not an error — the owner refreshed, or tapped twice on a
-  // slow connection. Report success and leave the first timestamp alone.
-  if ((row.status as PacketStatus) === "trial_requested") {
-    return NextResponse.json({ ok: true, alreadyRequested: true });
-  }
-
-  const now = new Date().toISOString();
-  const { error } = await supabaseAdmin()
-    .from("workshop_packets")
-    .update({
-      status: "trial_requested",
-      trial_requested_at: now,
-      // Stored separately from owner_name/owner_phone: what the owner typed is
-      // evidence, and it must not silently overwrite what the caller recorded.
-      agreed_name: name,
-      agreed_phone: phone,
-      agreed_email: email || null,
-      agreed_text: String(body.agreement_text || "").slice(0, 500) || null,
-      updated_at: now,
-    })
-    .eq("id", row.id);
-
-  if (error) {
-    return NextResponse.json(
-      { error: "We could not save that. Please try again in a moment." },
-      { status: 500 }
-    );
-  }
-
-  await recordEvent({
-    type: "workshop.trial_requested",
-    entityType: "lead",
-    entityId: row.lead_id,
-    leadId: row.lead_id,
-    actorType: "system",
-    source: "api",
-    newValue: { name, phone, email: email || null },
-    verificationStatus: "unverified",
-  });
-
-  return NextResponse.json({ ok: true, alreadyRequested: false });
 }
