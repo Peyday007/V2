@@ -140,6 +140,9 @@ export const WORKSHOP_EVENTS = [
   "workshop.walkthrough_recorded_requested",
   "workshop.live_change_discussed",
   "workshop.live_change_approved",
+  /** The prospect opened the payment page. Interest, not a purchase. */
+  "workshop.checkout_started",
+  /** Stripe confirmed the payment. Written only by the signed webhook. */
   "workshop.converted",
   "workshop.expired",
   "workshop.revoked",
@@ -163,6 +166,9 @@ export const EVENT_STATUS: Partial<Record<WorkshopEvent, WorkshopStatus>> = {
   "workshop.walkthrough_video_requested": "walkthrough_requested",
   "workshop.walkthrough_recorded_requested": "walkthrough_requested",
   "workshop.live_change_approved": "live_change_approved",
+  // Opening the payment page is a hand up, exactly like the interest button.
+  // Only the paid webhook reaches `converted`.
+  "workshop.checkout_started": "interested",
   "workshop.converted": "converted",
   "workshop.expired": "expired",
   "workshop.revoked": "revoked",
@@ -220,37 +226,45 @@ export function needsAttention(event: WorkshopEvent): boolean {
     event === "workshop.walkthrough_phone_requested" ||
     event === "workshop.walkthrough_video_requested" ||
     event === "workshop.walkthrough_recorded_requested" ||
-    event === "workshop.live_change_approved"
+    event === "workshop.live_change_approved" ||
+    // Paid: somebody has to deliver it.
+    event === "workshop.converted"
   );
 }
 
-/** What an operator should do next, given where the prospect got to. */
+/**
+ * What an operator should do next, given where the prospect got to.
+ *
+ * NOTHING HERE IS A CALL. The operation does not take calls — not to close,
+ * not to follow up — so every next step is written: an email, a text, a
+ * recorded walkthrough, or the payment link already on their page.
+ */
 export function nextAction(status: WorkshopStatus, hasAudit: boolean): string {
   switch (status) {
     case "not_sent":
       return "Send the workshop link.";
     case "sent":
-      return "Not opened yet. Give it a day before chasing.";
+      return "Not opened yet. Give it a day before a written nudge.";
     case "opened":
       return "Opened but nothing read yet.";
     case "engaged":
       return hasAudit
-        ? "They filled in the bottleneck check. Read their answers and ring them."
-        : "They read the findings. Worth a call.";
+        ? "They filled in the bottleneck check. Read their answers and email back what it shows."
+        : "They read the findings. Send a short written follow-up pointing at the payment step.";
     case "interested":
-      return "They put their hand up. Build the private example and get back to them.";
+      return "They put their hand up. Build the private example, email the link; the page takes the payment.";
     case "demo_requested":
       return "Private example requested. Build it, then send the link.";
     case "walkthrough_requested":
-      return "Walkthrough requested. Book a time.";
+      return "Walkthrough requested. Record it and send the link — nothing to attend.";
     case "walkthrough_scheduled":
-      return "Booked. Prepare the example beforehand.";
+      return "Legacy booking. Send a recorded walkthrough instead of attending anything.";
     case "live_change_approved":
       return "They approved a live change. Confirm scope in writing before touching anything.";
     case "converted":
-      return "Converted. Nothing outstanding here.";
+      return "Paid. Deliver what they bought and confirm in writing.";
     case "trial_requested":
-      return "Legacy trial request — they asked to see more. Follow up as interest.";
+      return "Legacy trial request — they asked to see more. Follow up in writing as interest.";
     case "expired":
     case "revoked":
       return "Closed. Regenerate a fresh workshop if they come back.";

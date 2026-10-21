@@ -418,11 +418,15 @@ describe("THE PAGE LEADS WITH THE BUSINESS, NOT THE CATALOGUE", () => {
     expect(copy.indexOf("Matched to")).toBeLessThan(copy.indexOf("{CAPABILITY_LINE}"));
   });
 
-  it("all four next-step routes are offered", () => {
-    expect(view).toMatch(/Schedule a phone call/);
-    expect(view).toMatch(/Schedule a video call/);
+  it("the next steps are written ones — no call can be booked from the page", () => {
+    expect(view).not.toMatch(/Schedule a phone call/);
+    expect(view).not.toMatch(/Schedule a video call/);
+    expect(view).not.toMatch(/onWalkthrough\("(phone|video)"\)/);
+    expect(view).not.toMatch(/<option value="phone">/);
     expect(view).toMatch(/recorded walkthrough/);
     expect(view).toMatch(/keep looking on my own/i);
+    // The close is on the page.
+    expect(view).toMatch(/start_checkout/);
   });
 
   it("no consent box is pre-ticked — there is no box at all", () => {
