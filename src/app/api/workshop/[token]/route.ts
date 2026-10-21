@@ -9,6 +9,8 @@ import {
 } from "@/lib/workshopAssessment";
 import { AREA_ORDER, type BottleneckAnswer } from "@/lib/bottleneckAudit";
 import { WORKSHOP_EVENTS, type WorkshopEvent } from "@/lib/workshopLifecycle";
+import { checkoutOffer, createCheckoutSession } from "@/lib/workshopCheckout";
+import { appOrigin } from "@/lib/workshopSend";
 
 export const dynamic = "force-dynamic";
 
@@ -53,13 +55,24 @@ type Action =
   | "complete_audit"
   | "interested"
   | "request_walkthrough"
-  | "request_private_example";
+  | "request_private_example"
+  | "start_checkout";
 
+/*
+ * Only the recorded walkthrough is offered. Phone and video walkthroughs are
+ * refused rather than recorded: nobody here takes calls, so accepting one would
+ * promise something that will not happen. Their events stay in the lifecycle
+ * so the rows written before this change still read correctly.
+ */
 const WALKTHROUGH_EVENT: Record<string, WorkshopEvent> = {
-  phone: "workshop.walkthrough_phone_requested",
-  video: "workshop.walkthrough_video_requested",
   recorded: "workshop.walkthrough_recorded_requested",
 };
+
+/** Email or text. A phone call is not a way we reach anybody. */
+function preferredContact(v: unknown): "email" | "text" | undefined {
+  const p = clean(v, 10);
+  return p === "email" || p === "text" ? p : undefined;
+}
 
 function clean(v: unknown, max = 200): string {
   return typeof v === "string" ? v.trim().slice(0, max) : "";
@@ -186,9 +199,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
         name: clean(body.name),
         email: clean(body.email),
         phone: clean(body.phone, 50),
-        preferred: ["phone", "email", "text"].includes(clean(body.preferred, 10))
-          ? (clean(body.preferred, 10) as "phone" | "email" | "text")
-          : undefined,
+        preferred: preferredContact(body.preferred),
       });
       const { recorded } = await trackWorkshopEvent({
         packetId,
@@ -228,26 +239,71 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
         return NextResponse.json({ ok: true, preview: true, firstTime: false, grantsAccess: false });
       }
       const kind = clean(body.kind, 20);
-      const event = WALKTHROUGH_EVENT[kind];
+      const event = Object.hasOwn(WALKTHROUGH_EVENT, kind) ? WALKTHROUGH_EVENT[kind] : undefined;
       if (!event) {
-        return NextResponse.json({ error: "Unknown walkthrough type." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Walkthroughs are recorded and sent to you — there is nothing to attend." },
+          { status: 400 }
+        );
       }
       await recordInterestDetails(packetId, {
         name: clean(body.name),
         email: clean(body.email),
         phone: clean(body.phone, 50),
-        preferred: kind === "phone" ? "phone" : "email",
+        preferred: "email",
       });
       const { recorded } = await trackWorkshopEvent({ packetId, event, variant });
       return NextResponse.json({
         ok: true,
         firstTime: recorded,
         grantsAccess: false,
-        message:
-          kind === "recorded"
-            ? "We will record a walkthrough and send you the link — nothing to attend."
-            : "We will be in touch to find a time that suits you.",
+        message: "We will record a walkthrough and send you the link — nothing to attend.",
       });
+    }
+
+    /* ---------------------------------------------------------------- */
+    case "start_checkout": {
+      /*
+       * THE CLOSE. Opens a Stripe Checkout page for this packet and nothing
+       * else. Starting one is interest; only Stripe's signed webhook, after a
+       * real payment, reaches `converted` — no request from this page can.
+       */
+      if (isAdminPreview) {
+        return NextResponse.json({ ok: true, preview: true, grantsAccess: false });
+      }
+      const offer = checkoutOffer();
+      if (!offer) {
+        return NextResponse.json({ error: "Payments are not set up yet." }, { status: 409 });
+      }
+      if (status === "converted") {
+        return NextResponse.json({ error: "This is already paid for — thank you." }, { status: 409 });
+      }
+      const email = clean(body.email) || String(found.packet.owner_email ?? "");
+      if (clean(body.email) || clean(body.name)) {
+        await recordInterestDetails(packetId, {
+          name: clean(body.name),
+          email: clean(body.email),
+          phone: clean(body.phone, 50),
+          preferred: "email",
+        });
+      }
+      const started = await createCheckoutSession({
+        packetId,
+        token,
+        origin: await appOrigin(),
+        email,
+        offer,
+      });
+      if (!started.ok) {
+        return NextResponse.json({ error: started.reason }, { status: 502 });
+      }
+      await trackWorkshopEvent({
+        packetId,
+        event: "workshop.checkout_started",
+        target: started.sessionId,
+        variant,
+      });
+      return NextResponse.json({ ok: true, url: started.url, grantsAccess: false });
     }
 
     default:

@@ -40,6 +40,10 @@ const OPEN_ROUTES = [
   // stay behind the passphrase, and a future /api/instantly/webhook-test would
   // not be opened by accident.
   "/api/instantly/webhook",
+  // Stripe posts paid workshop checkouts here. It cannot present an admin
+  // cookie either; the route verifies Stripe's signature against
+  // STRIPE_WEBHOOK_SECRET over the raw body and accepts nothing when unset.
+  "/api/stripe/webhook",
 ];
 
 /** These match as a literal prefix. */

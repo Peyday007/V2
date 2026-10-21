@@ -69,6 +69,8 @@ export type Assessment = {
   bottleneck: { area: BottleneckArea; detail?: string | null; frequency?: string | null; affects?: string | null }[];
   auditComplete: boolean;
   map: MappedOpportunity[];
+  /** Optional so a page served by an older API still renders, without the payment step. */
+  checkout?: { offered: boolean; priceLabel: string | null; offerName: string | null; paid: boolean };
 };
 
 /**
@@ -114,6 +116,7 @@ export function WorkshopMiniSite({ token, data }: { token: string; data: Assessm
   const [interested, setInterested] = useState(data.alreadyInterested);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const checkout = data.checkout ?? { offered: false, priceLabel: null, offerName: null, paid: false };
 
   /*
    * ADMIN PREVIEW. The operator opens the prospect's real page to check it,
@@ -138,6 +141,52 @@ export function WorkshopMiniSite({ token, data }: { token: string; data: Assessm
     },
     [token, isPreview]
   );
+
+  /*
+   * THE CLOSE. Ask the server for this packet's Stripe Checkout page and go
+   * there. The server, not this page, decides whether payments are set up, and
+   * only Stripe's signed webhook marks anything paid.
+   */
+  const startCheckout = useCallback(
+    async (contact?: { name?: string; email?: string; phone?: string }) => {
+      if (isPreview) {
+        setNotice("Preview: the payment step is not opened from a preview.");
+        return;
+      }
+      setBusy(true);
+      try {
+        const res = await fetch(`/api/workshop/${token}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start_checkout", ...(contact ?? {}) }),
+        });
+        const j = await res.json().catch(() => null);
+        if (res.ok && j?.url) {
+          window.location.assign(j.url);
+          return;
+        }
+        setNotice(j?.error ?? "The payment page could not be opened. Try again in a moment.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [token, isPreview]
+  );
+
+  /*
+   * Back from Stripe. `?paid=1` is only where Stripe sent the browser — the
+   * webhook is what records the payment — so the page says "being confirmed"
+   * until the record says paid.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("paid") !== "1") return;
+    setNotice(
+      checkout.paid
+        ? "Payment received — thank you. We will email you as soon as it is ready."
+        : "Thanks — your payment is being confirmed. We will email you as soon as it is ready."
+    );
+  }, [checkout.paid]);
 
   const track = useCallback(
     (event: string, target?: string) => {
@@ -267,6 +316,8 @@ export function WorkshopMiniSite({ token, data }: { token: string; data: Assessm
             data={data}
             interested={interested}
             busy={busy}
+            checkout={checkout}
+            onCheckout={startCheckout}
             onInterested={async (form) => {
               setBusy(true);
               const j = await post({ action: "interested", ...form });
@@ -397,6 +448,8 @@ export function WorkshopMiniSite({ token, data }: { token: string; data: Assessm
         <NextSteps
           interested={interested}
           busy={busy}
+          checkout={checkout}
+          onCheckout={() => startCheckout(data.contact)}
           onWalkthrough={async (kind) => {
             setBusy(true);
             const j = await post({ action: "request_walkthrough", kind, ...data.contact });
@@ -538,15 +591,52 @@ function List({ items }: { items: string[] }) {
 
 export const INTEREST_CTA = "I'm interested in seeing more";
 
+type CheckoutState = NonNullable<Assessment["checkout"]>;
+
+/** The payment button. Absent entirely when payments are not set up. */
+function PayButton({
+  checkout,
+  busy,
+  onCheckout,
+}: {
+  checkout: CheckoutState;
+  busy: boolean;
+  onCheckout: () => void;
+}) {
+  if (checkout.paid) {
+    return (
+      <p style={{ lineHeight: 1.6, marginTop: 12 }}>
+        <strong>Paid — thank you.</strong> We will email you as soon as it is ready.
+      </p>
+    );
+  }
+  if (!checkout.offered) return null;
+  return (
+    <div style={{ marginTop: 14 }}>
+      <button className="btn" disabled={busy} onClick={onCheckout}>
+        {busy ? "Opening…" : `Start now${checkout.priceLabel ? ` — ${checkout.priceLabel}` : ""}`}
+      </button>
+      <p className="faint" style={{ lineHeight: 1.6, marginTop: 8, marginBottom: 0 }}>
+        {checkout.offerName ? `${checkout.offerName}. ` : ""}Secure checkout by Stripe. Everything
+        happens here and by email — no calls to book.
+      </p>
+    </div>
+  );
+}
+
 function InterestBlock({
   data,
   interested,
   busy,
+  checkout,
+  onCheckout,
   onInterested,
 }: {
   data: Assessment;
   interested: boolean;
   busy: boolean;
+  checkout: CheckoutState;
+  onCheckout: (contact?: { name?: string; email?: string; phone?: string }) => void;
   onInterested: (form: { name: string; email: string; phone: string; preferred: string }) => void;
 }) {
   const known = !!(data.contact.email || data.contact.phone);
@@ -555,7 +645,7 @@ function InterestBlock({
     name: data.contact.name,
     email: data.contact.email,
     phone: data.contact.phone,
-    preferred: data.contact.email ? "email" : "phone",
+    preferred: data.contact.email || !data.contact.phone ? "email" : "text",
   });
 
   if (interested) {
@@ -563,9 +653,10 @@ function InterestBlock({
       <div className="card" style={{ marginTop: 22, borderColor: "var(--amber)" }}>
         <h3 style={{ marginTop: 0 }}>Thanks — we have that</h3>
         <p style={{ lineHeight: 1.7 }}>
-          We will put together the private example and get back to you. Nothing in your
+          We will put together the private example and email it to you. Nothing in your
           business changes unless you explicitly ask us to.
         </p>
+        <PayButton checkout={checkout} busy={busy} onCheckout={() => onCheckout(data.contact)} />
       </div>
     );
   }
@@ -590,6 +681,7 @@ function InterestBlock({
             This does not start a trial, buy anything, or give us access to your systems. It
             tells us you would like to see more.
           </p>
+          <PayButton checkout={checkout} busy={busy} onCheckout={() => onCheckout(data.contact)} />
         </>
       ) : (
         <>
@@ -624,7 +716,6 @@ function InterestBlock({
                 onChange={(e) => setForm({ ...form, preferred: e.target.value })}
               >
                 <option value="email">Email</option>
-                <option value="phone">Phone</option>
                 <option value="text">Text</option>
               </select>
             </label>
@@ -642,6 +733,11 @@ function InterestBlock({
           <button className="btn" disabled={busy} onClick={() => onInterested(form)}>
             {busy ? "Sending…" : INTEREST_CTA}
           </button>
+          <PayButton
+            checkout={checkout}
+            busy={busy}
+            onCheckout={() => onCheckout({ name: form.name, email: form.email, phone: form.phone })}
+          />
         </>
       )}
     </div>
@@ -856,12 +952,16 @@ function Small({ label, children }: { label: string; children: React.ReactNode }
 function NextSteps({
   interested,
   busy,
+  checkout,
+  onCheckout,
   onWalkthrough,
   onExplore,
 }: {
   interested: boolean;
   busy: boolean;
-  onWalkthrough: (kind: "phone" | "video" | "recorded") => void;
+  checkout: CheckoutState;
+  onCheckout: () => void;
+  onWalkthrough: (kind: "recorded") => void;
   onExplore: () => void;
 }) {
   return (
@@ -873,17 +973,16 @@ function NextSteps({
           <strong>Nothing in your live business changes</strong> — no systems touched, no
           settings altered, no messages sent to your customers — unless you explicitly ask.
         </li>
-        <li>You can look through it on your own, or have somebody walk you through it.</li>
+        <li>
+          You can look through it on your own, or we send you a recorded walkthrough. There is
+          no call to book.
+        </li>
       </ul>
+
+      <PayButton checkout={checkout} busy={busy} onCheckout={onCheckout} />
 
       <h3 style={{ marginTop: 22 }}>However suits you</h3>
       <div style={{ display: "grid", gap: 10 }}>
-        <button className="btn-ghost" disabled={busy} onClick={() => onWalkthrough("phone")}>
-          Schedule a phone call
-        </button>
-        <button className="btn-ghost" disabled={busy} onClick={() => onWalkthrough("video")}>
-          Schedule a video call
-        </button>
         <button className="btn-ghost" disabled={busy} onClick={() => onWalkthrough("recorded")}>
           Send me a recorded walkthrough — nothing to attend
         </button>

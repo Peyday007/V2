@@ -1,6 +1,7 @@
 import "server-only";
 import { supabaseAdmin } from "./supabaseAdmin";
 import { recordEvent } from "./events";
+import { checkoutOffer } from "./workshopCheckout";
 import { diagnose, type DiagnosticInput } from "./diagnostic";
 import { opportunitiesFromFindings } from "./opportunityBuilder";
 import {
@@ -79,6 +80,8 @@ export type PublicAssessment = {
   bottleneck: BottleneckAnswer[];
   auditComplete: boolean;
   map: MappedOpportunity[];
+  /** The payment step. `offered` is false when payments are not configured. */
+  checkout: { offered: boolean; priceLabel: string | null; offerName: string | null; paid: boolean };
 };
 
 /* -------------------------------------------------------------------------- */
@@ -295,6 +298,22 @@ export async function publicAssessment(token: string): Promise<PublicAssessment 
     bottleneck: bottleneck.answers,
     auditComplete: bottleneck.complete,
     map: bottleneck.complete ? buildOpportunityMap(bottleneck.answers) : [],
+    checkout: publicCheckout(status),
+  };
+}
+
+/**
+ * Whether the page offers the payment step, and at what price.
+ *
+ * The secret key never leaves the server — only "is it offered" and the label.
+ */
+function publicCheckout(status: WorkshopStatus): PublicAssessment["checkout"] {
+  const offer = checkoutOffer();
+  return {
+    offered: offer !== null && status !== "converted",
+    priceLabel: offer?.priceLabel ?? null,
+    offerName: offer?.name ?? null,
+    paid: status === "converted",
   };
 }
 
