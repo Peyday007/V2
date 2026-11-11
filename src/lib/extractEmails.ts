@@ -69,6 +69,16 @@ const FOREIGN_DOMAINS = [
   // Platforms and analytics.
   "google.com", "googlemail.com", "facebook.com", "instagram.com", "sentry.io",
   "cloudflare.com", "example.com", "domain.com", "email.com", "yourdomain.com",
+  // Found leaking into a real campaign pull (Brain, 2026-11-11): an ad agency's
+  // address on a practice's site, and two real-estate web platforms' support
+  // and bug-report inboxes on agents' sites.
+  "level.agency", "moxiworks.com", "moatable.com",
+  // Platforms that sign or host small-business sites the same way.
+  "popmenu.com", "toasttab.com", "getbento.com", "mindbodyonline.com", "vagaro.com",
+  "squareup.com", "square.site", "officite.com", "prosites.com", "godaddysites.com",
+  "scorpion.co", "patientpop.com", "weave.com", "lighthouse360.com",
+  "sesamecommunications.com", "boomtownroi.com", "kvcore.com", "placester.com",
+  "realtor.com", "zillow.com",
 ];
 
 /** Local parts that are never a person and rarely worth emailing. */

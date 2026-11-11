@@ -278,3 +278,12 @@ describe("A DELIBERATELY PUBLISHED ADDRESS IS NEVER DISCARDED FOR BEING PERSONAL
     expect(bestEmail(at(`<a href="mailto:support@wixpress.com">x</a>`))).toBeNull();
   });
 });
+
+describe("platform and agency inboxes found in a real pull", () => {
+  it("refuses the agency and real-estate platform addresses that leaked", () => {
+    for (const leaked of ["sam.clark@level.agency", "support@moxiworks.com", "bugreport@moatable.com"]) {
+      expect(isPlausibleEmail(leaked)).toBe(false);
+    }
+    expect(isPlausibleEmail("office@patchinfamilydentistry.com")).toBe(true);
+  });
+});
