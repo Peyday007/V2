@@ -18,7 +18,10 @@ export type BrainPublicKey = { kid: string; spki: string };
  * 16 hex chars of sha256(SPKI DER). Brain's integrations workflow publishes the
  * key and a session pins it here. Empty means every request is refused.
  */
-export const BRAIN_PUBLIC_KEYS: BrainPublicKey[] = [];
+export const BRAIN_PUBLIC_KEYS: BrainPublicKey[] = [
+  // Brain production (northline-brain), generated 2026-11-11 by its Integrations workflow.
+  { kid: "7958024b55ebb857", spki: "MCowBQYDK2VwAyEAGfDedkugR5lrP09mA3WNhaXd8yYXE7DYTb+2CgAAEiw=" },
+];
 
 /** How far a request's timestamp may sit from the server clock. */
 export const BRAIN_MAX_SKEW_MS = 300_000;
