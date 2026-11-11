@@ -47,6 +47,10 @@ const OPEN_PREFIXES = [
   "/api/caller/", // caller PIN sign-in and sign-out
   "/api/dial/", // next lead, log outcome
   "/api/worker/", // the background engine; has its own WORKER_SECRET
+  // Brain (a separate system) cannot present an admin cookie. Every route
+  // under here is Ed25519-signature-authenticated against public keys pinned
+  // in src/lib/brainBridge.ts, and refuses anything unsigned.
+  "/api/brain/",
   "/api/admin/", // the passphrase form has to be able to post somewhere
   "/api/workshop/", // the public packet page reads and submits through this
   "/_next/", // framework assets

@@ -37,6 +37,12 @@ describe("the caller app is never gated", () => {
     expect(isProtectedPath("/api/worker/tick")).toBe(false);
   });
 
+  it("leaves the Brain bridge open — it is signature-authenticated", () => {
+    expect(isProtectedPath("/api/brain/places")).toBe(false);
+    // Prefix includes the slash, so a lookalike stays gated.
+    expect(isProtectedPath("/api/brainstorm")).toBe(true);
+  });
+
   it("leaves the passphrase page and its endpoints open, or nobody could sign in", () => {
     expect(isProtectedPath("/admin-login")).toBe(false);
     expect(isProtectedPath("/api/admin/login")).toBe(false);
