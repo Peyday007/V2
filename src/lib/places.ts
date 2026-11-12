@@ -73,11 +73,14 @@ export class PlacesError extends Error {
   status: number;
   retryable: boolean;
   hint: string;
+  /** Google's raw answer, for callers that pass on a sanitized line of it. */
+  body: string;
   constructor(status: number, message: string) {
     const hint = explain(status, message);
     super(`Places API ${status}: ${hint || message}`);
     this.status = status;
     this.hint = hint;
+    this.body = message;
     // 429/5xx are transient; 4xx (bad key, bad request) are not.
     this.retryable = status === 429 || status >= 500;
   }

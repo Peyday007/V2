@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     if (e instanceof PlacesError) {
       return NextResponse.json(
-        { error: "places_error", status: e.status, hint: e.hint },
+        { error: "places_error", status: e.status, hint: e.hint, google: googleMessage(errorMessageOf(e.body)) },
         { status: 502 }
       );
     }
@@ -106,9 +106,29 @@ export async function POST(req: NextRequest) {
 /**
  * Does Google accept the key? One Text Search asking only for place ids
  * (Google's "IDs Only" SKU, which carries no charge), returning Google's own
- * status and reason codes — never the key, and never Google's raw body.
+ * status, reason codes and one-line message — never the key, and never
+ * Google's raw body. A 403 with no reason codes (PERMISSION_DENIED alone) is
+ * only diagnosable from the message, so it is passed on with anything that
+ * looks like a key or a URL removed.
  */
-async function verifyKey(): Promise<{ accepted: boolean; status: number; reasons: string[]; googleStatus: string | null }> {
+function errorMessageOf(body: string): unknown {
+  try {
+    return (JSON.parse(body) as { error?: { message?: unknown } })?.error?.message;
+  } catch {
+    return null;
+  }
+}
+
+function googleMessage(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const key = process.env.GOOGLE_PLACES_API_KEY ?? "";
+  let text = raw.replace(/\s+/g, " ").trim();
+  if (key) text = text.split(key).join("[key]");
+  text = text.replace(/AIza[0-9A-Za-z_-]{20,}/g, "[key]").replace(/https?:\/\/\S+/g, "[link]");
+  return text.slice(0, 300);
+}
+
+async function verifyKey(): Promise<{ accepted: boolean; status: number; reasons: string[]; googleStatus: string | null; message: string | null }> {
   try {
     const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
@@ -120,16 +140,16 @@ async function verifyKey(): Promise<{ accepted: boolean; status: number; reasons
       body: JSON.stringify({ textQuery: "coffee in Camp Hill, PA", pageSize: 1 }),
       signal: AbortSignal.timeout(15000),
     });
-    if (res.ok) return { accepted: true, status: res.status, reasons: [], googleStatus: null };
+    if (res.ok) return { accepted: true, status: res.status, reasons: [], googleStatus: null, message: null };
     const parsed = (await res.json().catch(() => null)) as
-      | { error?: { status?: string; details?: { reason?: string }[] } }
+      | { error?: { status?: string; message?: string; details?: { reason?: string }[] } }
       | null;
     const reasons = (parsed?.error?.details ?? [])
       .map((d) => d.reason)
       .filter((r): r is string => typeof r === "string" && /^[A-Z_]{3,64}$/.test(r));
     const googleStatus = parsed?.error?.status && /^[A-Z_]{3,64}$/.test(parsed.error.status) ? parsed.error.status : null;
-    return { accepted: false, status: res.status, reasons, googleStatus };
+    return { accepted: false, status: res.status, reasons, googleStatus, message: googleMessage(parsed?.error?.message) };
   } catch {
-    return { accepted: false, status: 0, reasons: [], googleStatus: null };
+    return { accepted: false, status: 0, reasons: [], googleStatus: null, message: null };
   }
 }
