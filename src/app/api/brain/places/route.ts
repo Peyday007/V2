@@ -18,6 +18,8 @@ const PATH = "/api/brain/places";
 
 type Body = {
   probe?: boolean;
+  /** With probe: also ask Google whether it accepts the key (an IDs-only search, Google's no-charge SKU). */
+  verify?: boolean;
   textQuery?: string;
   latitude?: number;
   longitude?: number;
@@ -53,7 +55,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (body.probe === true) {
-    return NextResponse.json({ ok: true, placesKeyConfigured: placesKeyConfigured() });
+    if (body.verify !== true || !placesKeyConfigured()) {
+      return NextResponse.json({ ok: true, placesKeyConfigured: placesKeyConfigured() });
+    }
+    return NextResponse.json({ ok: true, placesKeyConfigured: true, google: await verifyKey() });
   }
 
   const textQuery = typeof body.textQuery === "string" ? body.textQuery.trim() : "";
@@ -95,5 +100,36 @@ export async function POST(req: NextRequest) {
     }
     console.error("[brain/places] unexpected error", e);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });
+  }
+}
+
+/**
+ * Does Google accept the key? One Text Search asking only for place ids
+ * (Google's "IDs Only" SKU, which carries no charge), returning Google's own
+ * status and reason codes — never the key, and never Google's raw body.
+ */
+async function verifyKey(): Promise<{ accepted: boolean; status: number; reasons: string[]; googleStatus: string | null }> {
+  try {
+    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": process.env.GOOGLE_PLACES_API_KEY ?? "",
+        "X-Goog-FieldMask": "places.id",
+      },
+      body: JSON.stringify({ textQuery: "coffee in Camp Hill, PA", pageSize: 1 }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) return { accepted: true, status: res.status, reasons: [], googleStatus: null };
+    const parsed = (await res.json().catch(() => null)) as
+      | { error?: { status?: string; details?: { reason?: string }[] } }
+      | null;
+    const reasons = (parsed?.error?.details ?? [])
+      .map((d) => d.reason)
+      .filter((r): r is string => typeof r === "string" && /^[A-Z_]{3,64}$/.test(r));
+    const googleStatus = parsed?.error?.status && /^[A-Z_]{3,64}$/.test(parsed.error.status) ? parsed.error.status : null;
+    return { accepted: false, status: res.status, reasons, googleStatus };
+  } catch {
+    return { accepted: false, status: 0, reasons: [], googleStatus: null };
   }
 }
